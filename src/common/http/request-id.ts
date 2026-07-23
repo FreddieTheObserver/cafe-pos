@@ -1,25 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import type { NextFunction, Request, Response } from 'express';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-/** Express request augmented with the per-request correlation id. */
-export type RequestWithId = Request & { id?: string };
+/** Express/Node request augmented with the per-request correlation id (set by pino-http). */
+export type RequestWithId = IncomingMessage & { id?: string };
 
 /**
- * Assigns a correlation id to every request (honoring an inbound X-Request-Id
- * if a proxy set one) and echoes it back in the response header. The filter puts
- * it in every error body; the logger (Task 5) reuses it so logs and responses
- * share one id.
+ * pino-http `genReqId`: reuse an inbound X-Request-Id (set by a proxy) or mint a
+ * UUID, echo it back on the response, and hand it to pino as `req.id`. This makes
+ * the log line, the response header, and the error envelope share one id.
  */
-export function requestIdMiddleware(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
+export function generateRequestId(
+  req: IncomingMessage,
+  res: ServerResponse,
+): string {
   const inbound = req.headers['x-request-id'];
   const id = (Array.isArray(inbound) ? inbound[0] : inbound) || randomUUID();
-  (req as RequestWithId).id = id;
   res.setHeader('X-Request-Id', id);
-  next();
+  return id;
 }
 
 /** Reads the correlation id off a request, falling back to "unknown". */
