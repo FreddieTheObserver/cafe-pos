@@ -5,7 +5,9 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
+import { RedisModule } from './redis/redis.module';
 import { CommonModule } from './common/common.module';
+import { HealthModule } from './health/health.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
 
 @Module({
@@ -19,7 +21,9 @@ import { buildLoggerOptions } from './common/logging/pino-options';
       useFactory: buildLoggerOptions,
     }),
     DatabaseModule,
+    RedisModule,
     CommonModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
