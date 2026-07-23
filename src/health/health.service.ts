@@ -23,7 +23,10 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
     promise,
     new Promise<T>((_, reject) =>
       setTimeout(
-        () => reject(new Error(`${label} check timed out after ${CHECK_TIMEOUT_MS}ms`)),
+        () =>
+          reject(
+            new Error(`${label} check timed out after ${CHECK_TIMEOUT_MS}ms`),
+          ),
         CHECK_TIMEOUT_MS,
       ).unref(),
     ),
@@ -38,11 +41,11 @@ export class HealthService {
   ) {}
 
   async checkReadiness(): Promise<ReadinessResult> {
-    const [db, redis] = await Promise.all([
-      this.checkDb(),
-      this.checkRedis(),
-    ]);
-    return { ok: db.status === 'up' && redis.status === 'up', checks: { db, redis } };
+    const [db, redis] = await Promise.all([this.checkDb(), this.checkRedis()]);
+    return {
+      ok: db.status === 'up' && redis.status === 'up',
+      checks: { db, redis },
+    };
   }
 
   private async checkDb(): Promise<DependencyCheck> {
@@ -57,9 +60,8 @@ export class HealthService {
   private async checkRedis(): Promise<DependencyCheck> {
     try {
       const pong = await withTimeout(this.redis.ping(), 'redis');
-      return pong === 'PONG'
-        ? { status: 'up' }
-        : { status: 'down', error: `unexpected ping reply: ${pong}` };
+      if (pong === 'PONG') return { status: 'up' };
+      return { status: 'down', error: 'unexpected ping reply' };
     } catch (err) {
       return { status: 'down', error: (err as Error).message };
     }

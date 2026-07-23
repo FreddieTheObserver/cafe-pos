@@ -12,11 +12,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { kioskDevices, users } from './identity';
 import { menuItems, options } from './catalog';
-import {
-  actorTypes,
-  orderChannels,
-  orderStatuses,
-} from './enums';
+import { actorTypes, orderChannels, orderStatuses } from './enums';
 import { createdAt, inList, primaryId, timestamps, uuidRef } from './_shared';
 
 export const orders = pgTable(
@@ -38,7 +34,10 @@ export const orders = pgTable(
     ...timestamps,
   },
   (t) => [
-    unique('orders_business_day_number_unique').on(t.businessDay, t.orderNumber),
+    unique('orders_business_day_number_unique').on(
+      t.businessDay,
+      t.orderNumber,
+    ),
     check('orders_channel_check', inList(t.channel, orderChannels)),
     check('orders_status_check', inList(t.status, orderStatuses)),
     // An order is placed by a kiosk device OR a staff user — never neither.
@@ -116,7 +115,10 @@ export const orderStatusHistory = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    check('order_status_history_actor_type_check', inList(t.actorType, actorTypes)),
+    check(
+      'order_status_history_actor_type_check',
+      inList(t.actorType, actorTypes),
+    ),
     index('order_status_history_order_idx').on(t.orderId),
   ],
 );

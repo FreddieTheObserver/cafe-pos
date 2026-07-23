@@ -48,12 +48,16 @@ export const kioskDevices = pgTable(
     tokenHash: text('token_hash').unique(),
     pairingCodeHash: text('pairing_code_hash'),
     pairingExpiresAt: timestamp('pairing_expires_at', { withTimezone: true }),
-    status: text('status', { enum: deviceStatuses }).notNull().default('PENDING'),
+    status: text('status', { enum: deviceStatuses })
+      .notNull()
+      .default('PENDING'),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     registeredBy: uuidRef('registered_by').references(() => users.id),
     ...timestamps,
   },
-  (t) => [check('kiosk_devices_status_check', inList(t.status, deviceStatuses))],
+  (t) => [
+    check('kiosk_devices_status_check', inList(t.status, deviceStatuses)),
+  ],
 );
 
 export const usersRelations = relations(users, ({ many }) => ({

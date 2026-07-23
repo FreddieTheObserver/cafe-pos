@@ -1,5 +1,10 @@
 import { sql } from 'drizzle-orm';
-import { customType, timestamp, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import {
+  customType,
+  timestamp,
+  uuid,
+  type AnyPgColumn,
+} from 'drizzle-orm/pg-core';
 import { uuidv7 } from 'uuidv7';
 
 /**

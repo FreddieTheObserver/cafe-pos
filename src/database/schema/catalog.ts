@@ -32,9 +32,7 @@ export const menuItems = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     ...timestamps,
   },
-  (t) => [
-    check('menu_items_base_price_check', sql`${t.basePriceMinor} >= 0`),
-  ],
+  (t) => [check('menu_items_base_price_check', sql`${t.basePriceMinor} >= 0`)],
 );
 
 export const optionGroups = pgTable(

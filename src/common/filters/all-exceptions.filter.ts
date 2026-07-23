@@ -6,6 +6,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
+import type { Request } from 'express';
 import { ZodError } from 'zod';
 import { AppException } from '../errors/app.exception';
 import { ErrorCode } from '../errors/error-codes';
@@ -41,7 +42,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const { httpAdapter } = this.httpAdapterHost;
     const ctx = host.switchToHttp();
-    const req = ctx.getRequest();
+    const req = ctx.getRequest<Request>();
     const requestId = getRequestId(req);
 
     const problem = this.toProblem(exception, requestId);
@@ -49,7 +50,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // 5xx means a human should look — log with the stack, but never leak it out.
     if (problem.status >= 500) {
       this.logger.error(
-        `${problem.code} ${req?.method ?? '?'} ${req?.url ?? '?'} [${requestId}]`,
+        `${problem.code} ${req.method} ${req.url} [${requestId}]`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
