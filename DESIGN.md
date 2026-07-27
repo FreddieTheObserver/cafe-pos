@@ -933,6 +933,7 @@ Every non-2xx response from every endpoint has the same shape:
 | `PAYMENT_NOT_REFUNDABLE` | 409 | Refund on non-SUCCEEDED payment |
 | `IDEMPOTENCY_CONFLICT` | 409 | Same key, different body |
 | `WEBHOOK_SIGNATURE_INVALID` | 400 | Stripe signature fails |
+| `PAYLOAD_TOO_LARGE` | 413 | Request body over the configured limit (§10.3) |
 | `RATE_LIMITED` | 429 | §10.2 |
 | `INTERNAL` | 500 | Unhandled (request id only, details in logs) |
 | `DEPENDENCY_UNAVAILABLE` | 503 | DB/Redis/gateway down (kiosks show the offline screen) |
