@@ -1,98 +1,165 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# CafePOS
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend for a single-location cafe point-of-sale system in which **self-order kiosks are first-class clients**. Customers order and pay at unattended kiosks, staff work the same order pipeline from a counter POS, baristas fulfil from a Kitchen Display System (KDS), and the owner gets sales reporting and end-of-day reconciliation.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Because the kiosk is unattended, the backend has to be the adult in the room: prices are computed server-side, payment state follows the gateway webhook rather than the client, and money-mutating requests are idempotent.
 
-## Description
+**[`DESIGN.md`](./DESIGN.md) is the specification.** It carries the domain model, the full API catalog, the authorization matrix, the database design, and the reasoning behind every non-obvious choice. This README only covers how to run the thing; when the two disagree, `DESIGN.md` wins.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Stack
 
-## Project setup
+| | |
+|---|---|
+| Runtime | Node.js 22, TypeScript, NestJS 11 (modular monolith) |
+| Database | PostgreSQL 16 with Drizzle ORM; migrations via `drizzle-kit` |
+| Cache / pub-sub | Redis 7 |
+| Validation | Zod — for environment config and (from Phase 1) request bodies |
+| Logging | pino via `nestjs-pino`, JSON in production |
+| Tests | Jest (unit) + Jest/supertest against real Postgres (integration) |
+| Package manager | pnpm |
 
-```bash
-$ pnpm install
-```
+## Prerequisites
 
-## Compile and run the project
+- Node.js 22 (the version CI builds against)
+- pnpm 10
+- Docker with Compose v2, for Postgres and Redis
+
+## First-time setup
+
+From a fresh clone:
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+cp .env.example .env      # defaults already match docker-compose.yml
+docker compose up -d      # Postgres on host port 5433, Redis on 6379
+pnpm install
+pnpm db:migrate           # applies drizzle/*.sql to the running database
+pnpm start:dev
 ```
 
-## Run tests
+Then confirm the process is alive and its dependencies are reachable:
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
 ```
 
-## Deployment
+Both should return `200`. If `/readyz` returns `503`, the body names the failing dependency — see [Health endpoints](#health-endpoints).
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+> **Postgres is published on host port `5433`, not `5432`.** A native PostgreSQL install commonly already owns 5432 on a developer machine, and a silent connection to the wrong server is a miserable way to lose an afternoon. `.env.example` therefore points at `5433`. CI runs on a runner with no native Postgres, so the workflow uses `5432` — that difference between `.env.example` and `.github/workflows/ci.yml` is deliberate, not drift.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Running the app
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+pnpm start:dev     # watch mode, pretty single-line logs
+pnpm start         # one-shot, no watcher
+pnpm build         # compile to dist/
+pnpm start:prod    # node dist/main — expects NODE_ENV=production, JSON logs
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Supporting commands:
 
-## Resources
+```bash
+pnpm lint          # eslint with --fix
+pnpm typecheck     # tsc --noEmit over src/ and test/
+pnpm format        # prettier over src/ and test/
+pnpm db:studio     # drizzle-kit studio, a browser UI over the dev database
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+## Tests
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+pnpm test          # unit specs (src/**/*.spec.ts) — no services required
+pnpm test:cov      # the same, with coverage
+pnpm test:e2e      # integration specs (test/*.e2e-spec.ts)
+```
 
-## Support
+`pnpm test:e2e` talks to the **real** Postgres from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+The integration suite exists to check the claims a unit test cannot: that the money and state constraints described in `DESIGN.md` §7.4 are actually armed in a migrated database, and that the HTTP hardening (body limit, CORS policy, error envelope) holds on a real server.
 
-## Stay in touch
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, build, migrations, unit tests, and integration tests against service containers of the same Postgres and Redis images used locally. It triggers on every pull request and on pushes to `main` — branch pushes are covered by the PR run rather than duplicating it.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+The typecheck step is separate from the build on purpose: `pnpm build` compiles with `tsconfig.build.json`, which excludes specs, so a type error in a test file would otherwise reach `main` unnoticed.
 
-## License
+## Configuration
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Environment is parsed once at boot by `src/config/env.validation.ts`. A missing or malformed variable crashes the process immediately with a readable message rather than surfacing as `undefined` inside a request handler.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NODE_ENV` | `development` | `development` \| `production` \| `test`. Selects pretty vs JSON logs and the log level. |
+| `PORT` | `3000` | HTTP listen port. Coerced to a number. |
+| `DATABASE_URL` | — | Required. Postgres connection string; note host port `5433` for the local stack. |
+| `REDIS_URL` | — | Required. Redis connection string. |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API (KDS, public board). Empty leaves CORS **off** — native kiosk clients are not browsers and need no CORS, so the permissive case must be opted into per environment. |
+
+`.env` is for local development only. Real secrets (production database URL, JWT signing keys, Stripe keys) come from the platform secret store and are never committed.
+
+## Database and migrations
+
+The schema lives in `src/database/schema/` and is the source of truth. `drizzle.config.ts` points `drizzle-kit` at it.
+
+```bash
+pnpm db:generate   # diff schema against the last snapshot, emit SQL into drizzle/
+pnpm db:migrate    # apply pending migration files to DATABASE_URL
+```
+
+The workflow is: edit the schema in TypeScript, run `db:generate`, read the emitted SQL, commit both the migration and the updated `drizzle/meta` snapshot, then `db:migrate`. Never hand-edit a migration that has already been applied anywhere but your own machine.
+
+> **`drizzle/0000_nasty_dagger.sql` must never be regenerated.** Its first line, `CREATE EXTENSION IF NOT EXISTS citext;`, was added by hand and `drizzle-kit` does not reproduce it: the `citext` column type is declared in the schema as a Drizzle `customType`, so the generator emits a column of type `citext` without ever emitting the extension that defines it. That type backs the case-insensitive unique email on `users` (so `A@x.com` and `a@x.com` collide on the unique index). A regenerated `0000` would therefore fail on any fresh database. Add new changes as new migration files; leave `0000` alone.
+
+## Health endpoints
+
+Both probes sit at the **root**, outside the API prefix, so platform orchestrators target fixed paths that never move with an API version. Both are excluded from request logging — they fire constantly and would otherwise bury real traffic.
+
+| Endpoint | Meaning |
+|---|---|
+| `GET /healthz` | Liveness. Returns `{"status":"ok"}` if the process is up. Deliberately checks no dependencies: a slow database must not get the container killed. |
+| `GET /readyz` | Readiness. Pings Postgres and Redis with a 2-second timeout each. `200` when both are up, `503` otherwise. |
+
+`/readyz` reports per-dependency status, so a failure says which one broke:
+
+```json
+{
+  "status": "ok",
+  "checks": { "db": { "status": "up" }, "redis": { "status": "up" } }
+}
+```
+
+## API
+
+The application API is served under the base path **`/api/v1`** (URI versioning — visible in logs and in `curl`, unlike header versioning). Conventions that apply to every endpoint are specified in `DESIGN.md` [§5.1](./DESIGN.md#5-api-specification):
+
+- JSON in and out; `Authorization: Bearer <token>` for staff JWTs and kiosk device tokens.
+- Money as integer minor units plus a currency code — `"totalMinor": 12000, "currency": "THB"` is ฿120.00.
+- Timestamps ISO-8601 UTC; identifiers UUIDv7 (time-ordered, so they index and paginate well).
+- Money-mutating requests accept an `Idempotency-Key` header.
+- Every non-2xx response uses one RFC 9457 problem envelope carrying a stable `code` and the `requestId`. Clients switch on `code`, never on the human-readable `detail`.
+
+Every request is assigned a correlation id, echoed as the `X-Request-Id` response header and attached to each log line and error body. An inbound `X-Request-Id` from a trusted proxy is reused only when it is a bounded, token-safe string; anything else is replaced with a generated UUID so a caller cannot forge log records or inject response headers.
+
+## Project layout
+
+```
+src/
+  config/      environment schema and boot-time validation
+  common/      cross-cutting: error envelope, exception filter, request id,
+               logger options, Zod validation pipe
+  database/    Drizzle client, connection pool, schema/ (the tables)
+  redis/       Redis client provider
+  health/      liveness and readiness probes
+  bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
+               shared by main.ts and the e2e suite so it is never untested
+  main.ts      composition root
+drizzle/       generated migrations and snapshots
+test/          integration specs
+```
+
+## Project status
+
+Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-development-roadmap). Each phase is meant to end runnable.
+
+- **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
+- **Phase 1 — Identity: next.** Staff auth (login, refresh, rotation), users CRUD, RBAC guards, kiosk device pairing and revocation, rate limiting.
+
+The schema and module boundaries were fixed in Phase 0 by the design document, so later phases add code rather than reshaping what is already here.

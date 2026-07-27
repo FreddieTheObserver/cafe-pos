@@ -43,7 +43,9 @@ export const payments = pgTable(
     check('payments_status_check', inList(t.status, paymentStatuses)),
     check('payments_amount_check', sql`${t.amountMinor} > 0`),
     index('payments_order_id_idx').on(t.orderId),
-    index('payments_provider_intent_idx').on(t.providerIntentId),
+    // §7.3 wants an index on provider_intent_id for webhook → payment matching;
+    // the column's UNIQUE constraint already supplies one. A second explicit
+    // index would cost an extra B-tree write per insert on that hot path.
     // B4: at most one non-terminal payment per order at a time.
     uniqueIndex('one_live_payment')
       .on(t.orderId)

@@ -14,6 +14,20 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
+  /**
+   * Comma-separated browser origins allowed to call the API (KDS, public board).
+   * Empty by default: same-origin and native kiosk clients need no CORS, so the
+   * permissive case has to be opted into per environment.
+   */
+  CORS_ORIGINS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    ),
 });
 
 /** Fully typed, validated config shape — inferred from the schema, never drifts. */

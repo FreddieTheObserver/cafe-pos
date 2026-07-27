@@ -24,6 +24,7 @@ const HTTP_STATUS_MAP: Record<number, { code: string; title: string }> = {
   403: { code: ErrorCode.FORBIDDEN_ROLE, title: 'Forbidden' },
   404: { code: ErrorCode.RESOURCE_NOT_FOUND, title: 'Not found' },
   409: { code: ErrorCode.CONFLICT, title: 'Conflict' },
+  413: { code: ErrorCode.PAYLOAD_TOO_LARGE, title: 'Payload too large' },
   422: { code: ErrorCode.VALIDATION_FAILED, title: 'Validation failed' },
   429: { code: ErrorCode.RATE_LIMITED, title: 'Too many requests' },
   503: { code: ErrorCode.DEPENDENCY_UNAVAILABLE, title: 'Service unavailable' },
@@ -89,29 +90,69 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
-      const mapped = HTTP_STATUS_MAP[status] ?? {
-        code: ErrorCode.INTERNAL,
-        title: 'Error',
-      };
-      return build({
-        code: mapped.code,
-        status,
-        title: mapped.title,
-        detail: extractHttpDetail(exception),
-        requestId,
-      });
+      // A 5xx carries no client-actionable information and may quote internals
+      // (driver messages, connection strings) — say nothing, log everything.
+      if (status >= 500) return internal(requestId);
+      return clientProblem(status, extractHttpDetail(exception), requestId);
+    }
+
+    // Express middleware (body-parser especially) rejects requests with plain
+    // Errors that carry an HTTP status rather than HttpExceptions. A body over
+    // the size limit is the client's mistake, not ours — reporting it as 500
+    // would page a human and hide the real cause from the caller.
+    const status = httpStatusOf(exception);
+    if (status !== undefined && status >= 400 && status < 500) {
+      return clientProblem(status, (exception as Error).message, requestId);
     }
 
     // Anything else is a bug — generic 500, details go to the log only.
-    return build({
-      code: ErrorCode.INTERNAL,
-      status: 500,
-      title: 'Internal server error',
-      detail: 'An unexpected error occurred.',
-      requestId,
-    });
+    return internal(requestId);
   }
 }
+
+/** Longest `detail` we echo back; keeps a hostile or verbose message bounded. */
+const MAX_DETAIL_LENGTH = 200;
+
+/** Reads a numeric HTTP status off an Express-style error, if it has one. */
+function httpStatusOf(exception: unknown): number | undefined {
+  const candidate = exception as
+    { status?: unknown; statusCode?: unknown } | undefined;
+  const status = candidate?.status ?? candidate?.statusCode;
+  return typeof status === 'number' ? status : undefined;
+}
+
+function clientProblem(
+  status: number,
+  detail: string,
+  requestId: string,
+): ProblemDetails {
+  const mapped = HTTP_STATUS_MAP[status] ?? {
+    code: ErrorCode.BAD_REQUEST,
+    title: 'Bad request',
+  };
+  return build({
+    code: mapped.code,
+    status,
+    title: mapped.title,
+    detail: truncate(detail),
+    requestId,
+  });
+}
+
+function internal(requestId: string): ProblemDetails {
+  return build({
+    code: ErrorCode.INTERNAL,
+    status: 500,
+    title: 'Internal server error',
+    detail: 'An unexpected error occurred.',
+    requestId,
+  });
+}
+
+const truncate = (detail: string): string =>
+  detail.length > MAX_DETAIL_LENGTH
+    ? `${detail.slice(0, MAX_DETAIL_LENGTH - 1)}…`
+    : detail;
 
 function build(p: {
   code: string;

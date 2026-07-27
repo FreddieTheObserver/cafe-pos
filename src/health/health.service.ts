@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type Redis from 'ioredis';
+import { describeError } from '../common/errors/describe-error';
 import { DRIZZLE } from '../database/drizzle.constants';
 import type { Database } from '../database/database.module';
 import { REDIS } from '../redis/redis.constants';
@@ -53,7 +54,7 @@ export class HealthService {
       await withTimeout(this.db.execute(sql`select 1`), 'db');
       return { status: 'up' };
     } catch (err) {
-      return { status: 'down', error: (err as Error).message };
+      return { status: 'down', error: describeError(err) };
     }
   }
 
@@ -63,7 +64,7 @@ export class HealthService {
       if (pong === 'PONG') return { status: 'up' };
       return { status: 'down', error: 'unexpected ping reply' };
     } catch (err) {
-      return { status: 'down', error: (err as Error).message };
+      return { status: 'down', error: describeError(err) };
     }
   }
 }

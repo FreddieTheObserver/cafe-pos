@@ -1,0 +1,1 @@
+DROP INDEX "payments_provider_intent_idx";

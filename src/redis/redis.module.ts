@@ -1,6 +1,7 @@
 import {
   Global,
   Inject,
+  Logger,
   Module,
   type OnApplicationShutdown,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { Env } from '../config/env.validation';
 import { REDIS } from './redis.constants';
+import { attachRedisDiagnostics } from './redis.diagnostics';
 
 /**
  * Provides the shared Redis client (cache, pub/sub, rate limits, queues — §12.1).
@@ -20,11 +22,16 @@ import { REDIS } from './redis.constants';
     {
       provide: REDIS,
       inject: [ConfigService],
-      useFactory: (config: ConfigService<Env, true>) =>
-        new Redis(config.get('REDIS_URL', { infer: true }), {
+      useFactory: (config: ConfigService<Env, true>) => {
+        const client = new Redis(config.get('REDIS_URL', { infer: true }), {
           maxRetriesPerRequest: 1,
           lazyConnect: false,
-        }),
+        });
+        // Attached before the first connect attempt: ioredis dumps unhandled
+        // connection errors to raw stderr otherwise, outside pino (§13).
+        attachRedisDiagnostics(client, new Logger('Redis'));
+        return client;
+      },
     },
   ],
   exports: [REDIS],

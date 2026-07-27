@@ -3,8 +3,9 @@ import type { Response } from 'express';
 import { HealthService } from './health.service';
 
 /**
- * Platform probes (§16). These live at the root (not under the API prefix) so
- * orchestrators can hit fixed paths, and they're excluded from request logging.
+ * Platform probes (§16). `configureApp` excludes these two paths from the
+ * `/api/v1` prefix (§5.1) so orchestrators keep hitting fixed, unversioned
+ * paths, and `buildLoggerOptions` keeps them out of the request log.
  */
 @Controller()
 export class HealthController {
