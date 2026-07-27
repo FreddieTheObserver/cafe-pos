@@ -1,11 +1,12 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 
+# Hard limit: 250 characters. Anything longer fails validation and CodeRabbit
+# silently falls back to its defaults, so the rest of this file is ignored too.
 tone_instructions: >-
-  Be direct and technical. Verify a claim against the code before asserting it.
-  If you cannot verify something, say so rather than stating it as fact.
-  DESIGN.md is the specification for this project; when code and DESIGN.md
-  disagree, that disagreement is itself the finding worth reporting.
+  Be direct and technical. Verify claims against the code before asserting
+  them; if you cannot verify something, say so. DESIGN.md is the spec — where
+  code and DESIGN.md disagree, that disagreement is the finding.
 
 reviews:
   profile: assertive
