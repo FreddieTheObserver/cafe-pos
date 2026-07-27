@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
+import type { PaymentStatus } from '../src/database/schema/enums';
 
 /**
  * §7.4 says the money invariants live in the schema as well as the app — "a bug
@@ -235,15 +236,18 @@ describe('database constraints (integration)', () => {
     });
 
     it('rejects a status outside the documented set', async () => {
+      // The schema's enum tuple rejects this at compile time too. Casting past
+      // that is the whole point: it proves the DB refuses it independently, the
+      // way a raw SQL path or a future bug would meet it (§7.4).
+      const unknownStatus = 'REVERSED' as PaymentStatus;
+
       const err = await expectRejection(() =>
         db.insert(schema.payments).values({
           id: uuidv7(),
           orderId,
           provider: 'STRIPE',
           method: 'CARD',
-          // @ts-expect-error the schema's enum tuple rejects this at compile
-          // time too — the point here is that the DB is the last line of defence.
-          status: 'REVERSED',
+          status: unknownStatus,
           amountMinor: 100,
         }),
       );

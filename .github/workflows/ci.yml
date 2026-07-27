@@ -1,7 +1,9 @@
 name: CI
 
 on:
+  # Scoped to main so PR branches run once (via pull_request) instead of twice.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -57,6 +59,11 @@ jobs:
 
       - name: Lint
         run: pnpm exec eslint "{src,test}/**/*.ts"
+
+      # `pnpm build` compiles with tsconfig.build.json, which excludes specs —
+      # so without this step a type error in a test file reaches main unnoticed.
+      - name: Typecheck
+        run: pnpm typecheck
 
       - name: Build
         run: pnpm build
