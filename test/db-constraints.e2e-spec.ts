@@ -25,6 +25,8 @@ describe('database constraints (integration)', () => {
   const deviceId = uuidv7();
   const orderId = uuidv7();
   const livePaymentId = uuidv7();
+  const categoryId = uuidv7();
+  const menuItemId = uuidv7();
 
   /** Postgres SQLSTATE codes we assert on. */
   const UNIQUE_VIOLATION = '23505';
@@ -72,6 +74,20 @@ describe('database constraints (integration)', () => {
       status: 'ACTIVE',
       registeredBy: userId,
     });
+    // Real catalog rows so the constraint tests below satisfy every foreign key
+    // and isolate the one constraint they name. Postgres would raise the CHECK
+    // first regardless — CHECKs run on the tuple, FKs are AFTER ROW triggers —
+    // but a test that leans on that ordering reads like a test that got lucky.
+    await db.insert(schema.categories).values({
+      id: categoryId,
+      name: `Constraint Fixture ${categoryId}`,
+    });
+    await db.insert(schema.menuItems).values({
+      id: menuItemId,
+      categoryId,
+      name: 'Latte',
+      basePriceMinor: 10000,
+    });
     await db.insert(schema.orders).values({
       id: orderId,
       orderNumber: 'A-001',
@@ -98,6 +114,12 @@ describe('database constraints (integration)', () => {
       .delete(schema.payments)
       .where(eq(schema.payments.orderId, orderId));
     await db.delete(schema.orders).where(eq(schema.orders.id, orderId));
+    await db
+      .delete(schema.menuItems)
+      .where(eq(schema.menuItems.id, menuItemId));
+    await db
+      .delete(schema.categories)
+      .where(eq(schema.categories.id, categoryId));
     await db
       .delete(schema.kioskDevices)
       .where(eq(schema.kioskDevices.id, deviceId));
@@ -205,7 +227,7 @@ describe('database constraints (integration)', () => {
         db.insert(schema.orderItems).values({
           id: uuidv7(),
           orderId,
-          menuItemId: uuidv7(),
+          menuItemId,
           nameSnapshot: 'Latte',
           unitPriceMinorSnapshot: 10000,
           quantity: 51,
@@ -223,7 +245,7 @@ describe('database constraints (integration)', () => {
       const err = await expectRejection(() =>
         db.insert(schema.payments).values({
           id: uuidv7(),
-          orderId: uuidv7(),
+          orderId,
           provider: 'CASH',
           method: 'CASH',
           status: 'SUCCEEDED',
