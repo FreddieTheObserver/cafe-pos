@@ -67,6 +67,32 @@ describe('HealthService', () => {
     expect(result.checks.redis.status).toBe('up');
   });
 
+  it('surfaces the driver cause rather than the Drizzle wrapper text', async () => {
+    db.execute.mockRejectedValue(
+      new Error('Failed query: select 1\nparams: ', {
+        cause: new Error('connect ECONNREFUSED 127.0.0.1:5432'),
+      }),
+    );
+
+    const result = await service.checkReadiness();
+
+    expect(result.checks.db).toEqual({
+      status: 'down',
+      error: 'connect ECONNREFUSED 127.0.0.1:5432',
+    });
+  });
+
+  it('keeps the outer message when the error carries no cause', async () => {
+    db.execute.mockRejectedValue(new Error('permission denied for table'));
+
+    const result = await service.checkReadiness();
+
+    expect(result.checks.db).toEqual({
+      status: 'down',
+      error: 'permission denied for table',
+    });
+  });
+
   it('reports not-ok when Redis rejects', async () => {
     redis.ping.mockRejectedValue(new Error('ECONNRESET'));
 
