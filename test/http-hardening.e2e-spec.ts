@@ -3,7 +3,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { configureApp } from '../src/bootstrap';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
-import { ProbeModule } from './fixtures/probe.module';
+import { ProbeModule, StubbedHealthModule } from './fixtures/probe.module';
 
 const ALLOWED_ORIGIN = 'https://kds.cafe.test';
 
@@ -12,7 +12,7 @@ describe('HTTP hardening (e2e)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      imports: [ProbeModule],
+      imports: [ProbeModule, StubbedHealthModule],
     }).compile();
 
     app = moduleRef.createNestApplication<NestExpressApplication>({
@@ -32,15 +32,56 @@ describe('HTTP hardening (e2e)', () => {
   const problemOf = (res: { body: unknown }): ProblemDetails =>
     res.body as ProblemDetails;
 
+  describe('API base path', () => {
+    it('serves API routes under /api/v1', async () => {
+      const res = await http()
+        .post('/api/v1/probe/echo')
+        .send({ name: 'Latte', quantity: 1 });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('does not serve API routes at the unversioned path', async () => {
+      const res = await http()
+        .post('/probe/echo')
+        .send({ name: 'Latte', quantity: 1 });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('keeps liveness at the root where orchestrators look for it', async () => {
+      const res = await http().get('/healthz');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'ok' });
+    });
+
+    it('keeps readiness at the root where orchestrators look for it', async () => {
+      const res = await http().get('/readyz');
+
+      expect(res.status).toBe(200);
+    });
+
+    it('does not also mount the probes under the base path', async () => {
+      const [liveness, readiness] = await Promise.all([
+        http().get('/api/v1/healthz'),
+        http().get('/api/v1/readyz'),
+      ]);
+
+      expect(liveness.status).toBe(404);
+      expect(readiness.status).toBe(404);
+    });
+  });
+
   describe('security headers', () => {
     it('sets nosniff so a JSON error body is never sniffed as HTML', async () => {
-      const res = await http().post('/probe/echo').send({});
+      const res = await http().post('/api/v1/probe/echo').send({});
 
       expect(res.headers['x-content-type-options']).toBe('nosniff');
     });
 
     it('stops advertising the framework in X-Powered-By', async () => {
-      const res = await http().post('/probe/echo').send({});
+      const res = await http().post('/api/v1/probe/echo').send({});
 
       expect(res.headers['x-powered-by']).toBeUndefined();
     });
@@ -49,7 +90,7 @@ describe('HTTP hardening (e2e)', () => {
   describe('CORS', () => {
     it('allows a configured browser origin', async () => {
       const res = await http()
-        .post('/probe/echo')
+        .post('/api/v1/probe/echo')
         .set('Origin', ALLOWED_ORIGIN)
         .send({ name: 'Latte', quantity: 1 });
 
@@ -58,7 +99,7 @@ describe('HTTP hardening (e2e)', () => {
 
     it('does not grant access to an unlisted origin', async () => {
       const res = await http()
-        .post('/probe/echo')
+        .post('/api/v1/probe/echo')
         .set('Origin', 'https://evil.test')
         .send({ name: 'Latte', quantity: 1 });
 
@@ -69,7 +110,7 @@ describe('HTTP hardening (e2e)', () => {
   describe('body size limit', () => {
     it('accepts a normally sized payload', async () => {
       const res = await http()
-        .post('/probe/bulk')
+        .post('/api/v1/probe/bulk')
         .send({ note: 'x'.repeat(1024) });
 
       expect(res.status).toBe(201);
@@ -79,7 +120,7 @@ describe('HTTP hardening (e2e)', () => {
       // 96 KB: under Express's 100 KB default, over our configured 64 KB —
       // so this fails if the limit silently falls back to the default.
       const res = await http()
-        .post('/probe/bulk')
+        .post('/api/v1/probe/bulk')
         .send({ note: 'x'.repeat(96 * 1024) });
 
       expect(res.status).toBe(413);
@@ -89,7 +130,7 @@ describe('HTTP hardening (e2e)', () => {
   describe('validation envelope', () => {
     it('answers 422 in the Problem Details shape when the body is invalid', async () => {
       const res = await http()
-        .post('/probe/echo')
+        .post('/api/v1/probe/echo')
         .send({ name: '', quantity: 999 });
 
       expect(res.status).toBe(422);
@@ -104,7 +145,7 @@ describe('HTTP hardening (e2e)', () => {
 
     it('lists each offending field in errors[]', async () => {
       const res = await http()
-        .post('/probe/echo')
+        .post('/api/v1/probe/echo')
         .send({ name: '', quantity: 999 });
 
       const fields = problemOf(res).errors?.map((e) => e.field);
@@ -113,7 +154,7 @@ describe('HTTP hardening (e2e)', () => {
 
     it('passes a valid body through to the handler', async () => {
       const res = await http()
-        .post('/probe/echo')
+        .post('/api/v1/probe/echo')
         .send({ name: 'Latte', quantity: '2' });
 
       expect(res.status).toBe(201);

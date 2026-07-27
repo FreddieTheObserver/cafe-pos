@@ -1,3 +1,4 @@
+import { RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 
@@ -17,6 +18,18 @@ export interface AppHardeningOptions {
  */
 const JSON_BODY_LIMIT = '64kb';
 
+/** URI versioning (§5.1): the version is visible in logs, curl and dashboards. */
+const API_PREFIX = 'api/v1';
+
+/**
+ * Platform probes stay off the prefix (§16): orchestrators are configured with
+ * fixed paths and must keep working across API versions.
+ */
+const UNPREFIXED_ROUTES = [
+  { path: 'healthz', method: RequestMethod.GET },
+  { path: 'readyz', method: RequestMethod.GET },
+];
+
 /**
  * Applies every cross-cutting HTTP concern that must hold in production.
  *
@@ -32,6 +45,8 @@ export function configureApp(
   app: NestExpressApplication,
   options: AppHardeningOptions,
 ): void {
+  app.setGlobalPrefix(API_PREFIX, { exclude: UNPREFIXED_ROUTES });
+
   // Removes X-Powered-By and sets the standard defensive headers. The API only
   // ever returns JSON, so the HTML-oriented defaults cost nothing.
   app.use(helmet());
