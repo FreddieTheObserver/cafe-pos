@@ -63,7 +63,9 @@ describe('Auth endpoints (e2e)', () => {
       bodyParser: false,
     });
     configureApp(app, { corsOrigins: [] });
-    await app.init();
+    // Bound here rather than left to supertest, which would take ownership of
+    // the server and close it — see the note in `fixtures/identity-fixtures.ts`.
+    await app.listen(0);
 
     db = app.get<Database>(DRIZZLE);
 

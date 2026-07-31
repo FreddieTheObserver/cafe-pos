@@ -42,7 +42,15 @@ export class IdentityHarness {
       bodyParser: false,
     });
     configureApp(app, { corsOrigins: [] });
-    await app.init();
+
+    // `listen(0)`, not `init()`. Handed a server that is not listening,
+    // supertest calls `app.listen(0)` itself — and the request that did so
+    // then closes that shared server the moment it completes. Sequential
+    // requests never notice; a `Promise.all` burst has its server shut down
+    // underneath it, and whichever siblings were still connecting die with
+    // ECONNRESET. Binding here means the harness owns the lifetime and
+    // supertest only ever borrows the address.
+    await app.listen(0);
 
     return new IdentityHarness(app, app.get<Database>(DRIZZLE));
   }
