@@ -1,7 +1,9 @@
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray } from 'drizzle-orm';
+import type Redis from 'ioredis';
 import request from 'supertest';
+import { REDIS } from '../src/redis/redis.constants';
 import { uuidv7 } from 'uuidv7';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
@@ -86,6 +88,14 @@ describe('Auth endpoints (e2e)', () => {
       registeredBy: id,
     });
     deviceIds.push(deviceId);
+  });
+
+  // Login allows twenty attempts per quarter-hour per address (§10.2); this
+  // suite signs in on nearly every case. The limit is covered in its own suite.
+  beforeEach(async () => {
+    const redis = app.get<Redis>(REDIS);
+    const keys = await redis.keys('throttle:*');
+    if (keys.length > 0) await redis.del(...keys);
   });
 
   afterAll(async () => {

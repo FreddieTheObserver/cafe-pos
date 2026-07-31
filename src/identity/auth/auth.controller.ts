@@ -8,6 +8,7 @@ import {
   type Principal,
   type StaffPrincipal,
 } from '../principal';
+import { RATE_LIMITS, RateLimit } from '../rate-limit/rate-limits';
 import { LoginDto, RefreshDto } from './auth.dto';
 import {
   AuthService,
@@ -39,6 +40,7 @@ export class AuthController {
    * can address, and the catalog is the contract.
    */
   @Public()
+  @RateLimit(RATE_LIMITS.login)
   @HttpCode(200)
   @Post('login')
   async login(

@@ -2,8 +2,11 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, inArray } from 'drizzle-orm';
+import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
+import { RateLimitedError } from '../src/common/errors/rate-limited.error';
+import { LoginAttemptLimiter } from '../src/identity/rate-limit/login-attempt.limiter';
 import * as schema from '../src/database/schema';
 import { AccessTokenService } from '../src/identity/auth/access-token.service';
 import { AuthService } from '../src/identity/auth/auth.service';
@@ -32,6 +35,7 @@ describe('AuthService (integration)', () => {
   let pool: Pool;
   let db: NodePgDatabase<typeof schema>;
   let service: AuthService;
+  let redis: Redis;
   const hasher = new PasswordHasher();
 
   const createdUserIds: string[] = [];
@@ -74,6 +78,7 @@ describe('AuthService (integration)', () => {
   beforeAll(() => {
     pool = new Pool({ connectionString: process.env.DATABASE_URL });
     db = drizzle(pool, { schema });
+    redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
     service = new AuthService(
       db,
       new AccessTokenService(
@@ -84,6 +89,7 @@ describe('AuthService (integration)', () => {
       ),
       hasher,
       new ConfigService({ REFRESH_TOKEN_TTL_SECONDS: REFRESH_TTL_SECONDS }),
+      new LoginAttemptLimiter(redis),
     );
   });
 
@@ -96,6 +102,7 @@ describe('AuthService (integration)', () => {
         .delete(schema.users)
         .where(inArray(schema.users.id, createdUserIds));
     }
+    await redis.quit();
     await pool.end();
   });
 
@@ -149,6 +156,39 @@ describe('AuthService (integration)', () => {
       await expect(
         service.login(user.email.toUpperCase(), PASSWORD),
       ).resolves.toMatchObject({ user: { id: user.id } });
+    });
+
+    /**
+     * §6.1: five failures per account, then a temporary lockout — and it must
+     * bite on the *account*, so an attacker rotating source addresses gains
+     * nothing.
+     */
+    it('locks the account after five wrong passwords', async () => {
+      const user = await createUser();
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await expect(
+          service.login(user.email, 'not-the-password'),
+        ).rejects.toBeInstanceOf(InvalidCredentialsError);
+      }
+
+      await expect(service.login(user.email, PASSWORD)).rejects.toBeInstanceOf(
+        RateLimitedError,
+      );
+    });
+
+    it('forgets earlier failures once a sign-in succeeds', async () => {
+      const user = await createUser();
+      await service
+        .login(user.email, 'not-the-password')
+        .catch(() => undefined);
+
+      await service.login(user.email, PASSWORD);
+
+      const failuresAfter = await redis.get(
+        `login-failures:${user.email.toLowerCase()}`,
+      );
+      expect(failuresAfter).toBeNull();
     });
 
     it('stores only the hash of the refresh token', async () => {

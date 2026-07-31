@@ -16,6 +16,7 @@ import {
   TokenInvalidError,
 } from '../errors/identity.errors';
 import type { Principal, StaffPrincipal } from '../principal';
+import { LoginAttemptLimiter } from '../rate-limit/login-attempt.limiter';
 import { AccessTokenService } from './access-token.service';
 
 export interface TokenPair {
@@ -62,12 +63,18 @@ export class AuthService {
     private readonly accessTokens: AccessTokenService,
     private readonly passwords: PasswordHasher,
     private readonly config: ConfigService<Env, true>,
+    private readonly loginAttempts: LoginAttemptLimiter,
   ) {}
 
   async login(
     email: string,
     password: string,
   ): Promise<TokenPair & { user: AuthenticatedUser }> {
+    // Checked before any work is done, so a locked-out account costs an attacker
+    // one Redis read rather than an argon2 hash — the lockout would otherwise
+    // be a free denial-of-service amplifier pointed at our own CPU.
+    await this.loginAttempts.assertNotLockedOut(email);
+
     const user = await this.db.query.users.findFirst({
       where: eq(users.email, email),
     });
@@ -80,8 +87,14 @@ export class AuthService {
     );
 
     if (!user || !user.isActive || !passwordMatches) {
+      // Counted against the address that was *asked for*, not the account we
+      // found: an attacker guessing at an email that does not exist must burn
+      // the same budget, or the lockout tells them which addresses are real.
+      await this.loginAttempts.recordFailure(email);
       throw new InvalidCredentialsError();
     }
+
+    await this.loginAttempts.clear(email);
 
     // A fresh login starts a new family: sessions on the till and on the KDS
     // are independent, so revoking one leaves the other alone.

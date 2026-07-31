@@ -1,7 +1,9 @@
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray } from 'drizzle-orm';
+import type Redis from 'ioredis';
 import request from 'supertest';
+import { REDIS } from '../../src/redis/redis.constants';
 import { uuidv7 } from 'uuidv7';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
@@ -102,6 +104,21 @@ export class IdentityHarness {
   /** Registers a device this harness did not create, so cleanup still covers it. */
   trackDevice(id: string): void {
     this.deviceIds.push(id);
+  }
+
+  /**
+   * Drops every rate-limit counter.
+   *
+   * A test suite hammers one endpoint from one address, which is exactly what
+   * §10.2's limits exist to stop — `POST /devices/activate` allows five per
+   * hour, and a suite exercising pairing blows through that in seconds. Call
+   * this between cases so each one starts from the budget it assumes; a suite
+   * that means to test the limit itself simply does not.
+   */
+  async clearRateLimits(): Promise<void> {
+    const redis = this.app.get<Redis>(REDIS);
+    const keys = await redis.keys('throttle:*');
+    if (keys.length > 0) await redis.del(...keys);
   }
 
   async close(): Promise<void> {

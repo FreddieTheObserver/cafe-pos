@@ -50,6 +50,13 @@ describe('Device endpoints (e2e)', () => {
     await harness.close();
   });
 
+  // Activation allows five attempts an hour per address (§10.2) and this suite
+  // pairs far more often than that. Resetting keeps each case testing pairing
+  // rather than the rate limit; the limit has its own suite.
+  beforeEach(async () => {
+    await harness.clearRateLimits();
+  });
+
   describe('POST /devices', () => {
     it('creates a pending device and returns the pairing code once', async () => {
       const res = await createDevice('Window Kiosk');

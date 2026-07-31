@@ -1,4 +1,5 @@
 import { Controller, Get, Res } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { Public } from '../identity/decorators/public.decorator';
 import { HealthService } from './health.service';
@@ -13,6 +14,10 @@ import { HealthService } from './health.service';
  * deliberately, this one.
  */
 @Public()
+// Orchestrators probe these on a fixed schedule from a small set of addresses;
+// counting them against a rate limit could only ever make a node look unhealthy
+// under load, which is exactly when the truth matters most.
+@SkipThrottle()
 @Controller()
 export class HealthController {
   constructor(private readonly health: HealthService) {}

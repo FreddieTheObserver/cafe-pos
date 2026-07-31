@@ -11,6 +11,7 @@ import { CurrentPrincipal } from '../decorators/current-principal.decorator';
 import { Public } from '../decorators/public.decorator';
 import { Roles } from '../decorators/roles.decorator';
 import type { StaffPrincipal } from '../principal';
+import { RATE_LIMITS, RateLimit } from '../rate-limit/rate-limits';
 import {
   ActivateDeviceDto,
   CreateDeviceDto,
@@ -47,6 +48,7 @@ export class DevicesController {
    * exists; this exchanges a code for a credential.
    */
   @Public()
+  @RateLimit(RATE_LIMITS.deviceActivation)
   @HttpCode(200)
   @Post('activate')
   activate(@Body() body: ActivateDeviceDto): Promise<ActivatedDevice> {
