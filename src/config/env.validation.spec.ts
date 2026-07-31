@@ -3,6 +3,7 @@ import { validateEnv } from './env.validation';
 const REQUIRED = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
   REDIS_URL: 'redis://localhost:6379',
+  JWT_SECRET: 'a'.repeat(32),
 };
 
 describe('validateEnv', () => {
@@ -20,13 +21,45 @@ describe('validateEnv', () => {
   });
 
   it('names every missing variable in one readable message', () => {
-    expect(() => validateEnv({})).toThrow(/DATABASE_URL[\s\S]*REDIS_URL/);
+    expect(() => validateEnv({})).toThrow(
+      /DATABASE_URL[\s\S]*REDIS_URL[\s\S]*JWT_SECRET/,
+    );
   });
 
   it('rejects an unknown NODE_ENV rather than guessing', () => {
     expect(() => validateEnv({ ...REQUIRED, NODE_ENV: 'staging' })).toThrow(
       /NODE_ENV/,
     );
+  });
+
+  describe('JWT_SECRET', () => {
+    it('rejects a secret short enough to brute-force', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, JWT_SECRET: 'short-dev-secret' }),
+      ).toThrow(/JWT_SECRET/);
+    });
+  });
+
+  describe('token lifetimes', () => {
+    it('defaults to the lifetimes §6.1 argues for', () => {
+      const env = validateEnv({ ...REQUIRED });
+
+      expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(15 * 60);
+      expect(env.REFRESH_TOKEN_TTL_SECONDS).toBe(14 * 24 * 60 * 60);
+      expect(env.PAIRING_CODE_TTL_SECONDS).toBe(10 * 60);
+    });
+
+    it('coerces an override from the string process.env hands us', () => {
+      const env = validateEnv({ ...REQUIRED, ACCESS_TOKEN_TTL_SECONDS: '300' });
+
+      expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(300);
+    });
+
+    it('rejects a non-positive lifetime', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, ACCESS_TOKEN_TTL_SECONDS: '0' }),
+      ).toThrow(/ACCESS_TOKEN_TTL_SECONDS/);
+    });
   });
 
   describe('CORS_ORIGINS', () => {
