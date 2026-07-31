@@ -95,6 +95,21 @@ export class UsersService {
    * a lockout that needs database access to undo.
    */
   async update(id: string, changes: UpdateUserInput): Promise<StaffAccount> {
+    // Only `role` and `isActive` decide who counts as an active admin, so a
+    // change touching neither cannot violate the invariant and has no reason
+    // to queue behind whoever is editing the admins. Renaming is the common
+    // edit; the guarded path below is the rare one.
+    if (changes.role === undefined && changes.isActive === undefined) {
+      const [renamed] = await this.db
+        .update(users)
+        .set(changes)
+        .where(eq(users.id, id))
+        .returning(PUBLIC_COLUMNS);
+
+      if (!renamed) throw new ResourceNotFoundError('user', id);
+      return renamed;
+    }
+
     return this.db.transaction(async (tx) => {
       // Locked in a deterministic order so two concurrent demotions queue
       // rather than deadlock. Whichever waits re-evaluates the predicate after

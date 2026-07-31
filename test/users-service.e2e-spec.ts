@@ -198,6 +198,40 @@ describe('UsersService (integration)', () => {
       ).rejects.toBeInstanceOf(ResourceNotFoundError);
     });
 
+    /**
+     * The last-admin guard locks the active ADMIN rows, which is necessary
+     * when a change could remove an admin and pure contention when it cannot.
+     * A change touching neither `role` nor `isActive` can never alter who is an
+     * admin, so it must not queue behind whatever else is editing them.
+     */
+    it('does not wait on the admin rows to rename an unrelated account', async () => {
+      await seed('ADMIN');
+      const cashier = await seed('CASHIER');
+
+      const holder = await pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          `SELECT id FROM users WHERE role = 'ADMIN' AND is_active = true FOR UPDATE`,
+        );
+
+        const rename = service.update(cashier, { displayName: 'Renamed' });
+        const timeout = new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('blocked on the admin lock')),
+            3000,
+          ),
+        );
+
+        await expect(Promise.race([rename, timeout])).resolves.toMatchObject({
+          displayName: 'Renamed',
+        });
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+    });
+
     describe('the last active administrator', () => {
       // Each case states its own admin population. Without this the previous
       // test's surviving admin (these cases are refusals, so its admin is still

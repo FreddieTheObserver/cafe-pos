@@ -8,6 +8,29 @@ const MAX_FAILURES = 5;
 const WINDOW_SECONDS = 15 * 60;
 
 /**
+ * Reads the failure count and the remaining window as one fact.
+ *
+ * KEYS[1] counter key. Returns: count, TTL in seconds (-1 no expiry, -2 no key).
+ */
+const READ_LOCKOUT_SCRIPT = `
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+return { count, redis.call('TTL', KEYS[1]) }
+`;
+
+/**
+ * Increments the failure count, setting the window on the first failure only.
+ *
+ * KEYS[1] counter key · ARGV[1] window in seconds.
+ */
+const RECORD_FAILURE_SCRIPT = `
+local failures = redis.call('INCR', KEYS[1])
+if failures == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return failures
+`;
+
+/**
  * Per-account login lockout (§6.1, §10.2).
  *
  * Separate from the throttler because it counts *failures*, not requests: a
@@ -33,27 +56,57 @@ export class LoginAttemptLimiter {
     return `login-failures:${email.trim().toLowerCase()}`;
   }
 
-  /** Throws if this account is currently locked out. Call before checking the password. */
+  /**
+   * Throws if this account is currently locked out. Call before checking the
+   * password.
+   *
+   * The count and the remaining window are read in one script so they describe
+   * the same instant. Read separately, the key can expire between them: the
+   * count still says "locked", the TTL says "no such key", and the naive
+   * reading of that is a *fresh* full-length lockout for someone whose window
+   * had just ended.
+   */
   async assertNotLockedOut(email: string): Promise<void> {
     const key = this.keyFor(email);
-    const failures = Number((await this.redis.get(key)) ?? 0);
+    const [failures, ttl] = (await this.redis.eval(
+      READ_LOCKOUT_SCRIPT,
+      1,
+      key,
+    )) as [number, number];
+
     if (failures < MAX_FAILURES) return;
 
-    const ttl = await this.redis.ttl(key);
-    throw new RateLimitedError(ttl > 0 ? ttl : WINDOW_SECONDS);
+    // A counter at the limit with no expiry (-1) would be a lockout nothing
+    // can end — no request clears it and Redis never drops it. `recordFailure`
+    // makes that unreachable, but repairing it here means a stray key from an
+    // older build, or a hand-edited one, still ages out.
+    if (ttl < 0) {
+      await this.redis.expire(key, WINDOW_SECONDS);
+      throw new RateLimitedError(WINDOW_SECONDS);
+    }
+
+    throw new RateLimitedError(ttl);
   }
 
   /**
    * Records one failed attempt.
+   *
+   * Increment and expiry are one script because they have to be one fact. Sent
+   * as two commands, a process that dies in between leaves a counter with no
+   * expiry — and since only a successful login clears it, that account is
+   * locked out permanently.
    *
    * The expiry is set only on the first failure, so the window runs from the
    * first bad attempt rather than sliding forward with each one — otherwise a
    * slow trickle of guesses would keep an account locked indefinitely.
    */
   async recordFailure(email: string): Promise<void> {
-    const key = this.keyFor(email);
-    const failures = await this.redis.incr(key);
-    if (failures === 1) await this.redis.expire(key, WINDOW_SECONDS);
+    await this.redis.eval(
+      RECORD_FAILURE_SCRIPT,
+      1,
+      this.keyFor(email),
+      WINDOW_SECONDS,
+    );
   }
 
   /** Clears the count after a successful sign-in. */

@@ -86,6 +86,58 @@ describe('LoginAttemptLimiter (integration)', () => {
     await expect(limiter.assertNotLockedOut(email)).resolves.toBeUndefined();
   });
 
+  it('reports the window that remains, not a fresh one', async () => {
+    const email = freshEmail();
+    await failTimes(email, FAILURES_ALLOWED);
+    await redis.expire(`login-failures:${email.toLowerCase()}`, 5);
+
+    const caught: unknown = await limiter
+      .assertNotLockedOut(email)
+      .catch((error: unknown) => error);
+
+    expect(
+      ((caught as RateLimitedError).meta as { retryAfterSeconds: number })
+        .retryAfterSeconds,
+    ).toBeLessThanOrEqual(5);
+  });
+
+  it('does not lock out an account whose counter has already gone', async () => {
+    const email = freshEmail();
+    await failTimes(email, FAILURES_ALLOWED);
+    await redis.del(`login-failures:${email.toLowerCase()}`);
+
+    await expect(limiter.assertNotLockedOut(email)).resolves.toBeUndefined();
+  });
+
+  /**
+   * A counter with no expiry means an account locked out *forever* — no
+   * request can clear it and Redis will never drop it. The state is only
+   * reachable if a counter is written without its expiry, which is exactly
+   * what a non-atomic increment risks when a process dies between the two
+   * calls. Whatever produced it, the lockout has to end.
+   */
+  it('repairs a counter that has no expiry, so a lockout always ends', async () => {
+    const email = freshEmail();
+    const key = `login-failures:${email.toLowerCase()}`;
+    await redis.set(key, String(FAILURES_ALLOWED));
+
+    await expect(limiter.assertNotLockedOut(email)).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+
+    expect(await redis.ttl(key)).toBeGreaterThan(0);
+  });
+
+  it('always writes the expiry alongside the count', async () => {
+    const email = freshEmail();
+
+    await limiter.recordFailure(email);
+
+    expect(
+      await redis.ttl(`login-failures:${email.toLowerCase()}`),
+    ).toBeGreaterThan(0);
+  });
+
   // users.email is CITEXT (§7.2); a lockout that misses "ADMIN@..." because it
   // was stored as "admin@..." is not a lockout.
   it('treats the account case-insensitively, as the email column does', async () => {
