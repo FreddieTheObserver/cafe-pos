@@ -19,7 +19,9 @@ describe('HTTP hardening (e2e)', () => {
       bodyParser: false,
     });
     configureApp(app, { corsOrigins: [ALLOWED_ORIGIN] });
-    await app.init();
+    // Bound here rather than left to supertest, which would take ownership of
+    // the server and close it — see the note in `fixtures/identity-fixtures.ts`.
+    await app.listen(0);
   });
 
   afterAll(async () => {

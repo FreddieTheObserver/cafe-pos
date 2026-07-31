@@ -15,6 +15,38 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   /**
+   * HS256 signing key for staff access tokens (§6.1). 32 characters is the
+   * floor because a key shorter than the digest it feeds is the weak link in
+   * the whole scheme — and a rejected boot is a much better failure than an
+   * API that issues forgeable tokens. Rotation is dual-accept (§10.5), so this
+   * is the *current* signing key.
+   */
+  JWT_SECRET: z
+    .string()
+    .min(32, 'must be at least 32 characters of high-entropy secret'),
+  /**
+   * 15 minutes (§6.1): short enough that the stateless-revocation gap is
+   * measured in minutes, long enough that a shift's worth of requests is not
+   * dominated by refreshes.
+   */
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15 * 60),
+  /** 14 days (§6.1) — a staff member returning after a week off stays logged in. */
+  REFRESH_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(14 * 24 * 60 * 60),
+  /** 10 minutes (§6.2): the window between a manager generating a code and a kiosk typing it. */
+  PAIRING_CODE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10 * 60),
+  /**
    * Comma-separated browser origins allowed to call the API (KDS, public board).
    * Empty by default: same-origin and native kiosk clients need no CORS, so the
    * permissive case has to be opted into per environment.

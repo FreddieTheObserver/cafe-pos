@@ -41,6 +41,9 @@ jobs:
       # Runners have no native Postgres, so host 5432 is free here (unlike local).
       DATABASE_URL: postgresql://cafepos:cafepos_dev_pw@localhost:5432/cafepos
       REDIS_URL: redis://localhost:6379
+      # Test-only signing key. Not a secret worth protecting — it signs nothing
+      # outside this job — but it has to clear the 32-char floor the app enforces.
+      JWT_SECRET: ci-only-jwt-signing-key-not-used-anywhere-else
 
     steps:
       - uses: actions/checkout@v4
