@@ -10,6 +10,8 @@ import { PasswordHasher } from './crypto/password.hasher';
 import { DeviceTokenService } from './devices/device-token.service';
 import { AuthenticationGuard } from './guards/authentication.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { UsersController } from './users/users.controller';
+import { UsersService } from './users/users.service';
 
 /**
  * Phase 1 (§17): staff auth, kiosk devices, and the guards enforcing §6.4.
@@ -35,12 +37,13 @@ import { RolesGuard } from './guards/roles.guard';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, UsersController],
   providers: [
     AccessTokenService,
     AuthService,
     DeviceTokenService,
     PasswordHasher,
+    UsersService,
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
