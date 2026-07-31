@@ -121,22 +121,39 @@ export class IdentityHarness {
     if (keys.length > 0) await redis.del(...keys);
   }
 
+  /**
+   * Removes this harness's rows and shuts the app down.
+   *
+   * The teardown is wrapped so `app.close()` runs even when a delete fails:
+   * without that, one failed cleanup query leaves the pg pool and the Redis
+   * connection open, Jest never exits, and the suite looks like it hung rather
+   * than like it failed.
+   */
   async close(): Promise<void> {
-    if (this.userIds.length > 0) {
-      await this.db
-        .delete(schema.refreshTokens)
-        .where(inArray(schema.refreshTokens.userId, this.userIds));
+    try {
+      if (this.userIds.length > 0) {
+        await this.db
+          .delete(schema.refreshTokens)
+          .where(inArray(schema.refreshTokens.userId, this.userIds));
+        // Devices registered *through the API* during a test reference these
+        // users, so they have to go before the users do — tracked ids alone
+        // would miss them and trip the foreign key.
+        await this.db
+          .delete(schema.kioskDevices)
+          .where(inArray(schema.kioskDevices.registeredBy, this.userIds));
+      }
+      if (this.deviceIds.length > 0) {
+        await this.db
+          .delete(schema.kioskDevices)
+          .where(inArray(schema.kioskDevices.id, this.deviceIds));
+      }
+      if (this.userIds.length > 0) {
+        await this.db
+          .delete(schema.users)
+          .where(inArray(schema.users.id, this.userIds));
+      }
+    } finally {
+      await this.app.close();
     }
-    if (this.deviceIds.length > 0) {
-      await this.db
-        .delete(schema.kioskDevices)
-        .where(inArray(schema.kioskDevices.id, this.deviceIds));
-    }
-    if (this.userIds.length > 0) {
-      await this.db
-        .delete(schema.users)
-        .where(inArray(schema.users.id, this.userIds));
-    }
-    await this.app.close();
   }
 }
