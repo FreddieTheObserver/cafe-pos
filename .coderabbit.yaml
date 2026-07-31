@@ -13,8 +13,16 @@ reviews:
   high_level_summary: true
   review_status: true
   poem: false
+  # Off deliberately. On the free tier a PR-per-phase cadence burns the review
+  # allowance on whichever PR happens to be open first — on PR #3 it produced a
+  # "review limit reached" comment and no review at all, which is worse than
+  # not being invited, because the PR looks reviewed when nothing read it.
+  #
+  # Everything below still applies when CodeRabbit is asked directly with
+  # `@coderabbitai review`, so this disables the automatic trigger, not the
+  # tool. Set back to true if the account moves off the free tier.
   auto_review:
-    enabled: true
+    enabled: false
     drafts: false
 
   path_filters:
