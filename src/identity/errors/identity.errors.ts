@@ -1,4 +1,5 @@
 import { AppException } from '../../common/errors/app.exception';
+import { ErrorCode } from '../../common/errors/error-codes';
 import type { PrincipalRole } from '../principal';
 
 /**
@@ -151,6 +152,25 @@ export class DevicePausedError extends AppException {
       status: 409,
       title: 'Device paused',
       detail: 'Ordering is paused on this device.',
+    });
+  }
+}
+
+/**
+ * A status change on a device that never completed pairing (§6.2).
+ *
+ * Carries the catalogue's generic `CONFLICT` rather than inventing a code:
+ * §9.2 is the published contract, and a case it does not name should not
+ * quietly grow one clients cannot find documented.
+ */
+export class DeviceNotPairedError extends AppException {
+  constructor() {
+    super({
+      code: ErrorCode.CONFLICT,
+      status: 409,
+      title: 'Device not paired',
+      detail:
+        'This device has not completed pairing, so its status cannot be changed.',
     });
   }
 }

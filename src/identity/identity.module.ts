@@ -8,6 +8,8 @@ import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
 import { PasswordHasher } from './crypto/password.hasher';
 import { DeviceTokenService } from './devices/device-token.service';
+import { DevicesController } from './devices/devices.controller';
+import { DevicesService } from './devices/devices.service';
 import { AuthenticationGuard } from './guards/authentication.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { UsersController } from './users/users.controller';
@@ -37,11 +39,12 @@ import { UsersService } from './users/users.service';
       }),
     }),
   ],
-  controllers: [AuthController, UsersController],
+  controllers: [AuthController, DevicesController, UsersController],
   providers: [
     AccessTokenService,
     AuthService,
     DeviceTokenService,
+    DevicesService,
     PasswordHasher,
     UsersService,
     { provide: APP_GUARD, useClass: AuthenticationGuard },
