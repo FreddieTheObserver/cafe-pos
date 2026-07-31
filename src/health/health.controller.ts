@@ -1,12 +1,18 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Public } from '../identity/decorators/public.decorator';
 import { HealthService } from './health.service';
 
 /**
  * Platform probes (§16). `configureApp` excludes these two paths from the
  * `/api/v1` prefix (§5.1) so orchestrators keep hitting fixed, unversioned
  * paths, and `buildLoggerOptions` keeps them out of the request log.
+ *
+ * Explicitly `@Public`: a kubelet has no bearer token, and the global
+ * `RolesGuard` refuses any route that does not state its policy — including,
+ * deliberately, this one.
  */
+@Public()
 @Controller()
 export class HealthController {
   constructor(private readonly health: HealthService) {}
