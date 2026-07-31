@@ -33,3 +33,11 @@ export interface DevicePrincipal {
 }
 
 export type Principal = StaffPrincipal | DevicePrincipal;
+
+/**
+ * A request after `AuthenticationGuard` has run. Declared as an alias rather
+ * than a global Express augmentation (the convention `RequestWithId` sets), so
+ * the optionality stays visible at every read site — on a `@Public()` route
+ * there genuinely is no principal.
+ */
+export type RequestWithPrincipal = { principal?: Principal };
