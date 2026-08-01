@@ -14,7 +14,7 @@ const CALLERS: Caller[] = [ANONYMOUS, ...principalRoles];
 const PUBLIC = 'PUBLIC' as const;
 
 interface MatrixRow {
-  method: 'get' | 'post' | 'patch';
+  method: 'get' | 'post' | 'patch' | 'put';
   /** The pattern Nest registered, used by the completeness check below. */
   route: string;
   /** A concrete URL; ids need not exist, because 404 is not an authz answer. */
@@ -181,6 +181,56 @@ const MATRIX: MatrixRow[] = [
     method: 'patch',
     route: '/api/v1/items/:id/availability',
     path: `/api/v1/items/${uuidv7()}/availability`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'put',
+    route: '/api/v1/items/:id/option-groups',
+    path: `/api/v1/items/${uuidv7()}/option-groups`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'post',
+    route: '/api/v1/option-groups',
+    path: '/api/v1/option-groups',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'get',
+    route: '/api/v1/option-groups',
+    path: '/api/v1/option-groups',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/option-groups/:id',
+    path: `/api/v1/option-groups/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'post',
+    route: '/api/v1/option-groups/:id/options',
+    path: `/api/v1/option-groups/${uuidv7()}/options`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/options/:id',
+    path: `/api/v1/options/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // FR-3 again, one level down: "no oat milk" is the same call as "no
+    // croissants", and the same people need to be able to make it.
+    method: 'patch',
+    route: '/api/v1/options/:id/availability',
+    path: `/api/v1/options/${uuidv7()}/availability`,
     allow: [A, M, C, B],
     body: EMPTY_BODY,
   },

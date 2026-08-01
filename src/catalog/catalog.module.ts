@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
 import { CategoriesController } from './categories/categories.controller';
 import { CategoriesService } from './categories/categories.service';
+import { ItemOptionGroupsService } from './items/item-option-groups.service';
 import { ItemsController } from './items/items.controller';
 import { ItemsService } from './items/items.service';
+import { OptionGroupsController } from './option-groups/option-groups.controller';
+import { OptionGroupsService } from './option-groups/option-groups.service';
+import { OptionsController } from './option-groups/options.controller';
 
 /**
  * Phase 2 (§17): the menu — categories, items, option groups, and the composite
@@ -14,7 +18,17 @@ import { ItemsService } from './items/items.service';
  * call it.
  */
 @Module({
-  controllers: [CategoriesController, ItemsController],
-  providers: [CategoriesService, ItemsService],
+  controllers: [
+    CategoriesController,
+    ItemsController,
+    OptionGroupsController,
+    OptionsController,
+  ],
+  providers: [
+    CategoriesService,
+    ItemsService,
+    ItemOptionGroupsService,
+    OptionGroupsService,
+  ],
 })
 export class CatalogModule {}

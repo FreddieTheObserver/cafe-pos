@@ -10,6 +10,7 @@
 
 const UNIQUE_VIOLATION = '23505';
 const FOREIGN_KEY_VIOLATION = '23503';
+const CHECK_VIOLATION = '23514';
 
 /** Drizzle wraps driver errors so the SQLSTATE can be one level down. */
 function sqlStateOf(error: unknown): string | undefined {
@@ -29,4 +30,18 @@ export function isUniqueViolation(error: unknown): boolean {
  */
 export function isForeignKeyViolation(error: unknown): boolean {
   return sqlStateOf(error) === FOREIGN_KEY_VIOLATION;
+}
+
+/**
+ * A CHECK constraint refused the row (§7.4, "constraints as the last line of
+ * defense").
+ *
+ * The DTOs validate the same rules at the edge, where they can name the
+ * offending field. This catches the cases validation structurally cannot reach
+ * — a PATCH that moves one half of a two-column invariant while the other half
+ * stays in the database — so those surface as the domain's 422 rather than a
+ * 500.
+ */
+export function isCheckViolation(error: unknown): boolean {
+  return sqlStateOf(error) === CHECK_VIOLATION;
 }

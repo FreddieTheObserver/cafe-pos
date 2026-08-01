@@ -8,6 +8,8 @@ import { AppException } from '../../common/errors/app.exception';
 export const CatalogErrorCode = {
   CATEGORY_NAME_EXISTS: 'CATEGORY_NAME_EXISTS',
   CATEGORY_UNKNOWN: 'CATEGORY_UNKNOWN',
+  OPTION_GROUP_MINMAX_INVALID: 'OPTION_GROUP_MINMAX_INVALID',
+  OPTION_GROUP_UNKNOWN: 'OPTION_GROUP_UNKNOWN',
 } as const;
 
 /**
@@ -47,6 +49,48 @@ export class CategoryUnknownError extends AppException {
       title: 'Unknown category',
       detail: 'No category with that id exists.',
       meta: { categoryId },
+    });
+  }
+}
+
+/**
+ * Selection bounds that cannot be satisfied — `minSelect` above `maxSelect`
+ * (§5.2).
+ *
+ * The DTOs reject this at the edge whenever the request carries both numbers.
+ * This exists for the case validation structurally cannot see: a PATCH that
+ * lowers `maxSelect` below a `minSelect` already in the database. The CHECK
+ * constraint catches it, and this turns that into the documented 422 instead
+ * of an unhandled driver error.
+ */
+export class OptionGroupMinMaxInvalidError extends AppException {
+  constructor() {
+    super({
+      code: CatalogErrorCode.OPTION_GROUP_MINMAX_INVALID,
+      status: 422,
+      title: 'Invalid selection bounds',
+      detail:
+        'An option group needs 0 <= minSelect <= maxSelect; this change would leave bounds nothing can satisfy.',
+    });
+  }
+}
+
+/**
+ * `PUT /items/:id/option-groups` naming groups that do not exist (§5.2).
+ *
+ * 422 rather than 404 for the same reason as `CATEGORY_UNKNOWN`: the missing
+ * things are values inside the body, not the item the URL addresses. All of
+ * the unknown ids are reported at once — a back office attaching five groups
+ * should not have to fix them one round trip at a time.
+ */
+export class OptionGroupUnknownError extends AppException {
+  constructor(optionGroupIds: string[]) {
+    super({
+      code: CatalogErrorCode.OPTION_GROUP_UNKNOWN,
+      status: 422,
+      title: 'Unknown option group',
+      detail: 'No option group exists for one or more of the ids provided.',
+      meta: { optionGroupIds },
     });
   }
 }

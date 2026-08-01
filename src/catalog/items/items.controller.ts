@@ -1,5 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put } from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { SetItemOptionGroupsDto } from './item-option-groups.dto';
+import {
+  ItemOptionGroupsService,
+  type AttachedOptionGroup,
+} from './item-option-groups.service';
 import {
   CreateItemDto,
   ItemIdParamDto,
@@ -19,7 +24,10 @@ import { ItemsService, type MenuItem } from './items.service';
  */
 @Controller('items')
 export class ItemsController {
-  constructor(private readonly items: ItemsService) {}
+  constructor(
+    private readonly items: ItemsService,
+    private readonly itemOptionGroups: ItemOptionGroupsService,
+  ) {}
 
   @Roles('ADMIN', 'MANAGER')
   @Post()
@@ -49,5 +57,18 @@ export class ItemsController {
     @Body() body: SetItemAvailabilityDto,
   ): Promise<MenuItem> {
     return this.items.setAvailability(params.id, body.isAvailable);
+  }
+
+  /**
+   * PUT, not PATCH: the body is the complete set of groups this item offers,
+   * so sending it twice leaves the same rows (§5.2's "idempotent replace").
+   */
+  @Roles('ADMIN', 'MANAGER')
+  @Put(':id/option-groups')
+  setOptionGroups(
+    @Param() params: ItemIdParamDto,
+    @Body() body: SetItemOptionGroupsDto,
+  ): Promise<AttachedOptionGroup[]> {
+    return this.itemOptionGroups.setForItem(params.id, body.optionGroupIds);
   }
 }
