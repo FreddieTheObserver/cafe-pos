@@ -10,6 +10,9 @@ export const CatalogErrorCode = {
   CATEGORY_UNKNOWN: 'CATEGORY_UNKNOWN',
   OPTION_GROUP_MINMAX_INVALID: 'OPTION_GROUP_MINMAX_INVALID',
   OPTION_GROUP_UNKNOWN: 'OPTION_GROUP_UNKNOWN',
+  IMAGE_FILE_MISSING: 'IMAGE_FILE_MISSING',
+  IMAGE_TYPE_UNSUPPORTED: 'IMAGE_TYPE_UNSUPPORTED',
+  IMAGE_UNPROCESSABLE: 'IMAGE_UNPROCESSABLE',
 } as const;
 
 /**
@@ -91,6 +94,58 @@ export class OptionGroupUnknownError extends AppException {
       title: 'Unknown option group',
       detail: 'No option group exists for one or more of the ids provided.',
       meta: { optionGroupIds },
+    });
+  }
+}
+
+/** An image upload with no `file` part — a malformed form, not a bad image. */
+export class ImageFileMissingError extends AppException {
+  constructor() {
+    super({
+      code: CatalogErrorCode.IMAGE_FILE_MISSING,
+      status: 422,
+      title: 'No file uploaded',
+      detail: 'Send the image as a multipart form field named "file".',
+    });
+  }
+}
+
+/**
+ * Upload whose bytes are not one of the accepted image formats (§10).
+ *
+ * 415 rather than 422: the request is well-formed and the field is present —
+ * the *media type* is the thing being refused, which is exactly what 415 is
+ * for. Never echoes the submitted type or filename: both are attacker-chosen
+ * strings that end up in logs and in a back office toast.
+ */
+export class ImageTypeUnsupportedError extends AppException {
+  constructor(accepted: readonly string[]) {
+    super({
+      code: CatalogErrorCode.IMAGE_TYPE_UNSUPPORTED,
+      status: 415,
+      title: 'Unsupported image type',
+      detail: 'That file is not an accepted image format.',
+      meta: { accepted: [...accepted] },
+    });
+  }
+}
+
+/**
+ * The bytes claim an accepted format but the decoder refused them — truncated,
+ * corrupt, or a decompression bomb over the pixel ceiling.
+ *
+ * Kept distinct from the type error so a back office can tell "wrong kind of
+ * file" from "this JPEG is broken", which are different things for a user to
+ * fix. The decoder's own message is deliberately not forwarded: it names
+ * internals and is derived from hostile input.
+ */
+export class ImageUnprocessableError extends AppException {
+  constructor() {
+    super({
+      code: CatalogErrorCode.IMAGE_UNPROCESSABLE,
+      status: 422,
+      title: 'Image could not be processed',
+      detail: 'That image could not be read. It may be corrupt or too large.',
     });
   }
 }

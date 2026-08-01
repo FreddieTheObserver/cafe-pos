@@ -4,6 +4,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { StorageModule } from './storage/storage.module';
 import { CommonModule } from './common/common.module';
 import { HealthModule } from './health/health.module';
 import { IdentityModule } from './identity/identity.module';
@@ -22,6 +23,7 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     }),
     DatabaseModule,
     RedisModule,
+    StorageModule,
     CommonModule,
     HealthModule,
     IdentityModule,
