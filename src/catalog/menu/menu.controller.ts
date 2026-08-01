@@ -40,9 +40,13 @@ export class MenuController {
   async get(@Req() request: Request, @Res() response: Response): Promise<void> {
     response.setHeader('Cache-Control', CACHE_CONTROL);
 
-    // Null means Redis is unreachable. The menu is still served — from
-    // Postgres, without an ETag, so nobody caches a document we cannot
-    // invalidate.
+    // Null means Redis is unreachable. The menu is still served, built fresh
+    // from Postgres and without an ETag. `no-cache` above does not stop a
+    // client storing that response — it stops it *reusing* one without
+    // revalidating — and with no validator to revalidate against, every
+    // revalidation is a full re-download. So nobody can serve a document we
+    // have lost the ability to invalidate; while Redis is down the cost is
+    // bandwidth, not staleness.
     const version = await this.menu.currentVersion();
 
     if (version !== null) {

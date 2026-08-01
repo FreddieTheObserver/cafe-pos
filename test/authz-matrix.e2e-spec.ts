@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { uuidv7 } from 'uuidv7';
+import { CORS_METHODS } from '../src/bootstrap';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import type { PrincipalRole } from '../src/identity/principal';
 import { principalRoles } from '../src/identity/principal';
@@ -387,5 +388,31 @@ describe('AuthZ matrix (e2e)', () => {
     expect(registeredApiRoutes(harness.app).sort()).toEqual(
       MATRIX.map((row) => `${row.method} ${row.route}`).sort(),
     );
+  });
+
+  /**
+   * The CORS allowlist has to cover every method the app actually serves.
+   *
+   * Phase 2 shipped `PUT /items/:id/option-groups` while the list still read
+   * GET/POST/PATCH/DELETE. Nothing failed: CORS is off unless `CORS_ORIGINS` is
+   * set, so the browser back office (§2.1) would have hit failed preflights on
+   * that route only in an environment where it was configured — the deployed
+   * one. Route introspection already lives in this file, so the check belongs
+   * here rather than in the hardening suite, which boots a probe module and
+   * cannot see the real surface.
+   */
+  it('advertises every method the application routes as CORS-allowed', () => {
+    const served = new Set(
+      registeredApiRoutes(harness.app).map((route) =>
+        route.split(' ')[0].toUpperCase(),
+      ),
+    );
+
+    const unadvertised = [...served].filter(
+      (method) =>
+        !CORS_METHODS.includes(method as (typeof CORS_METHODS)[number]),
+    );
+
+    expect(unadvertised).toEqual([]);
   });
 });

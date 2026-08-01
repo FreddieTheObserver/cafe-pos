@@ -22,6 +22,17 @@ const JSON_BODY_LIMIT = '64kb';
 const API_PREFIX = 'api/v1';
 
 /**
+ * Methods a configured browser origin may use.
+ *
+ * Exported so the authz sweep can assert it covers every method the app
+ * actually routes. Phase 2 proved that matters: `PUT /items/:id/option-groups`
+ * shipped while this list still read GET/POST/PATCH/DELETE, which would have
+ * failed preflight for the back office (§2.1) the moment CORS was switched on
+ * — and no test would have noticed, because CORS is off by default.
+ */
+export const CORS_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
+
+/**
  * Platform probes stay off the prefix (§16): orchestrators are configured with
  * fixed paths and must keep working across API versions.
  */
@@ -58,7 +69,7 @@ export function configureApp(
   if (options.corsOrigins.length > 0) {
     app.enableCors({
       origin: options.corsOrigins,
-      methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+      methods: [...CORS_METHODS],
       allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key'],
       exposedHeaders: ['X-Request-Id'],
       credentials: false,

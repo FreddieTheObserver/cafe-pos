@@ -48,7 +48,7 @@ export class MenuCacheService {
       const version = await this.redis.get(VERSION_KEY);
       return version ?? String(await this.redis.incr(VERSION_KEY));
     } catch (error) {
-      this.warn('read the catalog version', error);
+      this.warn('read the catalog version', 'serving the menu uncached', error);
       return null;
     }
   }
@@ -57,7 +57,7 @@ export class MenuCacheService {
     try {
       return await this.redis.get(DOCUMENT_KEY_PREFIX + version);
     } catch (error) {
-      this.warn('read the cached menu', error);
+      this.warn('read the cached menu', 'rebuilding it from Postgres', error);
       return null;
     }
   }
@@ -71,7 +71,7 @@ export class MenuCacheService {
         DOCUMENT_TTL_SECONDS,
       );
     } catch (error) {
-      this.warn('cache the menu', error);
+      this.warn('cache the menu', 'the next read will rebuild it', error);
     }
   }
 
@@ -80,13 +80,25 @@ export class MenuCacheService {
     try {
       await this.redis.incr(VERSION_KEY);
     } catch (error) {
-      this.warn('bump the catalog version', error);
+      // The one failure here with a correctness consequence rather than just a
+      // cost: the write landed in Postgres but kiosks keep being handed the
+      // document from before it, and their ETag still matches, so they will not
+      // even ask again until the cached copy expires.
+      this.warn(
+        'invalidate the menu cache',
+        'kiosks may hold a menu that is out of date by one or more writes until the cached document expires',
+        error,
+      );
     }
   }
 
-  private warn(action: string, error: unknown): void {
-    this.logger.warn(
-      `Could not ${action}; serving the menu uncached. ${String(error)}`,
-    );
+  /**
+   * Consequences are spelled out per call site rather than shared. On-call is
+   * reading these to decide whether anything is actually wrong, and "serving
+   * the menu uncached" against a failed *invalidation* would describe the one
+   * case that is not happening.
+   */
+  private warn(action: string, consequence: string, error: unknown): void {
+    this.logger.warn(`Could not ${action}; ${consequence}. ${String(error)}`);
   }
 }
