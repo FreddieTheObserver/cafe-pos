@@ -1,5 +1,15 @@
-import { Body, Controller, Get, Param, Patch, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { CatalogWriteInterceptor } from '../menu/catalog-write.interceptor';
 import { SetItemOptionGroupsDto } from './item-option-groups.dto';
 import {
   ItemOptionGroupsService,
@@ -22,6 +32,7 @@ import { ItemsService, type MenuItem } from './items.service';
  * and making them find a manager first is how a kiosk keeps selling something
  * the cafe cannot make. Everything else here stays manager-and-above.
  */
+@UseInterceptors(CatalogWriteInterceptor)
 @Controller('items')
 export class ItemsController {
   constructor(

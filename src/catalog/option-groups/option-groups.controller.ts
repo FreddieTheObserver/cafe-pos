@@ -1,5 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { CatalogWriteInterceptor } from '../menu/catalog-write.interceptor';
 import {
   CreateOptionDto,
   CreateOptionGroupDto,
@@ -18,6 +27,7 @@ import {
  * the routes any staff member may reach are the availability toggles, and
  * those live on the individual option.
  */
+@UseInterceptors(CatalogWriteInterceptor)
 @Controller('option-groups')
 export class OptionGroupsController {
   constructor(private readonly groups: OptionGroupsService) {}

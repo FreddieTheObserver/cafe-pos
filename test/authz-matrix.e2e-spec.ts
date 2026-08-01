@@ -234,6 +234,14 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M, C, B],
     body: EMPTY_BODY,
   },
+  {
+    // The one catalog route a kiosk may call, and the only read it needs
+    // (FR-4). Everything else in this phase is back office.
+    method: 'get',
+    route: '/api/v1/menu',
+    path: '/api/v1/menu',
+    allow: [A, M, C, B, K],
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */

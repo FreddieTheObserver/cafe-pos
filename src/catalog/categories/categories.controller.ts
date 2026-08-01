@@ -1,5 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { CatalogWriteInterceptor } from '../menu/catalog-write.interceptor';
 import {
   CategoryIdParamDto,
   CreateCategoryDto,
@@ -18,6 +27,7 @@ import { CategoriesService, type Category } from './categories.service';
  * filters to active categories, and a manager reactivating one she deactivated
  * last week needs to see exactly the rows that read omits.
  */
+@UseInterceptors(CatalogWriteInterceptor)
 @Controller('categories')
 export class CategoriesController {
   constructor(private readonly cats: CategoriesService) {}

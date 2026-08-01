@@ -1,5 +1,12 @@
-import { Body, Controller, Param, Patch } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Param,
+  Patch,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { CatalogWriteInterceptor } from '../menu/catalog-write.interceptor';
 import {
   OptionIdParamDto,
   SetOptionAvailabilityDto,
@@ -18,6 +25,7 @@ import { OptionGroupsService, type Option } from './option-groups.service';
  * split is the stricter reading — a barista gets exactly the one field FR-3
  * promises and no path to the price.
  */
+@UseInterceptors(CatalogWriteInterceptor)
 @Controller('options')
 export class OptionsController {
   constructor(private readonly groups: OptionGroupsService) {}
