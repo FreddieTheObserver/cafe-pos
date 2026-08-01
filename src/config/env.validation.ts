@@ -12,7 +12,11 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'minio']);
 function isSecureOrLocal(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' || LOCAL_HOSTS.has(url.hostname);
+    // The scheme is constrained in both branches. Checking only the hostname
+    // for the local case would admit `ftp://localhost/...`, which parses as a
+    // URL, passes a "localhost is fine" rule, and serves no images.
+    if (url.protocol === 'https:') return true;
+    return url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname);
   } catch {
     return false;
   }

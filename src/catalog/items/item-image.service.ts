@@ -35,7 +35,7 @@ const WEBP_QUALITY = 82;
 const OUTPUT_CONTENT_TYPE = 'image/webp';
 const KEY_PREFIX = 'items';
 
-/** What a client may declare, and what the bytes must actually turn out to be. */
+/** What the bytes must actually turn out to be. */
 export const ACCEPTED_IMAGE_TYPES = [
   'image/jpeg',
   'image/png',
@@ -43,12 +43,23 @@ export const ACCEPTED_IMAGE_TYPES = [
 ] as const;
 
 /**
- * Identifies the format from the bytes themselves.
+ * Declared types that state nothing rather than claiming something.
  *
- * The declared `Content-Type` is chosen by the caller, so it is a hint and
- * never a decision (§10's "MIME + magic-byte check"). GIF and SVG are absent
- * on purpose — SVG is a document format that can carry script, and serving one
- * from the image origin would be stored XSS on a tablet the public can touch.
+ * Browsers fill this in from the file, but plenty of HTTP clients label every
+ * file part `application/octet-stream`, and busboy substitutes that when a
+ * part carries no type at all. Refusing those would turn a header that carries
+ * no information into a rejection of a perfectly good JPEG — and the sniff
+ * still has the final say either way.
+ */
+const UNSTATED_CONTENT_TYPES = new Set(['', 'application/octet-stream']);
+
+/**
+ * Identifies the format from the bytes themselves — the only thing that admits
+ * a file (§10's "MIME + magic-byte check").
+ *
+ * GIF and SVG are absent on purpose. SVG is a document format that can carry
+ * script, and serving one from the image origin would be stored XSS on a
+ * tablet the public can touch.
  */
 function sniffImageType(buffer: Buffer): string | null {
   if (buffer.length >= 3 && buffer.subarray(0, 3).equals(JPEG_MAGIC)) {
@@ -124,11 +135,20 @@ export class ItemImageService {
   }
 
   private async reencode(file: UploadedImage): Promise<Buffer> {
-    // The cheap check first, so an obviously wrong upload never reaches the
-    // decoder at all.
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.mimetype as never)) {
+    // The declared type can only ever *reject*, never admit. It is chosen by
+    // the caller, so a claim matching the accepted set proves nothing — but a
+    // claim contradicting it is a client that has misunderstood the endpoint,
+    // and saying so before decoding gives a clearer answer than "unprocessable"
+    // would. A type that states nothing is passed straight to the sniff.
+    const declared = file.mimetype.trim().toLowerCase();
+    const contradictsTheAcceptedSet =
+      !UNSTATED_CONTENT_TYPES.has(declared) &&
+      !ACCEPTED_IMAGE_TYPES.includes(declared as never);
+    if (contradictsTheAcceptedSet) {
       throw new ImageTypeUnsupportedError(ACCEPTED_IMAGE_TYPES);
     }
+
+    // The decision.
     if (sniffImageType(file.buffer) === null) {
       throw new ImageTypeUnsupportedError(ACCEPTED_IMAGE_TYPES);
     }

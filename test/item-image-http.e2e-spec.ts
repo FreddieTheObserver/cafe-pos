@@ -255,8 +255,40 @@ describe('Item image upload (e2e)', () => {
 
   describe('what it refuses', () => {
     /**
-     * The declared content type is chosen by the caller, so it cannot be the
-     * decision. These bytes are a plain text file wearing `image/png`.
+     * `application/octet-stream` is what several HTTP clients label every file
+     * part, and what busboy substitutes when a part carries no type. It states
+     * nothing, so it must not be read as a wrong claim — the bytes decide.
+     */
+    it('accepts real image bytes labelled with a type that states nothing', async () => {
+      const res = await upload(
+        await seedItem(),
+        await png(400, 300),
+        'unlabelled',
+        'application/octet-stream',
+      );
+
+      expect(res.status).toBe(200);
+      expect(itemOf(res).imageUrl).toContain('.webp');
+    });
+
+    // A declared type can still reject: this one contradicts the accepted set
+    // rather than declining to state anything, which is a client that has
+    // misunderstood the endpoint.
+    it('rejects real image bytes declaring a type it does not accept', async () => {
+      const res = await upload(
+        await seedItem(),
+        await png(400, 300),
+        'animated.gif',
+        'image/gif',
+      );
+
+      expect(res.status).toBe(415);
+      expect(problemOf(res).code).toBe('IMAGE_TYPE_UNSUPPORTED');
+    });
+
+    /**
+     * The declared content type is chosen by the caller, so it cannot be what
+     * admits a file. These bytes are a plain text file wearing `image/png`.
      */
     it('rejects non-image bytes declaring an image type', async () => {
       const res = await upload(

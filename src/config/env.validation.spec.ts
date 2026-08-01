@@ -128,6 +128,21 @@ describe('validateEnv', () => {
       );
     });
 
+    /**
+     * The localhost exemption is about TLS not being terminated in front of
+     * MinIO — it is not permission to use any scheme at all. `ftp://localhost`
+     * parses as a URL and has a local hostname, so a rule that only looked at
+     * the host would admit it and produce image URLs nothing can load.
+     */
+    it('rejects a non-http scheme even on localhost', () => {
+      expect(() =>
+        validateEnv({
+          ...REQUIRED,
+          S3_PUBLIC_BASE_URL: 'ftp://localhost/cafepos-media',
+        }),
+      ).toThrow(/S3_PUBLIC_BASE_URL/);
+    });
+
     it('rejects a remote origin over plain http', () => {
       expect(() =>
         validateEnv({

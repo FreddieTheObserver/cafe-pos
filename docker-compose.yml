@@ -33,7 +33,9 @@ services:
   # S3-compatible client it uses in production, so the adapter code is
   # identical and only the endpoint and credentials change per environment.
   minio:
-    image: minio/minio:latest
+    # Pinned like postgres and redis above. `latest` would let a MinIO release
+    # change local dev and CI with no commit to point at when something breaks.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: cafepos-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
