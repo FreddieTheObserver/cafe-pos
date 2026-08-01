@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
+import { isUniqueViolation } from '../../common/database/postgres-errors';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
@@ -45,8 +46,6 @@ const PUBLIC_COLUMNS = {
   role: users.role,
   isActive: users.isActive,
 } as const;
-
-const UNIQUE_VIOLATION = '23505';
 
 /** Staff account management (§5.2). */
 @Injectable()
@@ -178,10 +177,4 @@ export class UsersService {
     // cover, and does not count.
     if (count === 0) throw new LastAdminError();
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  // Drizzle wraps driver errors, so the SQLSTATE can be one level down.
-  const cause = (error as { cause?: unknown }).cause ?? error;
-  return (cause as { code?: string }).code === UNIQUE_VIOLATION;
 }

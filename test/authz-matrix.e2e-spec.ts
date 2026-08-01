@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { uuidv7 } from 'uuidv7';
+import { CORS_METHODS } from '../src/bootstrap';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import type { PrincipalRole } from '../src/identity/principal';
 import { principalRoles } from '../src/identity/principal';
@@ -14,7 +15,7 @@ const CALLERS: Caller[] = [ANONYMOUS, ...principalRoles];
 const PUBLIC = 'PUBLIC' as const;
 
 interface MatrixRow {
-  method: 'get' | 'post' | 'patch';
+  method: 'get' | 'post' | 'patch' | 'put';
   /** The pattern Nest registered, used by the completeness check below. */
   route: string;
   /** A concrete URL; ids need not exist, because 404 is not an authz answer. */
@@ -129,6 +130,118 @@ const MATRIX: MatrixRow[] = [
     route: '/api/v1/devices/:id/revoke',
     path: `/api/v1/devices/${uuidv7()}/revoke`,
     allow: [A, M],
+  },
+  {
+    method: 'post',
+    route: '/api/v1/categories',
+    path: '/api/v1/categories',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // Management read, not the kiosk one: it returns inactive categories too,
+    // which is why a kiosk has no business here. `GET /menu` is its route.
+    method: 'get',
+    route: '/api/v1/categories',
+    path: '/api/v1/categories',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/categories/:id',
+    path: `/api/v1/categories/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'post',
+    route: '/api/v1/items',
+    path: '/api/v1/items',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // Management read: returns 86'd items too, which is why the kiosk is not
+    // on this row. `GET /menu` is its route.
+    method: 'get',
+    route: '/api/v1/items',
+    path: '/api/v1/items',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/items/:id',
+    path: `/api/v1/items/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // FR-3: *any* staff member may 86 an item — the person who finds the oat
+    // milk gone is whoever is at the bar. Still no kiosk: a tablet reads the
+    // menu, it does not edit it.
+    method: 'patch',
+    route: '/api/v1/items/:id/availability',
+    path: `/api/v1/items/${uuidv7()}/availability`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'put',
+    route: '/api/v1/items/:id/option-groups',
+    path: `/api/v1/items/${uuidv7()}/option-groups`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'post',
+    route: '/api/v1/option-groups',
+    path: '/api/v1/option-groups',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'get',
+    route: '/api/v1/option-groups',
+    path: '/api/v1/option-groups',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/option-groups/:id',
+    path: `/api/v1/option-groups/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'post',
+    route: '/api/v1/option-groups/:id/options',
+    path: `/api/v1/option-groups/${uuidv7()}/options`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/options/:id',
+    path: `/api/v1/options/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // FR-3 again, one level down: "no oat milk" is the same call as "no
+    // croissants", and the same people need to be able to make it.
+    method: 'patch',
+    route: '/api/v1/options/:id/availability',
+    path: `/api/v1/options/${uuidv7()}/availability`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
+  {
+    // The one catalog route a kiosk may call, and the only read it needs
+    // (FR-4). Everything else in this phase is back office.
+    method: 'get',
+    route: '/api/v1/menu',
+    path: '/api/v1/menu',
+    allow: [A, M, C, B, K],
   },
 ];
 
@@ -275,5 +388,31 @@ describe('AuthZ matrix (e2e)', () => {
     expect(registeredApiRoutes(harness.app).sort()).toEqual(
       MATRIX.map((row) => `${row.method} ${row.route}`).sort(),
     );
+  });
+
+  /**
+   * The CORS allowlist has to cover every method the app actually serves.
+   *
+   * Phase 2 shipped `PUT /items/:id/option-groups` while the list still read
+   * GET/POST/PATCH/DELETE. Nothing failed: CORS is off unless `CORS_ORIGINS` is
+   * set, so the browser back office (§2.1) would have hit failed preflights on
+   * that route only in an environment where it was configured — the deployed
+   * one. Route introspection already lives in this file, so the check belongs
+   * here rather than in the hardening suite, which boots a probe module and
+   * cannot see the real surface.
+   */
+  it('advertises every method the application routes as CORS-allowed', () => {
+    const served = new Set(
+      registeredApiRoutes(harness.app).map((route) =>
+        route.split(' ')[0].toUpperCase(),
+      ),
+    );
+
+    const unadvertised = [...served].filter(
+      (method) =>
+        !CORS_METHODS.includes(method as (typeof CORS_METHODS)[number]),
+    );
+
+    expect(unadvertised).toEqual([]);
   });
 });
