@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { CategoriesController } from './categories/categories.controller';
 import { CategoriesService } from './categories/categories.service';
+import { ItemsController } from './items/items.controller';
+import { ItemsService } from './items/items.service';
 
 /**
  * Phase 2 (§17): the menu — categories, items, option groups, and the composite
@@ -12,7 +14,7 @@ import { CategoriesService } from './categories/categories.service';
  * call it.
  */
 @Module({
-  controllers: [CategoriesController],
-  providers: [CategoriesService],
+  controllers: [CategoriesController, ItemsController],
+  providers: [CategoriesService, ItemsService],
 })
 export class CatalogModule {}

@@ -152,6 +152,38 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M],
     body: EMPTY_BODY,
   },
+  {
+    method: 'post',
+    route: '/api/v1/items',
+    path: '/api/v1/items',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // Management read: returns 86'd items too, which is why the kiosk is not
+    // on this row. `GET /menu` is its route.
+    method: 'get',
+    route: '/api/v1/items',
+    path: '/api/v1/items',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/items/:id',
+    path: `/api/v1/items/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // FR-3: *any* staff member may 86 an item — the person who finds the oat
+    // milk gone is whoever is at the bar. Still no kiosk: a tablet reads the
+    // menu, it does not edit it.
+    method: 'patch',
+    route: '/api/v1/items/:id/availability',
+    path: `/api/v1/items/${uuidv7()}/availability`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */
