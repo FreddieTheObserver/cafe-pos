@@ -44,9 +44,35 @@ jobs:
       # Test-only signing key. Not a secret worth protecting — it signs nothing
       # outside this job — but it has to clear the 32-char floor the app enforces.
       JWT_SECRET: ci-only-jwt-signing-key-not-used-anywhere-else
+      # Object storage (§12.4), same MinIO the compose stack runs locally.
+      S3_BUCKET: cafepos-media
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: cafepos
+      S3_SECRET_ACCESS_KEY: cafepos_dev_secret
+      S3_ENDPOINT: http://localhost:9000
+      S3_PUBLIC_BASE_URL: http://localhost:9000/cafepos-media
+      # The bucket is a job-scoped container here, so let the app create it
+      # rather than adding an mc step just to mkdir.
+      S3_AUTO_CREATE_BUCKET: 'true'
 
     steps:
       - uses: actions/checkout@v4
+
+      # Not a `services:` entry: minio/minio needs `server /data` as its
+      # command, and service containers cannot override one.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=cafepos \
+            -e MINIO_ROOT_PASSWORD=cafepos_dev_secret \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9000/minio/health/live; then exit 0; fi
+            sleep 1
+          done
+          echo "MinIO did not become healthy" >&2
+          docker logs minio >&2
+          exit 1
 
       - uses: pnpm/action-setup@v4
         with:

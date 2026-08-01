@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CategoriesController } from './categories/categories.controller';
 import { CategoriesService } from './categories/categories.service';
+import { ItemImageService } from './items/item-image.service';
 import { ItemOptionGroupsService } from './items/item-option-groups.service';
 import { ItemsController } from './items/items.controller';
 import { ItemsService } from './items/items.service';
@@ -33,6 +34,7 @@ import { OptionsController } from './option-groups/options.controller';
     CategoriesService,
     ItemsService,
     ItemOptionGroupsService,
+    ItemImageService,
     OptionGroupsService,
     MenuService,
     MenuCacheService,

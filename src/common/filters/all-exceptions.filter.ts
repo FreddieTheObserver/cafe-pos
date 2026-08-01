@@ -96,6 +96,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return clientProblem(status, extractHttpDetail(exception), requestId);
     }
 
+    // multer is the same category as body-parser below, except its errors
+    // carry a `code` and no status at all — so without this an oversized image
+    // upload would be reported as a 500 and page someone over a manager
+    // picking too big a photo.
+    const multerStatus = multerStatusOf(exception);
+    if (multerStatus !== undefined) {
+      return clientProblem(
+        multerStatus,
+        (exception as Error).message,
+        requestId,
+      );
+    }
+
     // Express middleware (body-parser especially) rejects requests with plain
     // Errors that carry an HTTP status rather than HttpExceptions. A body over
     // the size limit is the client's mistake, not ours — reporting it as 500
@@ -112,6 +125,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
 /** Longest `detail` we echo back; keeps a hostile or verbose message bounded. */
 const MAX_DETAIL_LENGTH = 200;
+
+/**
+ * Recognised structurally rather than by importing multer, which is a
+ * transitive dependency of the Express platform adapter and has no business
+ * being a direct import of the generic error filter.
+ */
+function multerStatusOf(exception: unknown): number | undefined {
+  const candidate = exception as { name?: unknown; code?: unknown };
+  if (candidate?.name !== 'MulterError') return undefined;
+  // Every other limit (part counts, field sizes, an unexpected field name) is
+  // a malformed form rather than an oversized one.
+  return candidate.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+}
 
 /** Reads a numeric HTTP status off an Express-style error, if it has one. */
 function httpStatusOf(exception: unknown): number | undefined {

@@ -186,6 +186,16 @@ const MATRIX: MatrixRow[] = [
     body: EMPTY_BODY,
   },
   {
+    // Multipart, but the sweep only asks whether the guards let the caller
+    // through — an empty body reaches the handler and fails on the missing
+    // file part, which is well past the point this test cares about.
+    method: 'post',
+    route: '/api/v1/items/:id/image',
+    path: `/api/v1/items/${uuidv7()}/image`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
     method: 'put',
     route: '/api/v1/items/:id/option-groups',
     path: `/api/v1/items/${uuidv7()}/option-groups`,

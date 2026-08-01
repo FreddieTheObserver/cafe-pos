@@ -13,16 +13,18 @@ Because the kiosk is unattended, the backend has to be the adult in the room: pr
 | Runtime | Node.js 22, TypeScript, NestJS 11 (modular monolith) |
 | Database | PostgreSQL 16 with Drizzle ORM; migrations via `drizzle-kit` |
 | Cache / pub-sub | Redis 7 |
-| Validation | Zod — for environment config and (from Phase 1) request bodies |
+| Object storage | S3-compatible (MinIO locally), for item images |
+| Validation | Zod — for environment config and request bodies |
+| Image processing | sharp — every upload is decoded and re-encoded to WebP |
 | Logging | pino via `nestjs-pino`, JSON in production |
-| Tests | Jest (unit) + Jest/supertest against real Postgres (integration) |
+| Tests | Jest (unit) + Jest/supertest against real Postgres, Redis and MinIO (integration) |
 | Package manager | pnpm |
 
 ## Prerequisites
 
 - Node.js 22 (the version CI builds against)
 - pnpm 10
-- Docker with Compose v2, for Postgres and Redis
+- Docker with Compose v2, for Postgres, Redis and MinIO
 
 ## First-time setup
 
@@ -30,7 +32,7 @@ From a fresh clone:
 
 ```bash
 cp .env.example .env      # defaults already match docker-compose.yml
-docker compose up -d      # Postgres on host port 5433, Redis on 6379
+docker compose up -d      # Postgres on 5433, Redis on 6379, MinIO on 9000/9001
 pnpm install
 pnpm db:migrate           # applies drizzle/*.sql to the running database
 pnpm start:dev
@@ -46,6 +48,8 @@ curl http://localhost:3000/readyz
 Both should return `200`. If `/readyz` returns `503`, the body names the failing dependency — see [Health endpoints](#health-endpoints).
 
 > **Postgres is published on host port `5433`, not `5432`.** A native PostgreSQL install commonly already owns 5432 on a developer machine, and a silent connection to the wrong server is a miserable way to lose an afternoon. `.env.example` therefore points at `5433`. CI runs on a runner with no native Postgres, so the workflow uses `5432` — that difference between `.env.example` and `.github/workflows/ci.yml` is deliberate, not drift.
+
+> **MinIO stands in for S3.** The API talks to it through the same S3-compatible client it uses in production, so only the endpoint and credentials differ between environments. `S3_AUTO_CREATE_BUCKET=true` in `.env.example` lets the app create the bucket (and mark it publicly readable) at boot, which is why local setup needs no `mc` step; that flag defaults to **off**, because in production the bucket is infrastructure with lifecycle and access policies attached. The MinIO console is at <http://localhost:9001> with the credentials from `.env`, and is the quickest way to see what the upload pipeline actually wrote.
 
 ## Running the app
 
@@ -73,7 +77,9 @@ pnpm test:cov      # the same, with coverage
 pnpm test:e2e      # integration specs (test/*.e2e-spec.ts)
 ```
 
-`pnpm test:e2e` talks to the **real** Postgres from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
+`pnpm test:e2e` talks to the **real** Postgres, Redis and MinIO from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
+
+Two suites point the real clients at dependencies that are deliberately **not** running — `menu-cache-degraded` at a closed Redis port, `object-storage-degraded` at a closed S3 endpoint. They need no setup, and they exist because a hand-written `new Error('boom')` does not reproduce the error shapes those SDKs actually raise. Between them they pin the two opposite policies: the menu cache fails **open** (Redis down still serves a menu), object storage fails **fast** (an unreachable bucket refuses the boot instead of surfacing at the first upload).
 
 The integration suite exists to check the claims a unit test cannot: that the money and state constraints described in `DESIGN.md` §7.4 are actually armed in a migrated database, and that the HTTP hardening (body limit, CORS policy, error envelope) holds on a real server.
 
@@ -96,8 +102,15 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | Staff access-token lifetime (15 minutes, `DESIGN.md` §6.1). |
 | `REFRESH_TOKEN_TTL_SECONDS` | `1209600` | Refresh-token lifetime (14 days, §6.1). |
 | `PAIRING_CODE_TTL_SECONDS` | `600` | How long a kiosk pairing code stays usable (10 minutes, §6.2). |
+| `S3_BUCKET` | — | Required. Bucket holding item images. |
+| `S3_REGION` | `us-east-1` | Region passed to the S3 client. MinIO ignores it; AWS does not. |
+| `S3_ACCESS_KEY_ID` | — | Required. Object-storage access key. |
+| `S3_SECRET_ACCESS_KEY` | — | Required. Object-storage secret key. |
+| `S3_ENDPOINT` | unset | Overrides the AWS endpoint so the same client can address MinIO. Leave unset in production, where the SDK resolves the real regional endpoint. Setting it also switches the client to path-style addressing, which MinIO requires. |
+| `S3_PUBLIC_BASE_URL` | — | Required. Public origin images are served from — the CDN in front of the bucket. Must be `https` anywhere but localhost: kiosks render these URLs, and a plaintext image source is both tamperable and mixed content. Trailing slashes are stripped. |
+| `S3_AUTO_CREATE_BUCKET` | `false` | Creates the bucket at boot when missing, and marks it publicly readable. For MinIO and CI only. Off in production, where a bucket the app can conjure is a deployment pointed at the wrong account that nobody notices. |
 
-`.env` is for local development only. Real secrets (production database URL, JWT signing keys, Stripe keys) come from the platform secret store and are never committed.
+`.env` is for local development only. Real secrets (production database URL, JWT signing keys, object-storage credentials, Stripe keys) come from the platform secret store and are never committed.
 
 ## Database and migrations
 
@@ -160,6 +173,20 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `GET /devices` | List the fleet with status and last-seen | A, M |
 | `PATCH /devices/:id` | Rename, or pause/resume ordering | A, M |
 | `POST /devices/:id/revoke` | Kill a tablet's token immediately | A, M |
+| `GET /menu` | The whole menu in one call — categories → items → option groups → options, with `ETag` | A, M, C, B, K |
+| `POST` `GET` `PATCH /categories` | Manage categories | A, M |
+| `POST` `GET` `PATCH /items` | Manage items (name, price, photo, category) | A, M |
+| `PATCH /items/:id/availability` | 86 / un-86 an item | A, M, C, B |
+| `POST /items/:id/image` | Upload an item photo (multipart) | A, M |
+| `PUT /items/:id/option-groups` | Set the ordered groups an item offers (idempotent replace) | A, M |
+| `POST` `GET` `PATCH /option-groups` | Manage option groups and their min/max selections | A, M |
+| `POST /option-groups/:id/options` | Add a choice to a group | A, M |
+| `PATCH /options/:id` | Manage a choice (name, price delta) | A, M |
+| `PATCH /options/:id/availability` | 86 / un-86 a choice | A, M, C, B |
+
+The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
+
+Availability toggles are separate routes from the updates beside them. That is what lets any staff member 86 the oat milk — the person who finds it gone is whoever is at the bar — without also holding the rights to reprice it.
 
 Every route must declare either `@Public()` or `@Roles(...)`; one that declares neither is refused rather than defaulting to "any authenticated principal". `test/authz-matrix.e2e-spec.ts` sweeps every endpoint against every role and additionally fails if the application exposes a route the matrix does not list, so a new endpoint cannot merge without stating who may call it.
 
@@ -172,6 +199,22 @@ Two credential kinds arrive through the same `Authorization: Bearer` header and 
 
 Rate limits (§10.2) are Redis-backed so they hold across instances: 20 login attempts per 15 minutes per address, 5 device activations per hour per address, and 600 requests per minute per staff user as a backstop. Separately, five *failed* logins lock a single account for 15 minutes — the two mechanisms cover different attacks and neither substitutes for the other.
 
+### The menu cache
+
+`GET /menu` is the only read a kiosk makes, so it is the one endpoint tuned for polling. A version counter in Redis keys a rendered copy of the document; the response carries `ETag: W/"catalog-<version>"` and `Cache-Control: private, no-cache`, so a kiosk asking every 10 seconds normally gets a `304` costing one Redis read and no database work. `no-cache` rather than a `max-age` is deliberate: a client-side lifetime would stack on top of the poll interval and put FR-3's 10-second propagation budget out of reach.
+
+Every catalog write moves the version, via an interceptor on the write controllers rather than a call at the end of each service method — there are a dozen write paths, and "remember to invalidate" holds only until someone adds the thirteenth.
+
+If Redis is unreachable the menu is still served, built fresh from Postgres and without an `ETag`. The cache is a cache: a slower menu is a worse cafe, an erroring one is a closed cafe.
+
+### Item images
+
+`POST /items/:id/image` is the only multipart route in the API (§5.1's stated exception to "JSON everywhere"), and the only place the API accepts bytes it did not author. Uploads are held in memory, never written to the API's filesystem, and capped at 5 MB.
+
+Nothing is stored as sent. The format is identified from the file's own magic bytes rather than its declared `Content-Type` — which the caller chooses — and the image is then decoded and re-encoded to WebP, bounded to a 1600px long edge. That round trip is the security posture: a polyglot file, an appended archive, or EXIF carrying the photographer's home GPS coordinates does not survive being re-rendered from pixels. SVG is refused outright, since it is a document format that can carry script and these images are served to unattended public tablets.
+
+Stored keys are the SHA-256 of the *output*, so the same photo occupies one object however many times it is uploaded, and a key can only ever hold the bytes that hashed to it — which is what makes the immutable cache header on them safe.
+
 ## Project layout
 
 ```
@@ -181,10 +224,14 @@ src/
                logger options, Zod validation pipe
   database/    Drizzle client, connection pool, schema/ (the tables)
   redis/       Redis client provider
+  storage/     S3-compatible object storage client and writer
   health/      liveness and readiness probes
   identity/    auth/ (login, rotation, access tokens), users/, devices/
                (pairing and revocation), guards/ (authentication + §6.4 roles),
                crypto/ (argon2id passwords, opaque tokens), rate-limit/
+  catalog/     categories/, items/ (incl. image upload and option-group
+               attachment), option-groups/, menu/ (composite read, Redis
+               cache, write-invalidation interceptor)
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
                shared by main.ts and the e2e suite so it is never untested
   main.ts      composition root
@@ -198,7 +245,10 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
-- **Phase 2 — Catalog: next.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and image upload.
+- **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
+- **Phase 3 — Orders: next.** Order creation with server-side pricing and snapshots, queue numbers, the state machine and history, idempotency keys, list/search with cursor pagination, and the expiry job.
+
+Phase 2 leaves Phase 3 one obligation worth stating: option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. Keeping a line total from going below zero is server-side pricing's job, since only it sees the whole basket.
 
 One item from §6.1 is deliberately deferred: breached-password rejection on account creation. It needs an outbound call to a range API plus a policy for when that service is unreachable, and adding an external dependency to the account-creation path belongs with the rest of the §12.4 integrations rather than inside the auth phase. Minimum length 10 is enforced.
 

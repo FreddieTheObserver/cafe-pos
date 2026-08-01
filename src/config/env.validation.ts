@@ -1,6 +1,24 @@
 import { z } from 'zod';
 
 /**
+ * Item images are served straight to kiosk and board clients, so a plaintext
+ * origin would be a mixed-content failure in prod and a tamperable image
+ * source anywhere. Localhost is the exception the rule needs: MinIO speaks
+ * http on 9000 (§12.4's local stand-in for S3) and no TLS terminator sits in
+ * front of it during development.
+ */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'minio']);
+
+function isSecureOrLocal(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || LOCAL_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The single source of truth for the environment this app needs.
  *
  * Parsed once at boot (see `validateEnv`, wired into ConfigModule). A missing
@@ -60,6 +78,42 @@ export const envSchema = z.object({
         .map((origin) => origin.trim())
         .filter(Boolean),
     ),
+  /**
+   * Object storage for item images (§10, §12.4).
+   *
+   * Required rather than optional, matching how this app treats every other
+   * dependency: a process that boots happily and then 500s the first time a
+   * manager uploads a photo has moved a config error from deploy time to
+   * business hours. `.env.example` ships values that match docker-compose, so
+   * the cost of "required" is nothing for a local checkout.
+   */
+  S3_BUCKET: z.string().min(1),
+  S3_REGION: z.string().min(1).default('us-east-1'),
+  S3_ACCESS_KEY_ID: z.string().min(1),
+  S3_SECRET_ACCESS_KEY: z.string().min(1),
+  /**
+   * Overrides the AWS endpoint so the same client can address MinIO. Unset in
+   * production, where the SDK resolves the real regional endpoint.
+   */
+  S3_ENDPOINT: z.url().optional(),
+  /** Public origin images are read from — the CDN in front of the bucket. */
+  S3_PUBLIC_BASE_URL: z
+    .string()
+    .min(1)
+    .refine(isSecureOrLocal, 'must be an https URL (or a localhost origin)')
+    // A trailing slash here would produce `...//items/abc.webp`, which some
+    // CDNs treat as a distinct (and missing) key.
+    .transform((value) => value.replace(/\/+$/, '')),
+  /**
+   * Creates the bucket at boot if it is missing. Convenience for MinIO and CI,
+   * and off by default: in production the bucket is infrastructure with a
+   * lifecycle policy and an access policy, and an app that can conjure one is
+   * an app that quietly papers over pointing at the wrong account.
+   */
+  S3_AUTO_CREATE_BUCKET: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 /** Fully typed, validated config shape — inferred from the schema, never drifts. */

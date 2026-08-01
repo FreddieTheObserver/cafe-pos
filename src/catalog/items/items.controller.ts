@@ -2,14 +2,23 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   Patch,
   Post,
   Put,
+  UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Roles } from '../../identity/decorators/roles.decorator';
+import { ImageFileMissingError } from '../errors/catalog.errors';
 import { CatalogWriteInterceptor } from '../menu/catalog-write.interceptor';
+import {
+  ItemImageService,
+  MAX_UPLOAD_BYTES,
+  type UploadedImage,
+} from './item-image.service';
 import { SetItemOptionGroupsDto } from './item-option-groups.dto';
 import {
   ItemOptionGroupsService,
@@ -38,6 +47,7 @@ export class ItemsController {
   constructor(
     private readonly items: ItemsService,
     private readonly itemOptionGroups: ItemOptionGroupsService,
+    private readonly itemImages: ItemImageService,
   ) {}
 
   @Roles('ADMIN', 'MANAGER')
@@ -81,5 +91,37 @@ export class ItemsController {
     @Body() body: SetItemOptionGroupsDto,
   ): Promise<AttachedOptionGroup[]> {
     return this.itemOptionGroups.setForItem(params.id, body.optionGroupIds);
+  }
+
+  /**
+   * The one multipart route in the catalog (§5.1's carve-out from "JSON
+   * everywhere"), and the only place the API accepts bytes it did not author.
+   *
+   * `memoryStorage` — the default — is deliberate: nothing untrusted is ever
+   * written to the API's filesystem (§10), and the size limit below is what
+   * makes buffering safe. `files: 1` refuses a form carrying a second part
+   * rather than silently processing the first.
+   *
+   * 200 rather than POST's default 201, on the same reasoning as
+   * `POST /devices/activate`: the resource this addresses already exists and
+   * the response is that resource updated. Nothing was created at a URL the
+   * caller could be pointed at.
+   */
+  @Roles('ADMIN', 'MANAGER')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+    }),
+  )
+  @HttpCode(200)
+  @Post(':id/image')
+  uploadImage(
+    @Param() params: ItemIdParamDto,
+    @UploadedFile() file?: UploadedImage,
+  ): Promise<MenuItem> {
+    // multer leaves this undefined for a form with no `file` part at all,
+    // which is a malformed request rather than a bad image.
+    if (file === undefined) throw new ImageFileMissingError();
+    return this.itemImages.replace(params.id, file);
   }
 }
