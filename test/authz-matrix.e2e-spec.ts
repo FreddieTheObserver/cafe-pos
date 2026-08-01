@@ -130,6 +130,28 @@ const MATRIX: MatrixRow[] = [
     path: `/api/v1/devices/${uuidv7()}/revoke`,
     allow: [A, M],
   },
+  {
+    method: 'post',
+    route: '/api/v1/categories',
+    path: '/api/v1/categories',
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    // Management read, not the kiosk one: it returns inactive categories too,
+    // which is why a kiosk has no business here. `GET /menu` is its route.
+    method: 'get',
+    route: '/api/v1/categories',
+    path: '/api/v1/categories',
+    allow: [A, M],
+  },
+  {
+    method: 'patch',
+    route: '/api/v1/categories/:id',
+    path: `/api/v1/categories/${uuidv7()}`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */
