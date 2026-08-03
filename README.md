@@ -203,6 +203,16 @@ Availability toggles are separate routes from the updates beside them. That is w
 
 Every route must declare either `@Public()` or `@Roles(...)`; one that declares neither is refused rather than defaulting to "any authenticated principal". `test/authz-matrix.e2e-spec.ts` sweeps every endpoint against every role and additionally fails if the application exposes a route the matrix does not list, so a new endpoint cannot merge without stating who may call it.
 
+### Postman collection
+
+`postman/cafepos.postman_collection.json` covers every endpoint above — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.
+
+Run **Auth → Login as ADMIN** first. Its test script captures the token into a collection variable, and the collection's bearer auth hands it to every other request, so no JWT is ever pasted by hand. Logging in as MANAGER, CASHIER or BARISTA overwrites the same variable, which makes the §6.4 matrix testable by hand: sign in as BARISTA, then watch `POST /categories` refuse and `PATCH /items/:id/availability` succeed.
+
+The same trick carries the rest of the flows — registering a kiosk captures its one-time `pairingCode`, activating captures the `deviceToken`, and `GET /menu` captures the `ETag` so the request beside it can demonstrate the `304`. Creating a category, item or option group captures its id, so the folders run top to bottom without copying UUIDs around.
+
+Seeded credentials come from `pnpm db:seed`; the password lives in the `seedPassword` collection variable.
+
 ### Authentication
 
 Two credential kinds arrive through the same `Authorization: Bearer` header and are told apart by shape — a JWT is three dot-separated segments, a device token is one base64url word.

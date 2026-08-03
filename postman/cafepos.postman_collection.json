@@ -1,0 +1,769 @@
+{
+  "info": {
+    "name": "CafePOS — Phases 0–2",
+    "description": "Every endpoint the API exposes through Phase 2 (foundations, identity, catalog).\n\n## Setup\n\n1. `docker compose up -d && pnpm db:migrate && pnpm db:seed && pnpm start:dev`\n2. Run **Auth → Login as ADMIN**. Its test script writes `accessToken` into a collection variable, and every other request inherits `Authorization: Bearer {{accessToken}}` from the collection. Nothing else needs a token pasted by hand.\n3. Access tokens last 15 minutes. When requests start returning 401 `AUTH_TOKEN_EXPIRED`, run a login again — or **Auth → Refresh**, which rotates the pair and re-captures both.\n\nLogging in as MANAGER, CASHIER or BARISTA overwrites the same variable, so the whole collection re-runs as that role. That is the quickest way to exercise the §6.4 permission matrix by hand: sign in as BARISTA, then try `POST /categories` and watch it 403.\n\n## Requests that capture variables\n\n| Request | Sets |\n|---|---|\n| Auth → Login / Refresh | `accessToken`, `refreshToken` |\n| Devices → Register a kiosk | `deviceId`, `pairingCode` |\n| Devices → Activate | `deviceToken` |\n| Menu → Get the menu | `menuEtag` |\n| Categories / Items / Option groups → Create | `categoryId`, `itemId`, `optionGroupId`, `optionId` |\n\nSo the folders work top to bottom: create a category, and the item request already points at it.\n\n## Conventions (DESIGN.md §5.1)\n\nMoney is integer minor units — `8500` is ฿85.00. Ids are UUIDv7. Errors are RFC 9457 problem documents; switch on `code`, never on `detail`. Every response carries `X-Request-Id`.\n\n## Rate limits are real (§10.2)\n\n20 logins per 15 min per address, **5 device activations per hour**, 600 requests/min per staff user. Five failed logins also lock that one account for 15 minutes. Clear them all with:\n\n```\nredis-cli --scan --pattern 'throttle:*' | xargs redis-cli del\n```",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "rootUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "baseUrl", "value": "http://localhost:3000/api/v1", "type": "string" },
+    { "key": "seedPassword", "value": "cafepos-dev-password", "type": "string" },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "deviceToken", "value": "", "type": "string" },
+    { "key": "deviceId", "value": "", "type": "string" },
+    { "key": "pairingCode", "value": "", "type": "string" },
+    { "key": "newUserId", "value": "", "type": "string" },
+    { "key": "categoryId", "value": "", "type": "string" },
+    { "key": "itemId", "value": "", "type": "string" },
+    { "key": "optionGroupId", "value": "", "type": "string" },
+    { "key": "optionId", "value": "", "type": "string" },
+    { "key": "menuEtag", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "description": "Both probes sit at the root, outside /api/v1, so orchestrators target paths that never move with an API version. Neither needs a token.",
+      "item": [
+        {
+          "name": "Liveness (/healthz)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{rootUrl}}/healthz", "host": ["{{rootUrl}}"], "path": ["healthz"] },
+            "description": "Checks no dependencies on purpose: a slow database must not get the container killed."
+          }
+        },
+        {
+          "name": "Readiness (/readyz)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{rootUrl}}/readyz", "host": ["{{rootUrl}}"], "path": ["readyz"] },
+            "description": "Pings Postgres and Redis with a 2s timeout each. 503 names the dependency that failed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "description": "Four logins for the four roles. Each writes the same `accessToken` variable, so whichever you ran last is the identity the rest of the collection uses.",
+      "item": [
+        {
+          "name": "Login as ADMIN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "  console.log('Signed in as ADMIN; token expires in ' + body.expiresInSeconds + 's');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@cafepos.local\",\n  \"password\": \"{{seedPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Run this first. Returns `accessToken` (15 min, HS256 JWT), `refreshToken` (14 days, opaque) and `expiresInSeconds`."
+          }
+        },
+        {
+          "name": "Login as MANAGER",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"manager@cafepos.local\",\n  \"password\": \"{{seedPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "A manager can do everything in the catalog but cannot touch `/users`."
+          }
+        },
+        {
+          "name": "Login as CASHIER",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"cashier@cafepos.local\",\n  \"password\": \"{{seedPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Reads the menu and flips availability. Everything else in the catalog is 403."
+          }
+        },
+        {
+          "name": "Login as BARISTA",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"barista@cafepos.local\",\n  \"password\": \"{{seedPassword}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Sign in here, then try `Categories → Create` to watch the role matrix refuse it."
+          }
+        },
+        {
+          "name": "Refresh (rotates the pair)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "  pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "  console.log('Rotated. The previous refresh token is now dead.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/auth/refresh", "host": ["{{baseUrl}}"], "path": ["auth", "refresh"] },
+            "description": "Public, because the token *is* the credential.\n\nRotation retires the presented token. Send the same one twice and the second call revokes the entire token family — the standard stolen-token response (§6.1). Worth doing once deliberately: hit Send twice, then watch every later request 401 until you log in again."
+          }
+        },
+        {
+          "name": "Who am I (/auth/me)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/auth/me", "host": ["{{baseUrl}}"], "path": ["auth", "me"] },
+            "description": "The only endpoint both staff and kiosks may call. Returns `type: \"staff\"` with a role, or `type: \"device\"` — the shape a client uses to tell which kind of principal it is holding."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/auth/logout", "host": ["{{baseUrl}}"], "path": ["auth", "logout"] },
+            "description": "204. Revokes the session behind the presented access token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "description": "ADMIN-only except the list, which managers may read. Requires `Login as ADMIN`.",
+      "item": [
+        {
+          "name": "Create a staff account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('newUserId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"newhire@cafepos.local\",\n  \"displayName\": \"New Hire\",\n  \"role\": \"BARISTA\",\n  \"password\": \"another-fine-password\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/users", "host": ["{{baseUrl}}"], "path": ["users"] },
+            "description": "Password minimum is 10 characters and nothing else — no character-class theater, which only pushes people toward `Password1!` (§6.1).\n\nEmails are `citext`, so `A@x.com` collides with `a@x.com` on the unique index."
+          }
+        },
+        {
+          "name": "List staff",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/users", "host": ["{{baseUrl}}"], "path": ["users"] },
+            "description": "ADMIN and MANAGER. Password hashes are never in the response."
+          }
+        },
+        {
+          "name": "Update a staff account",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"New Hire (trained)\",\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/users/{{newUserId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "{{newUserId}}"]
+            },
+            "description": "Any of `displayName`, `role`, `isActive` — at least one; an empty PATCH is a client bug and answers 400 rather than hiding it behind a 200.\n\nDemoting or deactivating the last active admin is refused (`LAST_ADMIN`): try it on the seeded admin to see the guard fire."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Devices (kiosks)",
+      "description": "The pairing flow, in order: Register → Activate → the kiosk holds a token.\n\nOnly **5 activations per hour per address** (§10.2), so don't brute-force this folder.",
+      "item": [
+        {
+          "name": "Register a kiosk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('deviceId', body.id);",
+                  "  pm.collectionVariables.set('pairingCode', body.pairingCode);",
+                  "  console.log('Pairing code ' + body.pairingCode + ' — shown once, only its hash is stored.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Front counter kiosk\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/devices", "host": ["{{baseUrl}}"], "path": ["devices"] },
+            "description": "Returns `pairingCode` **once** — the row keeps only its hash. The test script captures it, so Activate below already has it. Codes expire in 10 minutes (`PAIRING_CODE_TTL_SECONDS`)."
+          }
+        },
+        {
+          "name": "Activate (exchange the code for a token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('deviceToken', pm.response.json().deviceToken);",
+                  "  console.log('Device token captured — use \"Get the menu (as a kiosk)\".');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pairingCode\": \"{{pairingCode}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/devices/activate",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices", "activate"]
+            },
+            "description": "Public — the code is the credential, since a tablet being set up holds nothing else yet.\n\nReturns a 256-bit opaque `deviceToken`, not a JWT. It is a database row precisely so revoking a stolen tablet takes effect on the very next request (§6.2). Lower case and stray whitespace in the code are forgiven as transcription noise; a character outside the alphabet is not."
+          }
+        },
+        {
+          "name": "List the fleet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/devices", "host": ["{{baseUrl}}"], "path": ["devices"] },
+            "description": "Status and last-seen per device. Token hashes are never returned."
+          }
+        },
+        {
+          "name": "Pause ordering on a kiosk",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"PAUSED\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/devices/{{deviceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices", "{{deviceId}}"]
+            },
+            "description": "`name` and/or `status` (`ACTIVE` | `PAUSED`). Retiring a tablet is deliberately *not* reachable here — that is the revoke route below.\n\nWith the device paused, re-run **Get the menu (as a kiosk)** and watch it refuse."
+          }
+        },
+        {
+          "name": "Revoke a kiosk",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/devices/{{deviceId}}/revoke",
+              "host": ["{{baseUrl}}"],
+              "path": ["devices", "{{deviceId}}", "revoke"]
+            },
+            "description": "204, and the token is dead immediately — no waiting for an expiry. Its own route rather than a status field, because killing a tablet is a deliberate act, not an edit."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Menu (the kiosk read)",
+      "description": "The one endpoint tuned for polling, and the only catalog route a device may call.",
+      "item": [
+        {
+          "name": "Get the menu",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const etag = pm.response.headers.get('ETag');",
+                  "if (etag) {",
+                  "  pm.collectionVariables.set('menuEtag', etag);",
+                  "  console.log('ETag ' + etag + ' captured — try the 304 request next.');",
+                  "} else {",
+                  "  console.log('No ETag: Redis is unreachable, so the menu was built straight from Postgres.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/menu", "host": ["{{baseUrl}}"], "path": ["menu"] },
+            "description": "Categories → items → option groups → options in one document, and the only read a kiosk makes.\n\nCarries `ETag: W/\"catalog-<version>\"` and `Cache-Control: private, no-cache`. `no-cache` rather than a `max-age` is deliberate: a client-side lifetime would stack on top of the poll interval and put the 10-second propagation budget (FR-3) out of reach.\n\nUnlike the management `GET`s, this hides inactive categories and 86'd items — it is what the customer sees.\n\nIf Redis is down the menu still serves, built fresh from Postgres and without an ETag. The cache is a cache: a slower menu is a worse cafe, an erroring one is a closed cafe."
+          }
+        },
+        {
+          "name": "Get the menu (304 revalidation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('304 Not Modified', () => pm.response.to.have.status(304));",
+                  "console.log('304 — one Redis read, no database work. This is the kiosk polling every 10s.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "If-None-Match", "value": "{{menuEtag}}" }],
+            "url": { "raw": "{{baseUrl}}/menu", "host": ["{{baseUrl}}"], "path": ["menu"] },
+            "description": "Run **Get the menu** first to capture the ETag.\n\nExpect 304. Then make any catalog write — 86 an item, rename a category — and run this again: the version counter has moved, so you get a fresh 200. Every write path moves it, via an interceptor on the write controllers rather than a call at the end of each service method."
+          }
+        },
+        {
+          "name": "Get the menu (as a kiosk)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{deviceToken}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/menu", "host": ["{{baseUrl}}"], "path": ["menu"] },
+            "description": "Same endpoint, device token instead of a staff JWT — run the Devices folder first.\n\nBoth credential kinds arrive through `Authorization: Bearer` and are told apart by shape: a JWT is three dot-separated segments, a device token is one base64url word.\n\nThis is the *only* catalog route a device may call. Point the token at `/categories` or `/items` and the role matrix refuses it."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "description": "Management reads: these return inactive rows too, because a back office cannot restore what it cannot see.",
+      "item": [
+        {
+          "name": "Create a category",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('categoryId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Cold Brew\",\n  \"sortOrder\": 30\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/categories", "host": ["{{baseUrl}}"], "path": ["categories"] },
+            "description": "`sortOrder` and `isActive` are optional — the table defaults them to 0 and true, and a form that only knows the name should not have to invent the rest.\n\nNames are unique; sending this twice answers 409."
+          }
+        },
+        {
+          "name": "List categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/categories", "host": ["{{baseUrl}}"], "path": ["categories"] },
+            "description": "Includes inactive categories, unlike `GET /menu`."
+          }
+        },
+        {
+          "name": "Update a category",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/categories/{{categoryId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["categories", "{{categoryId}}"]
+            },
+            "description": "Any of `name`, `sortOrder`, `isActive`. Deactivating hides the whole category from `GET /menu` — a clean way to watch the ETag move."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Items",
+      "description": "Run `Create a category` first, or set `categoryId` by hand to one from `GET /categories`.",
+      "item": [
+        {
+          "name": "Create an item",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('itemId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"categoryId\": \"{{categoryId}}\",\n  \"name\": \"Nitro Cold Brew\",\n  \"description\": \"On tap.\",\n  \"basePriceMinor\": 11000,\n  \"sortOrder\": 0\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/items", "host": ["{{baseUrl}}"], "path": ["items"] },
+            "description": "`basePriceMinor` is satang: 11000 is ฿110.00. Capped at 1,000,000 (฿10,000) — above that is a misplaced decimal, and catching it here beats finding it on a receipt.\n\n`imageUrl` may be sent directly but must be **https** — the value is rendered as an image source by unattended tablets, and `z.url()` alone would accept `javascript:`."
+          }
+        },
+        {
+          "name": "List items",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/items", "host": ["{{baseUrl}}"], "path": ["items"] },
+            "description": "Includes 86'd items, unlike `GET /menu`."
+          }
+        },
+        {
+          "name": "Update an item",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"basePriceMinor\": 12000,\n  \"description\": \"On tap, cascading.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/items/{{itemId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["items", "{{itemId}}"]
+            },
+            "description": "Name, price, photo, category — availability is deliberately absent, see the next request.\n\n`description` and `imageUrl` are nullable here: `undefined` means leave it, `null` means clear it."
+          }
+        },
+        {
+          "name": "86 an item (availability)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isAvailable\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/items/{{itemId}}/availability",
+              "host": ["{{baseUrl}}"],
+              "path": ["items", "{{itemId}}", "availability"]
+            },
+            "description": "The one catalog write a CASHIER or BARISTA may make. Sign in as BARISTA and run this, then try `Update an item` — the split between the two routes is exactly what lets whoever is standing at the bar 86 the oat milk without also holding the rights to reprice it (FR-3)."
+          }
+        },
+        {
+          "name": "Set an item's option groups",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"optionGroupIds\": [\"{{optionGroupId}}\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/items/{{itemId}}/option-groups",
+              "host": ["{{baseUrl}}"],
+              "path": ["items", "{{itemId}}", "option-groups"]
+            },
+            "description": "PUT, not PATCH: the body is the *complete* set of groups this item offers, so sending it twice leaves the same rows. An empty array detaches everything.\n\nDisplay order is the array's own order — a list cannot express a duplicate rank or a gap, so \"two groups both claim position 3\" stops being a case anyone has to rule on.\n\nRun `Option groups → Create` first to fill `optionGroupId`."
+          }
+        },
+        {
+          "name": "Upload an item photo",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": [] }] },
+            "url": {
+              "raw": "{{baseUrl}}/items/{{itemId}}/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["items", "{{itemId}}", "image"]
+            },
+            "description": "**Pick a file in the Body tab before sending** — Postman cannot store one inside a collection.\n\nThe only multipart route in the API, and the only place it accepts bytes it did not author. Held in memory, never written to the API's filesystem, capped at 5 MB.\n\nNothing is stored as sent: the format is read from the file's own magic bytes rather than the `Content-Type` you choose, then decoded and re-encoded to WebP at a 1600px long edge. A polyglot file, an appended archive, or EXIF carrying the photographer's home GPS does not survive being re-rendered from pixels. SVG is refused outright — it is a document format that can carry script, and these images are served to unattended public tablets.\n\nThe response's `imageUrl` points at MinIO; the key is the SHA-256 of the *output*, so re-uploading the same photo yields the same key. Answers 200, not 201: the resource already existed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Option groups & options",
+      "description": "Groups are shared across items — one `Size` group, attached wherever it applies, rather than a copy per drink.",
+      "item": [
+        {
+          "name": "Create an option group",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('optionGroupId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Sweetness\",\n  \"minSelect\": 1,\n  \"maxSelect\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/option-groups", "host": ["{{baseUrl}}"], "path": ["option-groups"] },
+            "description": "`minSelect` ≤ `maxSelect`, both 0–50. Omitted, they default to 0 and 1 — and the schema validates against those same defaults, so a create sending only one bound is judged against the value the row will actually get."
+          }
+        },
+        {
+          "name": "List option groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/option-groups", "host": ["{{baseUrl}}"], "path": ["option-groups"] },
+            "description": "Groups with their options."
+          }
+        },
+        {
+          "name": "Update an option group",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"maxSelect\": 2\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/option-groups/{{optionGroupId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["option-groups", "{{optionGroupId}}"]
+            },
+            "description": "A PATCH moving only one bound is judged against the other as it stands in the database — which only the CHECK constraint can see, so an invalid pair surfaces as `OPTION_GROUP_MINMAX_INVALID` rather than a Zod error."
+          }
+        },
+        {
+          "name": "Add an option to a group",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('optionId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Less sweet\",\n  \"priceDeltaMinor\": 0,\n  \"isDefault\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/option-groups/{{optionGroupId}}/options",
+              "host": ["{{baseUrl}}"],
+              "path": ["option-groups", "{{optionGroupId}}", "options"]
+            },
+            "description": "`priceDeltaMinor` may be **negative** (±100,000) — the column carries no CHECK, unlike `base_price_minor`, because \"small size, −10฿\" is a real menu. The seeded `Size → Small` is −1000.\n\nKeeping a line total off the floor is Phase 3's job: only server-side pricing sees the whole basket."
+          }
+        },
+        {
+          "name": "Update an option",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"priceDeltaMinor\": -500\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/options/{{optionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["options", "{{optionId}}"]
+            },
+            "description": "`name`, `priceDeltaMinor`, `isDefault`. Availability is absent for the same reason it is absent from the item update — it is separately authorized."
+          }
+        },
+        {
+          "name": "86 an option (availability)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isAvailable\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/options/{{optionId}}/availability",
+              "host": ["{{baseUrl}}"],
+              "path": ["options", "{{optionId}}", "availability"]
+            },
+            "description": "Any staff member, like the item toggle. This is the oat-milk case: the choice disappears from `GET /menu` while the drinks offering it stay on sale."
+          }
+        }
+      ]
+    }
+  ]
+}
