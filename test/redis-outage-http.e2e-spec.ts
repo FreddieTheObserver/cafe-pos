@@ -81,7 +81,11 @@ describe('The API with Redis unreachable (e2e)', () => {
         .set('If-None-Match', 'W/"catalog-1"');
 
       expect(res.status).toBe(200);
-      expect(res.headers.etag).not.toMatch(/catalog-/);
+      // Express supplies a content-hash validator of its own here, but no
+      // validator at all is equally correct — and `toMatch` is a matcher error
+      // rather than a pass on `undefined`, which would report the stronger
+      // outcome as a failure.
+      expect(res.headers.etag ?? '').not.toMatch(/catalog-/);
     });
 
     /**

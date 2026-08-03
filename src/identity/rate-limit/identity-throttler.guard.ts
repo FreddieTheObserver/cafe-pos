@@ -6,6 +6,7 @@ import {
 } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
+import { describeError } from '../../common/errors/describe-error';
 import { RateLimitedError } from '../../common/errors/rate-limited.error';
 import type { Principal } from '../principal';
 import { RateLimitBackendUnavailableError } from './rate-limit-backend.error';
@@ -68,9 +69,15 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
       url: string;
     };
 
+    // `describeError`, not `String(error)`: ioredis raises an `AggregateError`
+    // whose own message is empty and whose detail hangs off `errors`, so the
+    // plain conversion prints "AggregateError" and tells on-call nothing during
+    // the one incident these lines exist for.
+    const cause = describeError(error);
+
     if (policy === 'refuse') {
       this.logger.error(
-        `Refusing ${method} ${url}: its rate limit is a security control and cannot be enforced. ${String(error.cause)}`,
+        `Refusing ${method} ${url}: its rate limit is a security control and cannot be enforced. ${cause}`,
       );
       throw new DependencyUnavailableError(
         'This request could not be rate limited, so it was refused. Try again shortly.',
@@ -78,7 +85,7 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
     }
 
     this.logger.warn(
-      `Could not rate limit ${method} ${url}; serving it uncounted until the limiter is reachable. ${String(error.cause)}`,
+      `Could not rate limit ${method} ${url}; serving it uncounted until the limiter is reachable. ${cause}`,
     );
     return true;
   }
