@@ -40,6 +40,15 @@ export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS) private readonly redis: Redis) {}
 
   async onApplicationShutdown(): Promise<void> {
-    await this.redis.quit();
+    try {
+      await this.redis.quit();
+    } catch {
+      // `quit()` drains in-flight replies, which is why it is the right call
+      // normally — but a client that has already given up on an unreachable
+      // server rejects it outright, and a shutdown hook that throws turns an
+      // ordinary rollout into an error the orchestrator has to clean up after.
+      // There is nothing left to drain in that state; close the socket.
+      this.redis.disconnect();
+    }
   }
 }

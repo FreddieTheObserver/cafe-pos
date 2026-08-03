@@ -33,10 +33,18 @@ export class IdentityHarness {
     private readonly deviceIds: string[] = [],
   ) {}
 
-  static async boot(): Promise<IdentityHarness> {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
+  /**
+   * `redis` replaces the shared client for the lifetime of the app. It exists
+   * for the outage suites: pointing the whole application at a dead Redis is
+   * the only way to see what the request pipeline does when the dependency is
+   * gone, and every other suite leaves it alone and gets the real one.
+   */
+  static async boot({
+    redis,
+  }: { redis?: Redis } = {}): Promise<IdentityHarness> {
+    const builder = Test.createTestingModule({ imports: [AppModule] });
+    if (redis) builder.overrideProvider(REDIS).useValue(redis);
+    const moduleRef = await builder.compile();
 
     const app = moduleRef.createNestApplication<NestExpressApplication>({
       bodyParser: false,

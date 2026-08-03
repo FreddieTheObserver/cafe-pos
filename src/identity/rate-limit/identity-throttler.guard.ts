@@ -1,8 +1,20 @@
-import { Injectable, type ExecutionContext } from '@nestjs/common';
-import { ThrottlerGuard, type ThrottlerLimitDetail } from '@nestjs/throttler';
+import { Injectable, Logger, type ExecutionContext } from '@nestjs/common';
+import {
+  ThrottlerGuard,
+  type ThrottlerLimitDetail,
+  type ThrottlerRequest,
+} from '@nestjs/throttler';
 import type { Response } from 'express';
+import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
+import { describeError } from '../../common/errors/describe-error';
 import { RateLimitedError } from '../../common/errors/rate-limited.error';
 import type { Principal } from '../principal';
+import { RateLimitBackendUnavailableError } from './rate-limit-backend.error';
+import {
+  RATE_LIMITS,
+  RATE_LIMIT_BACKEND_POLICY,
+  type BackendFailurePolicy,
+} from './rate-limits';
 
 /**
  * Applies the §10.2 limits and reports them in the §9.1 envelope.
@@ -20,6 +32,63 @@ import type { Principal } from '../principal';
  */
 @Injectable()
 export class IdentityThrottlerGuard extends ThrottlerGuard {
+  private readonly logger = new Logger(IdentityThrottlerGuard.name);
+
+  /**
+   * Decides what an unreachable limiter means for the route being called.
+   *
+   * This guard is global, so it runs before every handler in the application —
+   * which makes an unhandled failure here a 500 on routes that have nothing to
+   * do with Redis. Until this existed, one unreachable dependency took down the
+   * whole API, including the menu the cache layer had carefully arranged to
+   * keep serving without it.
+   */
+  protected async handleRequest(request: ThrottlerRequest): Promise<boolean> {
+    try {
+      return await super.handleRequest(request);
+    } catch (error) {
+      if (!(error instanceof RateLimitBackendUnavailableError)) throw error;
+      return this.withoutABackend(request.context, error);
+    }
+  }
+
+  private withoutABackend(
+    context: ExecutionContext,
+    error: RateLimitBackendUnavailableError,
+  ): boolean {
+    // Routes carry their policy via `@RateLimit`; everything else is running on
+    // the global backstop, and takes the backstop's answer.
+    const policy =
+      this.reflector.getAllAndOverride<BackendFailurePolicy | undefined>(
+        RATE_LIMIT_BACKEND_POLICY,
+        [context.getHandler(), context.getClass()],
+      ) ?? RATE_LIMITS.staffGeneral.onBackendFailure;
+
+    const { method, url } = this.getRequestResponse(context).req as {
+      method: string;
+      url: string;
+    };
+
+    // `describeError` walks `cause`/`errors[]` to the innermost message, which
+    // is what this needs: the ioredis failure is one layer down, under our own
+    // wrapper. It is also how the rest of the codebase renders a thrown value.
+    const cause = describeError(error);
+
+    if (policy === 'refuse') {
+      this.logger.error(
+        `Refusing ${method} ${url}: its rate limit is a security control and cannot be enforced. ${cause}`,
+      );
+      throw new DependencyUnavailableError(
+        'This request could not be rate limited, so it was refused. Try again shortly.',
+      );
+    }
+
+    this.logger.warn(
+      `Could not rate limit ${method} ${url}; serving it uncounted until the limiter is reachable. ${cause}`,
+    );
+    return true;
+  }
+
   /**
    * §10.2 counts staff per user and everything else per address. Kiosks are
    * counted per device for the same reason: one stolen tablet should not be
