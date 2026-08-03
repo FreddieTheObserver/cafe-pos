@@ -222,13 +222,17 @@ Two credential kinds arrive through the same `Authorization: Bearer` header and 
 
 Rate limits (§10.2) are Redis-backed so they hold across instances: 20 login attempts per 15 minutes per address, 5 device activations per hour per address, and 600 requests per minute per staff user as a backstop. Separately, five *failed* logins lock a single account for 15 minutes — the two mechanisms cover different attacks and neither substitutes for the other.
 
+When Redis is unreachable those limits deliberately stop behaving alike. The 600/min staff backstop **fails open**: it is a backstop, ordinary traffic is nowhere near it, and refusing requests to preserve it would close the cafe over a cache. Login and device activation **fail closed** with a `503 DEPENDENCY_UNAVAILABLE`, because on those two routes the limit *is* the brute-force defence, and serving them uncounted would turn an outage into an unlimited guessing window. Staff who are already signed in keep working throughout — access tokens are verified against a signature, not against Redis.
+
 ### The menu cache
 
 `GET /menu` is the only read a kiosk makes, so it is the one endpoint tuned for polling. A version counter in Redis keys a rendered copy of the document; the response carries `ETag: W/"catalog-<version>"` and `Cache-Control: private, no-cache`, so a kiosk asking every 10 seconds normally gets a `304` costing one Redis read and no database work. `no-cache` rather than a `max-age` is deliberate: a client-side lifetime would stack on top of the poll interval and put FR-3's 10-second propagation budget out of reach.
 
 Every catalog write moves the version, via an interceptor on the write controllers rather than a call at the end of each service method — there are a dozen write paths, and "remember to invalidate" holds only until someone adds the thirteenth.
 
-If Redis is unreachable the menu is still served, built fresh from Postgres and without an `ETag`. The cache is a cache: a slower menu is a worse cafe, an erroring one is a closed cafe.
+If Redis is unreachable the menu is still served, built fresh from Postgres and without its `catalog-` validator — so a kiosk still holding a pre-outage `ETag` gets the menu rather than a `304` that would pin it to a stale copy for as long as the outage lasts. The cache is a cache: a slower menu is a worse cafe, an erroring one is a closed cafe.
+
+That claim is pinned over HTTP, in `test/redis-outage-http.e2e-spec.ts`. Until it was, the claim was false and the suite was green: the only degraded-Redis test exercised `MenuCacheService` in isolation against a dead port, where it degrades exactly as advertised — while the global rate-limit guard, which runs ahead of every handler, turned the whole API into 500s. A degradation claim about a *request* can only be tested by making one.
 
 ### Item images
 

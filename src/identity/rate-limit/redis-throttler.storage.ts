@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type Redis from 'ioredis';
 import type { ThrottlerStorage } from '@nestjs/throttler';
 import { REDIS } from '../../redis/redis.constants';
+import { RateLimitBackendUnavailableError } from './rate-limit-backend.error';
 
 /**
  * `ThrottlerStorageRecord` restated structurally.
@@ -84,14 +85,25 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     blockDuration: number,
     throttlerName: string,
   ): Promise<ThrottleRecord> {
-    const [hits, remainingMs, blocked] = (await this.redis.eval(
-      INCREMENT_SCRIPT,
-      1,
-      `throttle:${throttlerName}:${key}`,
-      ttl,
-      limit,
-      blockDuration,
-    )) as [number, number, number];
+    let result: unknown;
+    try {
+      result = await this.redis.eval(
+        INCREMENT_SCRIPT,
+        1,
+        `throttle:${throttlerName}:${key}`,
+        ttl,
+        limit,
+        blockDuration,
+      );
+    } catch (error) {
+      // Whether an unreachable limiter should refuse the request or wave it
+      // through depends on what the limit is *for*, which is a property of the
+      // route, not of this class. All the storage can do is make the failure
+      // recognisable; `IdentityThrottlerGuard` decides what it means.
+      throw new RateLimitBackendUnavailableError(error);
+    }
+
+    const [hits, remainingMs, blocked] = result as [number, number, number];
 
     const isBlocked = blocked === 1;
     return {
