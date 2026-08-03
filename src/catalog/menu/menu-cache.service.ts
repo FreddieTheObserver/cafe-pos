@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
+import { describeError } from '../../common/errors/describe-error';
 import { REDIS } from '../../redis/redis.constants';
 
 /** Monotonic counter; every catalog write moves it (§10, the cache table). */
@@ -99,6 +100,13 @@ export class MenuCacheService {
    * case that is not happening.
    */
   private warn(action: string, consequence: string, error: unknown): void {
-    this.logger.warn(`Could not ${action}; ${consequence}. ${String(error)}`);
+    // `describeError` is how every other Redis and database consumer here
+    // renders a thrown value: it drops the redundant class-name prefix, and it
+    // walks `cause`/`errors[]` so a failure that arrives wrapped still names
+    // something. ioredis rejects these calls with a message of its own today,
+    // so this is consistency and insurance rather than a repair.
+    this.logger.warn(
+      `Could not ${action}; ${consequence}. ${describeError(error)}`,
+    );
   }
 }

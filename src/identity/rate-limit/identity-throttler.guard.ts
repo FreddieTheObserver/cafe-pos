@@ -69,10 +69,9 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
       url: string;
     };
 
-    // `describeError`, not `String(error)`: ioredis raises an `AggregateError`
-    // whose own message is empty and whose detail hangs off `errors`, so the
-    // plain conversion prints "AggregateError" and tells on-call nothing during
-    // the one incident these lines exist for.
+    // `describeError` walks `cause`/`errors[]` to the innermost message, which
+    // is what this needs: the ioredis failure is one layer down, under our own
+    // wrapper. It is also how the rest of the codebase renders a thrown value.
     const cause = describeError(error);
 
     if (policy === 'refuse') {
