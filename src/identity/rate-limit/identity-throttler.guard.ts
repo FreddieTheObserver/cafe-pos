@@ -7,6 +7,7 @@ import {
 import type { Response } from 'express';
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import { describeError } from '../../common/errors/describe-error';
+import { LogThrottle } from '../../common/logging/log-throttle';
 import { RateLimitedError } from '../../common/errors/rate-limited.error';
 import type { Principal } from '../principal';
 import { RateLimitBackendUnavailableError } from './rate-limit-backend.error';
@@ -15,6 +16,16 @@ import {
   RATE_LIMIT_BACKEND_POLICY,
   type BackendFailurePolicy,
 } from './rate-limits';
+
+/**
+ * How long the guard stays quiet about an outage it has already reported.
+ *
+ * The same 30s as `REDIS_ERROR_LOG_INTERVAL_MS`, for the same reason and at a
+ * worse scale: this failure recurs per *request*, not per connection attempt,
+ * so the staff backstop alone permits 600 lines a minute per user. An operator
+ * still sees the incident open, and the count on each line says how big it is.
+ */
+const OUTAGE_LOG_INTERVAL_MS = 30_000;
 
 /**
  * Applies the §10.2 limits and reports them in the §9.1 envelope.
@@ -33,6 +44,14 @@ import {
 @Injectable()
 export class IdentityThrottlerGuard extends ThrottlerGuard {
   private readonly logger = new Logger(IdentityThrottlerGuard.name);
+
+  /**
+   * Separate throttles so a flood of one cannot hide the other: the refusals
+   * are the security-relevant half, and they would otherwise be crowded out by
+   * the much larger volume of requests being served uncounted.
+   */
+  private readonly refusals = new LogThrottle(OUTAGE_LOG_INTERVAL_MS);
+  private readonly uncounted = new LogThrottle(OUTAGE_LOG_INTERVAL_MS);
 
   /**
    * Decides what an unreachable limiter means for the route being called.
@@ -75,17 +94,23 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
     const cause = describeError(error);
 
     if (policy === 'refuse') {
-      this.logger.error(
-        `Refusing ${method} ${url}: its rate limit is a security control and cannot be enforced. ${cause}`,
-      );
+      const suffix = this.refusals.claim();
+      if (suffix !== null) {
+        this.logger.error(
+          `Refusing requests whose rate limit is a security control and cannot be enforced (most recently ${method} ${url}). ${cause}${suffix}`,
+        );
+      }
       throw new DependencyUnavailableError(
         'This request could not be rate limited, so it was refused. Try again shortly.',
       );
     }
 
-    this.logger.warn(
-      `Could not rate limit ${method} ${url}; serving it uncounted until the limiter is reachable. ${cause}`,
-    );
+    const suffix = this.uncounted.claim();
+    if (suffix !== null) {
+      this.logger.warn(
+        `Serving requests uncounted until the rate limiter is reachable (most recently ${method} ${url}). ${cause}${suffix}`,
+      );
+    }
     return true;
   }
 

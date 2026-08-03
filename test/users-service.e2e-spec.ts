@@ -48,16 +48,44 @@ describe('UsersService (integration)', () => {
     return id;
   }
 
+  /** Admins this suite demoted but did not create; restored on the way out. */
+  const parkedAdminIds = new Set<string>();
+
   /**
    * The last-admin rule counts every active ADMIN in the table, so these tests
    * only mean anything if no other admin exists. Parking any stragglers keeps
    * the suite honest without deleting rows another suite may own.
+   *
+   * The demotion has to be undone, which it previously was not: this runs
+   * against the developer's own database, where the straggler is
+   * `admin@cafepos.local` from `pnpm db:seed`. A single green run left that
+   * account a MANAGER, with no ADMIN remaining anywhere — and `db:seed` is
+   * idempotent by email, so re-seeding did not put it back. The only tell was
+   * an ADMIN-only route answering 403 for reasons nothing explained.
    */
   async function parkExistingAdmins(): Promise<void> {
-    await db
+    const parked = await db
       .update(schema.users)
       .set({ role: 'MANAGER' })
-      .where(eq(schema.users.role, 'ADMIN'));
+      .where(eq(schema.users.role, 'ADMIN'))
+      .returning({ id: schema.users.id });
+
+    // Rows this suite created are deleted wholesale below; restoring them would
+    // resurrect a role on a user that is about to stop existing.
+    for (const { id } of parked) {
+      if (!createdUserIds.includes(id)) parkedAdminIds.add(id);
+    }
+  }
+
+  async function restoreParkedAdmins(): Promise<void> {
+    const ids = [...parkedAdminIds];
+    if (ids.length === 0) return;
+
+    await db
+      .update(schema.users)
+      .set({ role: 'ADMIN' })
+      .where(inArray(schema.users.id, ids));
+    parkedAdminIds.clear();
   }
 
   const readUser = (id: string) =>
@@ -71,12 +99,18 @@ describe('UsersService (integration)', () => {
   });
 
   afterAll(async () => {
-    if (createdUserIds.length > 0) {
-      await db
-        .delete(schema.users)
-        .where(inArray(schema.users.id, createdUserIds));
+    // Wrapped so a failed delete cannot strand the seeded admin as a MANAGER,
+    // and so the pool closes either way rather than hanging the run.
+    try {
+      if (createdUserIds.length > 0) {
+        await db
+          .delete(schema.users)
+          .where(inArray(schema.users.id, createdUserIds));
+      }
+      await restoreParkedAdmins();
+    } finally {
+      await pool.end();
     }
-    await pool.end();
   });
 
   describe('create', () => {
