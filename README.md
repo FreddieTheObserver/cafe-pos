@@ -35,6 +35,7 @@ cp .env.example .env      # defaults already match docker-compose.yml
 docker compose up -d      # Postgres on 5433, Redis on 6379, MinIO on 9000/9001
 pnpm install
 pnpm db:migrate           # applies drizzle/*.sql to the running database
+pnpm db:seed              # staff accounts and a small menu, for local use only
 pnpm start:dev
 ```
 
@@ -122,6 +123,18 @@ pnpm db:migrate    # apply pending migration files to DATABASE_URL
 ```
 
 The workflow is: edit the schema in TypeScript, run `db:generate`, read the emitted SQL, commit both the migration and the updated `drizzle/meta` snapshot, then `db:migrate`. Never hand-edit a migration that has already been applied anywhere but your own machine.
+
+### Seed data
+
+```bash
+pnpm db:seed       # idempotent; re-running changes nothing
+```
+
+`POST /users` is ADMIN-only (§6.4), so a freshly migrated database cannot produce a caller allowed to create the first account. `scripts/seed.ts` is that door: it inserts one staff account per role — `admin@` / `manager@` / `cashier@` / `barista@cafepos.local`, password `cafepos-dev-password` unless `SEED_PASSWORD` says otherwise — plus three categories, eight items and three shared option groups, so `GET /menu` returns something worth looking at.
+
+It refuses to run under `NODE_ENV=production`, with no override flag, because a script that mints known-password admins is a backdoor anywhere it is not wanted. Every row is matched on its natural key and skipped if present, so a re-run never resets a password somebody changed.
+
+Two details in the seeded menu are there to be tested against rather than to look pretty. The `Size` group prices `Small` at **−10฿**: `price_delta_minor` carries no `CHECK` (unlike `base_price_minor`), so a negative delta is legal, and keeping a line total off the floor is Phase 3's pricing job. The pastries carry **no option groups at all**, which is the shape a kiosk client has to render without assuming every item has choices attached.
 
 > **`drizzle/0000_nasty_dagger.sql` must never be regenerated.** Its first line, `CREATE EXTENSION IF NOT EXISTS citext;`, was added by hand and `drizzle-kit` does not reproduce it: the `citext` column type is declared in the schema as a Drizzle `customType`, so the generator emits a column of type `citext` without ever emitting the extension that defines it. That type backs the case-insensitive unique email on `users` (so `A@x.com` and `a@x.com` collide on the unique index). A regenerated `0000` would therefore fail on any fresh database. Add new changes as new migration files; leave `0000` alone.
 
