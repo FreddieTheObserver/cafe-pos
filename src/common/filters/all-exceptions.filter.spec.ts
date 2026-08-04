@@ -10,6 +10,7 @@ import {
 import type { HttpAdapterHost } from '@nestjs/core';
 import { z } from 'zod';
 import { AppException } from '../errors/app.exception';
+import { DependencyUnavailableError } from '../errors/dependency-unavailable.error';
 import type { ProblemDetails } from '../errors/problem-details';
 import { AllExceptionsFilter } from './all-exceptions.filter';
 
@@ -32,6 +33,7 @@ describe('AllExceptionsFilter', () => {
   let reply: jest.Mock;
   let host: ArgumentsHost;
   let logError: jest.SpyInstance;
+  let logWarn: jest.SpyInstance;
 
   /** Runs the filter and returns the envelope it handed to the HTTP adapter. */
   function capture(exception: unknown): {
@@ -60,6 +62,7 @@ describe('AllExceptionsFilter', () => {
     } as unknown as ArgumentsHost;
 
     logError = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    logWarn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -203,6 +206,65 @@ describe('AllExceptionsFilter', () => {
       capture(new NotFoundException());
 
       expect(logError).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A 503 we raised ourselves is a decision, not a fault: a dependency is
+     * down, the component that found it has already logged the cause, and the
+     * only thing this stack names is our own `throw`. Reporting it at `error`
+     * puts a documented degradation at the level reserved for "something is
+     * broken and nobody meant it" — on the one day telling those apart is the
+     * whole job.
+     */
+    describe('a dependency refusal we raised on purpose', () => {
+      const refusal = () =>
+        new DependencyUnavailableError(
+          'This request could not be rate limited, so it was refused. Try again shortly.',
+        );
+
+      it('is not reported as a server fault', () => {
+        capture(refusal());
+
+        expect(logError).not.toHaveBeenCalled();
+      });
+
+      it('is still reported, at a level that matches what happened', () => {
+        capture(refusal());
+
+        expect(logWarn).toHaveBeenCalledWith(
+          expect.stringContaining('DEPENDENCY_UNAVAILABLE'),
+        );
+        expect(logWarn).toHaveBeenCalledWith(
+          expect.stringContaining(REQUEST_ID),
+        );
+      });
+
+      /** Identical every time, and it names our throw rather than the cause. */
+      it('carries no stack', () => {
+        capture(refusal());
+
+        expect(logWarn).toHaveBeenCalledTimes(1);
+        expect(logWarn.mock.calls[0]).toHaveLength(1);
+      });
+
+      it('changes nothing about what the caller receives', () => {
+        const { problem, status } = capture(refusal());
+
+        expect(status).toBe(503);
+        expect(problem).toMatchObject({
+          status: 503,
+          code: 'DEPENDENCY_UNAVAILABLE',
+          title: 'Service unavailable',
+        });
+      });
+    });
+
+    /** The carve-out is for 503 alone; a real fault keeps the loud path. */
+    it('still logs an unexpected 5xx as an error', () => {
+      capture(new InternalServerErrorException('pg exploded'));
+
+      expect(logError).toHaveBeenCalled();
+      expect(logWarn).not.toHaveBeenCalled();
     });
   });
 

@@ -29,6 +29,20 @@ export function buildLoggerOptions(config: ConfigService<Env, true>): Params {
         ignore: (req) => SILENT_PATHS.has((req.url ?? '').split('?')[0]),
       },
       customLogLevel: (_req, res, err) => {
+        // 503 is the one 5xx this API raises on purpose: a dependency is down,
+        // which `AllExceptionsFilter` also logs at `warn` and for the same
+        // reason. Deciding it here as well is what keeps an outage out of
+        // `error` entirely — the request line is the other half of the pair,
+        // and alerting keys on severity.
+        //
+        // Status-based rather than code-based because that is all pino-http
+        // has, and nothing but `DependencyUnavailableError` produces a 503
+        // (§9.2). It still attaches a synthesised `err` of its own to every
+        // 5xx regardless of level (pino-http `logger.js`, `res.statusCode >=
+        // 500`), so the line keeps a stack — one that names pino's own
+        // `onResFinished` rather than anything that happened. Silencing that
+        // is a change to how *all* errors are serialised, and is not this.
+        if (res.statusCode === 503) return 'warn';
         if (err || res.statusCode >= 500) return 'error';
         if (res.statusCode >= 400) return 'warn';
         return 'info';

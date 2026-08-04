@@ -48,10 +48,23 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const problem = this.toProblem(exception, requestId);
 
-    // 5xx means a human should look — log with the stack, but never leak it out.
-    if (problem.status >= 500) {
+    const where = `${problem.code} ${req.method} ${req.url} [${requestId}]`;
+
+    if (problem.code === ErrorCode.DEPENDENCY_UNAVAILABLE) {
+      // A 503 is the one 5xx we raise on purpose: a dependency is down, which
+      // is a condition rather than a fault. The component that found it has
+      // already logged the cause — with a throttle, because it recurs per
+      // request — and the stack here would only ever name our own `throw`.
+      //
+      // So it is reported, but not as a bug: `error` has to keep meaning
+      // "something is broken and nobody meant it", or an incident buries the
+      // one line that says which. §9.2 gives 503 exactly this reading, and
+      // §13 asks that `error` stay a level a human reads.
+      this.logger.warn(where);
+    } else if (problem.status >= 500) {
+      // Everything else at 5xx is unplanned — log the stack, never leak it out.
       this.logger.error(
-        `${problem.code} ${req.method} ${req.url} [${requestId}]`,
+        where,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
