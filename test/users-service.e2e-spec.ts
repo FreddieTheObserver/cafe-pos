@@ -99,15 +99,21 @@ describe('UsersService (integration)', () => {
   });
 
   afterAll(async () => {
-    // Wrapped so a failed delete cannot strand the seeded admin as a MANAGER,
-    // and so the pool closes either way rather than hanging the run.
+    // Nested rather than sequential, so each guarantee actually holds: a failed
+    // delete must not strand the seeded admin as a MANAGER, and neither of
+    // those must leave the pool open and hang the run. Written flat, the
+    // restore sits on the delete's happy path and the promise in the comment is
+    // one the code does not keep.
     try {
-      if (createdUserIds.length > 0) {
-        await db
-          .delete(schema.users)
-          .where(inArray(schema.users.id, createdUserIds));
+      try {
+        if (createdUserIds.length > 0) {
+          await db
+            .delete(schema.users)
+            .where(inArray(schema.users.id, createdUserIds));
+        }
+      } finally {
+        await restoreParkedAdmins();
       }
-      await restoreParkedAdmins();
     } finally {
       await pool.end();
     }

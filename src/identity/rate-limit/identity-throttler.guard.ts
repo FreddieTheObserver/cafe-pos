@@ -83,21 +83,29 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
         [context.getHandler(), context.getClass()],
       ) ?? RATE_LIMITS.staffGeneral.onBackendFailure;
 
-    const { method, url } = this.getRequestResponse(context).req as {
-      method: string;
-      url: string;
+    /**
+     * Built only when the line is actually going to be written. Everything here
+     * — reading the request, and `describeError`'s walk through `cause` and
+     * `errors[]` — is work in front of every handler in the application, and
+     * the throttle above discards all but one call in thirty seconds of it.
+     *
+     * `describeError` rather than `String(error)`: the ioredis failure is one
+     * layer down, under our own wrapper, and this is how the rest of the
+     * codebase renders a thrown value.
+     */
+    const describe = (): string => {
+      const { method, url } = this.getRequestResponse(context).req as {
+        method: string;
+        url: string;
+      };
+      return `(most recently ${method} ${url}). ${describeError(error)}`;
     };
-
-    // `describeError` walks `cause`/`errors[]` to the innermost message, which
-    // is what this needs: the ioredis failure is one layer down, under our own
-    // wrapper. It is also how the rest of the codebase renders a thrown value.
-    const cause = describeError(error);
 
     if (policy === 'refuse') {
       const suffix = this.refusals.claim();
       if (suffix !== null) {
         this.logger.error(
-          `Refusing requests whose rate limit is a security control and cannot be enforced (most recently ${method} ${url}). ${cause}${suffix}`,
+          `Refusing requests whose rate limit is a security control and cannot be enforced ${describe()}${suffix}`,
         );
       }
       throw new DependencyUnavailableError(
@@ -108,7 +116,7 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
     const suffix = this.uncounted.claim();
     if (suffix !== null) {
       this.logger.warn(
-        `Serving requests uncounted until the rate limiter is reachable (most recently ${method} ${url}). ${cause}${suffix}`,
+        `Serving requests uncounted until the rate limiter is reachable ${describe()}${suffix}`,
       );
     }
     return true;
