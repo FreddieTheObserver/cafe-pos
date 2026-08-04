@@ -1,4 +1,10 @@
-import { IdentityHarness } from './fixtures/identity-fixtures';
+import { eq } from 'drizzle-orm';
+import { uuidv7 } from 'uuidv7';
+import * as schema from '../src/database/schema';
+import {
+  FIXTURE_PASSWORD,
+  IdentityHarness,
+} from './fixtures/identity-fixtures';
 
 /**
  * Guards the e2e harness against a footgun that cost a CI run.
@@ -58,5 +64,42 @@ describe('IdentityHarness HTTP lifecycle (e2e)', () => {
     const res = await harness.http().get('/healthz');
 
     expect(res.status).toBe(200);
+  });
+
+  /**
+   * The other half of "a suite cleans up after itself": rows a test creates by
+   * calling the API, which the harness never sees and so cannot know about.
+   *
+   * `createStaff` inserts directly and is tracked; `POST /users` is not, and
+   * `users-http` leaked four accounts on every single run — twenty-four of them
+   * had accumulated in the development database before anyone looked. Devices
+   * already had `trackDevice` for exactly this; users had no equivalent.
+   */
+  it('removes a user created through the API once it is tracked', async () => {
+    const spare = await IdentityHarness.boot();
+    const adminToken = await spare.accessTokenFor('ADMIN');
+    const email = `lifecycle-${uuidv7()}@cafepos.test`;
+
+    const created = await spare
+      .http()
+      .post('/api/v1/users')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        email,
+        displayName: 'Lifecycle Check',
+        role: 'BARISTA',
+        password: FIXTURE_PASSWORD,
+      });
+    expect(created.status).toBe(201);
+    spare.trackUser((created.body as { id: string }).id);
+
+    await spare.close();
+
+    // Read through a different harness: the one that made the row is gone.
+    const survivors = await harness.db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.email, email));
+    expect(survivors).toEqual([]);
   });
 });

@@ -123,6 +123,19 @@ export class IdentityHarness {
   }
 
   /**
+   * Registers a user this harness did not insert, so cleanup still covers it.
+   *
+   * `createStaff` writes the row itself and tracks it; an account created by
+   * calling `POST /users` is invisible here, and therefore never deleted. That
+   * gap leaked four accounts per run out of `users-http` — twenty-four of them
+   * had piled up in the development database. Call this with the id from any
+   * 201, exactly as `trackDevice` is called after pairing one.
+   */
+  trackUser(id: string): void {
+    this.userIds.push(id);
+  }
+
+  /**
    * Drops every rate-limit counter.
    *
    * A test suite hammers one endpoint from one address, which is exactly what

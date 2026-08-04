@@ -31,12 +31,24 @@ describe('User endpoints (e2e)', () => {
     ...overrides,
   });
 
-  const createUser = (body: Record<string, unknown>) =>
-    harness
+  /**
+   * Every account this suite manages to create is handed to the harness, so
+   * `close()` can remove it. Rows made through the API are invisible to the
+   * harness otherwise, and this file creates one on nearly every case —
+   * including the first half of the 409 test, which succeeds by design.
+   */
+  const createUser = async (body: Record<string, unknown>) => {
+    const res = await harness
       .http()
       .post('/api/v1/users')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(body);
+
+    const id = (res.body as { id?: string } | undefined)?.id;
+    if (res.status === 201 && id) harness.trackUser(id);
+
+    return res;
+  };
 
   beforeAll(async () => {
     harness = await IdentityHarness.boot();
