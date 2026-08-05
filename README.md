@@ -215,11 +215,15 @@ Every route must declare either `@Public()` or `@Roles(...)`; one that declares 
 
 ### Postman collection
 
-`postman/cafepos.postman_collection.json` covers every endpoint above — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.
+`postman/cafepos.postman_collection.json` covers every endpoint above, Phases 0-3 — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.
 
 Run **Auth → Login as ADMIN** first. Its test script captures the token into a collection variable, and the collection's bearer auth hands it to every other request, so no JWT is ever pasted by hand. Logging in as MANAGER, CASHIER or BARISTA overwrites the same variable, which makes the §6.4 matrix testable by hand: sign in as BARISTA, then watch `POST /categories` refuse and `PATCH /items/:id/availability` succeed.
 
 The same trick carries the rest of the flows — registering a kiosk captures its one-time `pairingCode`, activating captures the `deviceToken`, and `GET /menu` captures the `ETag` so the request beside it can demonstrate the `304`. Creating a category, item or option group captures its id, so the folders run top to bottom without copying UUIDs around.
+
+The Orders folder chains the same way: placing an order captures its id, queue number and business day, so the search, detail, KDS and cancel requests beside it run without pasting anything. The "idempotent retry" request sends a fresh `{{$guid}}` as its `Idempotency-Key` — send it twice *without* re-generating and the second call returns the same order with `Idempotency-Replayed: true`.
+
+Two of those requests are expected to fail today, and say so in their own descriptions: the KDS transitions need an order in `PAID`, which needs Phase 4. `DESIGN.md` §4.4 is explicit that an order becomes paid because a payment succeeded and never because an endpoint said so, so there is deliberately no way to reach that state by hand.
 
 Seeded credentials come from `pnpm db:seed`; the password lives in the `seedPassword` collection variable.
 
