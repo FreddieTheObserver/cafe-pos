@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from 'nestjs-pino';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
@@ -22,6 +23,12 @@ import { buildLoggerOptions } from './common/logging/pino-options';
       inject: [ConfigService],
       useFactory: buildLoggerOptions,
     }),
+    /**
+     * Backs the §5.2 background jobs — order expiry now, rollups and retention
+     * later. Registered here rather than inside `OrdersModule` because it is
+     * process-wide plumbing: one scheduler, whatever declares work for it.
+     */
+    ScheduleModule.forRoot(),
     DatabaseModule,
     RedisModule,
     StorageModule,

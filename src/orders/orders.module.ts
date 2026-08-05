@@ -3,6 +3,8 @@ import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { OrdersReadService } from './query/orders-read.service';
 import { OrderStatusService } from './state/order-status.service';
+import { CancelOrderService } from './cancel/cancel-order.service';
+import { OrderExpiryService } from './expiry/order-expiry.service';
 
 /**
  * Phase 3 (§17): the order pipeline — server-side pricing, snapshots, queue
@@ -16,6 +18,12 @@ import { OrderStatusService } from './state/order-status.service';
  */
 @Module({
   controllers: [OrdersController],
-  providers: [OrdersService, OrdersReadService, OrderStatusService],
+  providers: [
+    OrdersService,
+    OrdersReadService,
+    OrderStatusService,
+    CancelOrderService,
+    OrderExpiryService,
+  ],
 })
 export class OrdersModule {}

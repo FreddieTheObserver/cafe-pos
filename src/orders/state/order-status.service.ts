@@ -7,7 +7,10 @@ import { orders } from '../../database/schema';
 import type { OrderStatus } from '../../database/schema/enums';
 import type { Principal } from '../../identity/principal';
 import { OrderInvalidTransitionError } from '../errors/orders.errors';
-import type { OrderSummary } from '../query/orders-read.service';
+import {
+  toOrderSummary,
+  type OrderSummary,
+} from '../query/orders-read.service';
 import { isStaffTransition } from './order-state';
 import { transitionOrder } from './transition-order';
 
@@ -55,7 +58,7 @@ export class OrderStatusService {
         actor: actorOf(principal),
       });
 
-      return toSummary(updated);
+      return toOrderSummary(updated);
     });
   }
 }
@@ -68,18 +71,3 @@ const actorOf = (principal: Principal) =>
   principal.type === 'device'
     ? { actorType: 'DEVICE' as const, actorId: principal.deviceId }
     : { actorType: 'USER' as const, actorId: principal.userId };
-
-const toSummary = (row: typeof orders.$inferSelect): OrderSummary => ({
-  id: row.id,
-  orderNumber: row.orderNumber,
-  status: row.status,
-  channel: row.channel,
-  businessDay: row.businessDay,
-  customerName: row.customerName,
-  subtotalMinor: row.subtotalMinor,
-  vatMinor: row.vatMinor,
-  totalMinor: row.totalMinor,
-  currency: row.currency,
-  createdAt: row.createdAt.toISOString(),
-  expiresAt: row.expiresAt?.toISOString() ?? null,
-});

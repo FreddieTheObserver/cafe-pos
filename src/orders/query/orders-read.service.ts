@@ -136,7 +136,7 @@ export class OrdersReadService {
     const last = page.at(-1);
 
     return {
-      orders: page.map(toSummary),
+      orders: page.map(toOrderSummary),
       nextCursor:
         rows.length > query.limit && last !== undefined
           ? encodeCursor(query.sort, sortValueOf(last, query.sort), last.id)
@@ -171,7 +171,7 @@ export class OrdersReadService {
     if (!row) throw new ResourceNotFoundError('order', id);
 
     return {
-      ...toSummary(row),
+      ...toOrderSummary(row),
       items: row.items.map((line) => ({
         nameSnapshot: line.nameSnapshot,
         unitPriceMinor: line.unitPriceMinorSnapshot,
@@ -289,7 +289,12 @@ function cursorPredicate(
     : sql`(${column}, ${orders.id}) > (${typed}, ${id}::uuid)`;
 }
 
-const toSummary = (row: {
+/**
+ * The summary projection, shared by every route that hands back an order
+ * without its lines — the list, a status change, a cancellation. One function
+ * so a column added to the shape appears in all of them at once.
+ */
+export const toOrderSummary = (row: {
   id: string;
   orderNumber: string;
   status: string;

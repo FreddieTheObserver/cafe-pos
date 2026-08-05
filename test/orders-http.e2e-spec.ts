@@ -2,6 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
+import { OrderExpiryService } from '../src/orders/expiry/order-expiry.service';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 interface OrderBody {
@@ -1325,6 +1326,240 @@ describe('Orders endpoint (e2e)', () => {
 
       expect(res.status).toBe(403);
       expect((res.body as ProblemDetails).code).toBe('FORBIDDEN_ROLE');
+    });
+  });
+
+  /** `POST /orders/:id/cancel` (FR-8, §5.2). */
+  describe('cancelling an order', () => {
+    const cancel = (token: string, id: string, body = {}) =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${id}/cancel`)
+        .set('Authorization', auth(token))
+        .send(body);
+
+    const pendingOrder = async (): Promise<string> => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      expect(res.status).toBe(201);
+      return (res.body as OrderBody).id;
+    };
+
+    it('lets the kiosk that placed it call it off', async () => {
+      const id = await pendingOrder();
+
+      const res = await cancel(kioskToken, id);
+
+      expect(res.status).toBe(200);
+      expect((res.body as OrderSummaryBody).status).toBe('CANCELLED');
+    });
+
+    it('lets a cashier cancel from the counter', async () => {
+      const id = await pendingOrder();
+
+      expect((await cancel(cashierToken, id)).status).toBe(200);
+    });
+
+    it('records the reason on the history row', async () => {
+      const id = await pendingOrder();
+
+      await cancel(cashierToken, id, { reason: 'customer changed their mind' });
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+      const cancelled = history.find((row) => row.toStatus === 'CANCELLED');
+
+      expect(cancelled?.reason).toBe('customer changed their mind');
+      // The moves that have no why keep a null rather than an empty string.
+      expect(history.find((row) => row.fromStatus === null)?.reason).toBeNull();
+    });
+
+    /**
+     * The clearing this phase could not otherwise exercise: an order that has
+     * left PENDING_PAYMENT does not expire, so the column is emptied rather
+     * than left as a date a screen would render as a countdown.
+     */
+    it('clears the expiry when the order leaves PENDING_PAYMENT', async () => {
+      const id = await pendingOrder();
+
+      const [before] = await harness.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, id));
+      expect(before.expiresAt).not.toBeNull();
+
+      await cancel(cashierToken, id);
+
+      const [after] = await harness.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, id));
+      expect(after.expiresAt).toBeNull();
+    });
+
+    it('refuses to cancel the same order twice', async () => {
+      const id = await pendingOrder();
+      await cancel(cashierToken, id);
+
+      const again = await cancel(cashierToken, id);
+
+      expect(again.status).toBe(409);
+      expect((again.body as ProblemDetails).meta).toEqual({
+        currentStatus: 'CANCELLED',
+        requested: 'CANCELLED',
+      });
+    });
+
+    /**
+     * §5.2 gives a manager post-payment cancellation, and §4.4 routes it to
+     * REFUNDED rather than CANCELLED. The refund it depends on is Phase 4, so
+     * until then a paid order is refused — moving it to a terminal state while
+     * the money sat with the gateway is the failure this design exists to
+     * prevent.
+     */
+    it('refuses a paid order until refunds exist', async () => {
+      const id = await pendingOrder();
+      await harness.db
+        .update(schema.orders)
+        .set({ status: 'PAID' })
+        .where(eq(schema.orders.id, id));
+
+      const res = await cancel(managerToken, id, { reason: 'wrong drink' });
+
+      expect(res.status).toBe(409);
+      expect((res.body as ProblemDetails).code).toBe(
+        'ORDER_INVALID_TRANSITION',
+      );
+    });
+
+    it('will not let one device cancel another device"s order', async () => {
+      const id = await pendingOrder();
+      const other = await harness.createDevice('ACTIVE');
+
+      const res = await cancel(other.token, id);
+
+      // 404, not 403 — the same non-answer `GET /orders/:id` gives (§5.4).
+      expect(res.status).toBe(404);
+
+      const [row] = await harness.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, id));
+      expect(row.status).toBe('PENDING_PAYMENT');
+    });
+
+    it('refuses a reason longer than §8 allows', async () => {
+      const id = await pendingOrder();
+
+      const res = await cancel(cashierToken, id, { reason: 'x'.repeat(201) });
+
+      expect(res.status).toBe(422);
+    });
+
+    it('answers 404 for an order that does not exist', async () => {
+      expect((await cancel(cashierToken, uuidv7())).status).toBe(404);
+    });
+  });
+
+  /**
+   * The expiry job (FR-10, §4.4, §9.3).
+   *
+   * Driven by calling the sweep directly rather than waiting on the cron: the
+   * schedule is Nest's to get right, and a test that sleeps a minute to prove
+   * it is a test nobody runs.
+   */
+  describe('expiring unpaid orders', () => {
+    const expiryJob = () => harness.app.get(OrderExpiryService);
+
+    /** An order already past its TTL, without waiting ten minutes for one. */
+    const overdueOrder = async (): Promise<string> => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      const { id } = res.body as OrderBody;
+      await harness.db
+        .update(schema.orders)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(schema.orders.id, id));
+      return id;
+    };
+
+    const statusOf = async (id: string) =>
+      (
+        await harness.db
+          .select()
+          .from(schema.orders)
+          .where(eq(schema.orders.id, id))
+      )[0].status;
+
+    it('reclaims an order whose payment window has closed', async () => {
+      const id = await overdueOrder();
+
+      await expiryJob().expireOverdue();
+
+      expect(await statusOf(id)).toBe('EXPIRED');
+    });
+
+    it('leaves an order that is still within its window', async () => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      const { id } = res.body as OrderBody;
+
+      await expiryJob().expireOverdue();
+
+      expect(await statusOf(id)).toBe('PENDING_PAYMENT');
+    });
+
+    it('attributes the move to the system, not to a person (FR-22)', async () => {
+      const id = await overdueOrder();
+
+      await expiryJob().expireOverdue();
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+      const expired = history.find((row) => row.toStatus === 'EXPIRED');
+
+      expect(expired).toMatchObject({
+        fromStatus: 'PENDING_PAYMENT',
+        actorType: 'SYSTEM',
+        actorId: null,
+      });
+    });
+
+    it('does not touch an order that was already paid', async () => {
+      const id = await overdueOrder();
+      await harness.db
+        .update(schema.orders)
+        .set({ status: 'PAID' })
+        .where(eq(schema.orders.id, id));
+
+      await expiryJob().expireOverdue();
+
+      expect(await statusOf(id)).toBe('PAID');
+    });
+
+    /**
+     * §9.3's "jobs are idempotent". Two instances (§11.3) both run this sweep
+     * and neither coordinates with the other; the guarded transition is what
+     * makes the second one a no-op rather than a second history row.
+     */
+    it('is safe to run twice over the same order', async () => {
+      const id = await overdueOrder();
+
+      await Promise.all([
+        expiryJob().expireOverdue(),
+        expiryJob().expireOverdue(),
+      ]);
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+
+      expect(history.filter((row) => row.toStatus === 'EXPIRED')).toHaveLength(
+        1,
+      );
+      expect(await statusOf(id)).toBe('EXPIRED');
     });
   });
 

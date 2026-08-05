@@ -22,6 +22,13 @@
       "when": 1785898357594,
       "tag": "0002_round_zaran",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785902298174,
+      "tag": "0003_careless_lady_mastermind",
+      "breakpoints": true
     }
   ]
 }

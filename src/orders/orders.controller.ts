@@ -16,10 +16,12 @@ import { Roles } from '../identity/decorators/roles.decorator';
 import type { Principal } from '../identity/principal';
 import { parseIdempotencyKey } from './idempotency/idempotency-key';
 import {
+  CancelOrderDto,
   CreateOrderDto,
   OrderIdParamDto,
   TransitionOrderDto,
 } from './orders.dto';
+import { CancelOrderService } from './cancel/cancel-order.service';
 import { OrdersQueryDto } from './query/orders-query.dto';
 import {
   OrdersReadService,
@@ -45,6 +47,7 @@ export class OrdersController {
     private readonly orders: OrdersService,
     private readonly read: OrdersReadService,
     private readonly status: OrderStatusService,
+    private readonly cancellation: CancelOrderService,
   ) {}
 
   /**
@@ -120,5 +123,28 @@ export class OrdersController {
     @Body() body: TransitionOrderDto,
   ): Promise<OrderSummary> {
     return this.status.transition(principal, params.id, body.to);
+  }
+
+  /**
+   * Cancelling before payment (§5.2). A kiosk may cancel its own order — a
+   * customer who walks away from the screen should not need a staff member —
+   * and BARISTA is absent because a bar screen is not where an order is called
+   * off.
+   *
+   * §5.2 also gives a manager post-payment cancellation. That path is Phase 4:
+   * §4.4 routes it to `REFUNDED` rather than `CANCELLED`, and moving an order
+   * to a terminal state while the customer's money is still with the gateway
+   * is the exact failure this design exists to prevent.
+   */
+  @Roles('ADMIN', 'MANAGER', 'CASHIER', 'KIOSK')
+  @Header('Cache-Control', 'no-store')
+  @HttpCode(200)
+  @Post(':id/cancel')
+  cancel(
+    @CurrentPrincipal() principal: Principal,
+    @Param() params: OrderIdParamDto,
+    @Body() body: CancelOrderDto,
+  ): Promise<OrderSummary> {
+    return this.cancellation.cancel(principal, params.id, body.reason);
   }
 }

@@ -17,6 +17,8 @@ export interface TransitionRequest {
   from: OrderStatus;
   to: OrderStatus;
   actor: TransitionActor;
+  /** Free text for the moves that have a why — cancellation, refunds (§8). */
+  reason?: string | null;
 }
 
 /**
@@ -38,7 +40,7 @@ export interface TransitionRequest {
  */
 export async function transitionOrder(
   tx: Transaction,
-  { orderId, from, to, actor }: TransitionRequest,
+  { orderId, from, to, actor, reason }: TransitionRequest,
 ): Promise<typeof orders.$inferSelect> {
   const [updated] = await tx
     .update(orders)
@@ -65,6 +67,7 @@ export async function transitionOrder(
     toStatus: to,
     actorType: actor.actorType,
     actorId: actor.actorId,
+    reason: reason ?? null,
   });
 
   return updated;

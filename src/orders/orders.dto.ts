@@ -88,6 +88,12 @@ const TransitionOrderSchema = z.strictObject({
   to: z.enum(orderStatuses),
 });
 
+/** §8 caps the cancellation reason at 200; it lands on the history row. */
+const CancelOrderSchema = z.strictObject({
+  reason: z.string().trim().min(1).max(200).nullable().optional(),
+});
+
 export class CreateOrderDto extends createZodDto(CreateOrderSchema) {}
 export class OrderIdParamDto extends createZodDto(OrderIdParamSchema) {}
 export class TransitionOrderDto extends createZodDto(TransitionOrderSchema) {}
+export class CancelOrderDto extends createZodDto(CancelOrderSchema) {}

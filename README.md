@@ -205,6 +205,7 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `GET /orders` | Search and page the order list (filters, cursor pagination) | A, M, C, B |
 | `GET /orders/:id` | One order in full — lines, options, and its audit trail | A, M, C, B, K (own only) |
 | `POST /orders/:id/status` | Advance a ticket through the kitchen (§4.4) | A, M, C, B |
+| `POST /orders/:id/cancel` | Call off an order before it has been paid for | A, M, C, K (own only) |
 
 The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
 
@@ -253,6 +254,10 @@ The fingerprint is taken from the parsed body, not the raw bytes, so a client th
 
 An order that leaves `PENDING_PAYMENT` has its `expires_at` cleared: the column stops meaning anything, and left behind it is a date a KDS would render as "expires in 3 minutes" on a drink that is already paid for.
 
+**Cancellation** has its own door because its authorization is a different shape — a kiosk may cancel, but only its own order and only before payment, and "its own" is a query filter rather than a role check (§6.3). Post-payment cancellation is specified in §5.2 for a manager, and is **not built**: §4.4 routes it to `REFUNDED` rather than `CANCELLED`, and the refund it depends on is Phase 4. Moving an order to a terminal state while the customer's money is still with the gateway is precisely the failure this design is arranged to prevent, so until refunds exist a paid order is refused like any other unavailable transition.
+
+**Unpaid orders expire on a sweep** that runs every minute (`ORDER_EXPIRY_SECONDS`, default 600). It transitions through the same guard as everything else, with FR-22's `SYSTEM` actor so the history says the system reclaimed the order rather than blaming whoever was signed in. Two instances (§11.3) both run it and neither coordinates: the guard makes the second a no-op, which is §9.3's "jobs are idempotent" holding without a distributed lock. Each order gets its own transaction, so one bad row cannot roll back a whole tick's progress. The e2e drives the sweep directly rather than waiting on the cron — a test that sleeps a minute is a test nobody runs.
+
 ### Searching orders
 
 `GET /orders` is the cashier's lookup screen: `status` and `channel` as comma-separated enums, a `from`/`to` range on creation time or a `businessDay` for the cafe's own day (§4.5 B7), `q` for an exact queue number or a customer-name prefix, and `sort` restricted to a whitelist — arbitrary column sorting is both an injection surface and a licence to ask for an unindexed sort over every order the cafe has ever taken.
@@ -300,6 +305,7 @@ src/
                (key parsing, request fingerprint, reserve-then-complete store),
                query/ (list filters, cursor pagination, detail with scoping),
                state/ (the §4.4 graph, the guarded transition primitive),
+               cancel/, expiry/ (the FR-10 sweep),
                business-day boundary, queue numbers, errors/, and the order
                aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
@@ -316,7 +322,9 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id` — and [the state machine](#the-order-state-machine) behind `POST /orders/:id/status`. Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are checkout from `DRAFT`, cancellation, the expiry job, and the cash-tender path that makes `PAID` reachable at all.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id` — and [the state machine](#the-order-state-machine) behind `POST /orders/:id/status`. cancellation, and the FR-10 expiry sweep. Two things remain, and both need a decision rather than just code: checkout from `DRAFT` (see below), and whether the cash-tender path that makes `PAID` reachable belongs here or in Phase 4, where §17 lists it.
+
+**`DRAFT` is blocked on a contradiction in the design.** §4.5 B3 says a queue number is assigned at checkout, *not* at draft — but `orders.order_number` is `NOT NULL` with a unique index on `(business_day, order_number)`, so a parked order has no legal value to hold. Resolving it means either a placeholder number replaced at checkout, or a migration making the column nullable. Order creation is therefore scoped to `PENDING_PAYMENT` for now, which sidesteps the question rather than answering it.
 
 Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
 

@@ -112,6 +112,15 @@ export const orderStatusHistory = pgTable(
     toStatus: text('to_status').notNull(),
     actorType: text('actor_type', { enum: actorTypes }).notNull(),
     actorId: uuidRef('actor_id'),
+    /**
+     * Why, for the transitions that have a why (§8's cancel `reason`). Null on
+     * the ones that do not: nobody explains why a barista started a drink.
+     *
+     * Lives on the history row rather than on `orders` because it belongs to a
+     * single event — an order cancelled and later refunded has two reasons, and
+     * a column on the order could only hold the last one.
+     */
+    reason: text('reason'),
     createdAt: createdAt(),
   },
   (t) => [

@@ -296,6 +296,16 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M, C, B],
     body: EMPTY_BODY,
   },
+  {
+    // A kiosk may call off its own order — a customer who walks away from the
+    // screen should not need to find a staff member. BARISTA is absent: a bar
+    // screen is not where an order is called off.
+    method: 'post',
+    route: '/api/v1/orders/:id/cancel',
+    path: `/api/v1/orders/${uuidv7()}/cancel`,
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */
