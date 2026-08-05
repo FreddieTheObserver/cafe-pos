@@ -15,6 +15,13 @@
       "when": 1785124048231,
       "tag": "0001_narrow_satana",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785898357594,
+      "tag": "0002_round_zaran",
+      "breakpoints": true
     }
   ]
 }

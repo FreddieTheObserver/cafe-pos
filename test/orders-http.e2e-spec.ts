@@ -58,15 +58,28 @@ describe('Orders endpoint (e2e)', () => {
   const itemIds: string[] = [];
   const groupIds: string[] = [];
   const categoryIds: string[] = [];
+  const usedKeys: string[] = [];
 
   const auth = (token: string) => `Bearer ${token}`;
 
-  const postOrder = (token: string, body: Record<string, unknown>) =>
-    harness
+  const postOrder = (
+    token: string,
+    body: Record<string, unknown>,
+    idempotencyKey?: string,
+  ) => {
+    const call = harness
       .http()
       .post('/api/v1/orders')
-      .set('Authorization', auth(token))
-      .send(body);
+      .set('Authorization', auth(token));
+    if (idempotencyKey !== undefined) {
+      call.set('Idempotency-Key', idempotencyKey);
+      usedKeys.push(idempotencyKey);
+    }
+    return call.send(body);
+  };
+
+  /** A fresh key, tracked so the suite can delete its rows afterwards. */
+  const newKey = () => `k-${uuidv7()}`;
 
   /** A well-formed kiosk basket, so each case varies only what it is about. */
   const kioskBasket = (overrides: Record<string, unknown> = {}) => ({
@@ -181,6 +194,11 @@ describe('Orders endpoint (e2e)', () => {
       // catalog suites this one cannot leave that to `close()` — that shuts the
       // pool down, and the deletes below still need it.
       await harness.purgeOrders();
+      if (usedKeys.length > 0) {
+        await harness.db
+          .delete(schema.idempotencyKeys)
+          .where(inArray(schema.idempotencyKeys.key, usedKeys));
+      }
       if (itemIds.length > 0) {
         await harness.db
           .delete(schema.menuItems)
@@ -611,6 +629,198 @@ describe('Orders endpoint (e2e)', () => {
       const res = await postOrder(revoked.token, kioskBasket());
       expect(res.status).toBe(401);
       expect((res.body as ProblemDetails).code).toBe('DEVICE_REVOKED');
+    });
+  });
+
+  /**
+   * §5.7 and E5. The case this exists for is a kiosk on flaky wifi that timed
+   * out and retried — so the retry frequently arrives while the original is
+   * still running, and "check then insert" would let both through.
+   */
+  describe('idempotency keys', () => {
+    const countOrders = async () =>
+      (
+        await harness.db
+          .select()
+          .from(schema.orders)
+          .where(eq(schema.orders.kioskDeviceId, kioskDeviceId))
+      ).length;
+
+    it('replays the original order instead of placing a second', async () => {
+      const key = newKey();
+      const before = await countOrders();
+
+      const first = await postOrder(kioskToken, kioskBasket(), key);
+      const second = await postOrder(kioskToken, kioskBasket(), key);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect((second.body as OrderBody).id).toBe((first.body as OrderBody).id);
+      expect((second.body as OrderBody).orderNumber).toBe(
+        (first.body as OrderBody).orderNumber,
+      );
+      expect(await countOrders()).toBe(before + 1);
+    });
+
+    it('marks the replay so a client can tell it from a new order', async () => {
+      const key = newKey();
+
+      const first = await postOrder(kioskToken, kioskBasket(), key);
+      const second = await postOrder(kioskToken, kioskBasket(), key);
+
+      expect(first.headers['idempotency-replayed']).toBeUndefined();
+      expect(second.headers['idempotency-replayed']).toBe('true');
+    });
+
+    /**
+     * The concurrent case, which is the one the reserve-then-work design is
+     * for: the second request blocks on the reserved primary key rather than
+     * racing past it, and replays once the first commits.
+     */
+    it('survives two identical requests in flight at once', async () => {
+      const key = newKey();
+      const before = await countOrders();
+
+      const [a, b] = await Promise.all([
+        postOrder(kioskToken, kioskBasket(), key),
+        postOrder(kioskToken, kioskBasket(), key),
+      ]);
+
+      expect([a.status, b.status]).toEqual([201, 201]);
+      expect((a.body as OrderBody).id).toBe((b.body as OrderBody).id);
+      expect(await countOrders()).toBe(before + 1);
+
+      // Exactly one of the two did the work; the other replayed it.
+      const replayed = [a, b].filter(
+        (res) => res.headers['idempotency-replayed'] === 'true',
+      );
+      expect(replayed).toHaveLength(1);
+    });
+
+    it('refuses the same key carrying a different basket', async () => {
+      const key = newKey();
+
+      await postOrder(kioskToken, kioskBasket(), key);
+      const second = await postOrder(
+        kioskToken,
+        kioskBasket({
+          items: [{ menuItemId: croissantId, quantity: 2, optionIds: [] }],
+        }),
+        key,
+      );
+
+      expect(second.status).toBe(409);
+      expect((second.body as ProblemDetails).code).toBe('IDEMPOTENCY_CONFLICT');
+    });
+
+    // Canonicalisation, end to end: the same basket serialised with its keys in
+    // a different order is the same request, not a conflict.
+    it('ignores the order the client serialised its JSON in', async () => {
+      const key = newKey();
+
+      const first = await postOrder(
+        kioskToken,
+        {
+          channel: 'KIOSK',
+          customerName: 'Mei',
+          items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
+        },
+        key,
+      );
+      const second = await postOrder(
+        kioskToken,
+        {
+          items: [{ quantity: 1, optionIds: [], menuItemId: croissantId }],
+          customerName: 'Mei',
+          channel: 'KIOSK',
+        },
+        key,
+      );
+
+      expect(second.status).toBe(201);
+      expect((second.body as OrderBody).id).toBe((first.body as OrderBody).id);
+    });
+
+    it('treats two different keys as two orders', async () => {
+      const first = await postOrder(kioskToken, kioskBasket(), newKey());
+      const second = await postOrder(kioskToken, kioskBasket(), newKey());
+
+      expect((second.body as OrderBody).id).not.toBe(
+        (first.body as OrderBody).id,
+      );
+    });
+
+    it('leaves an order with no key entirely alone', async () => {
+      const first = await postOrder(kioskToken, kioskBasket());
+      const second = await postOrder(kioskToken, kioskBasket());
+
+      expect((second.body as OrderBody).id).not.toBe(
+        (first.body as OrderBody).id,
+      );
+    });
+
+    /**
+     * A refused order stores nothing, because the reservation dies with the
+     * rolled-back transaction. Without that, one 86'd item would poison the
+     * customer's key and they could never place that order at all.
+     */
+    it('does not burn a key on an order it refused', async () => {
+      const key = newKey();
+
+      const eightySix = await harness
+        .http()
+        .patch(`/api/v1/items/${croissantId}/availability`)
+        .set('Authorization', auth(managerToken))
+        .send({ isAvailable: false });
+      expect(eightySix.status).toBe(200);
+
+      const refused = await postOrder(kioskToken, kioskBasket(), key);
+      expect(refused.status).toBe(409);
+      expect((refused.body as ProblemDetails).code).toBe(
+        'ORDER_ITEM_UNAVAILABLE',
+      );
+
+      const restored = await harness
+        .http()
+        .patch(`/api/v1/items/${croissantId}/availability`)
+        .set('Authorization', auth(managerToken))
+        .send({ isAvailable: true });
+      expect(restored.status).toBe(200);
+
+      // Same key, now that the pastry is back.
+      const retried = await postOrder(kioskToken, kioskBasket(), key);
+      expect(retried.status).toBe(201);
+    });
+
+    /**
+     * Keys are scoped to the principal that presented them, so a guessed key
+     * cannot be used to pull back another tablet's order — the hash disagrees
+     * and the second device is refused rather than handed a receipt.
+     */
+    it('will not let one device replay another device"s key', async () => {
+      const key = newKey();
+      const other = await harness.createDevice('ACTIVE');
+
+      const mine = await postOrder(kioskToken, kioskBasket(), key);
+      expect(mine.status).toBe(201);
+
+      const theirs = await postOrder(other.token, kioskBasket(), key);
+      expect(theirs.status).toBe(409);
+      expect((theirs.body as ProblemDetails).code).toBe('IDEMPOTENCY_CONFLICT');
+    });
+
+    it('refuses a malformed key rather than silently ignoring it', async () => {
+      const res = await harness
+        .http()
+        .post('/api/v1/orders')
+        .set('Authorization', auth(kioskToken))
+        .set('Idempotency-Key', 'no')
+        .send(kioskBasket());
+
+      expect(res.status).toBe(422);
+      const problem = res.body as ProblemDetails;
+      expect(problem.code).toBe('VALIDATION_FAILED');
+      expect(problem.errors?.[0].field).toBe('Idempotency-Key');
     });
   });
 

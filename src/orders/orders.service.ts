@@ -21,6 +21,14 @@ import {
   OrderChannelMismatchError,
   PriceMismatchError,
 } from './errors/orders.errors';
+import {
+  completeKey,
+  isKeyAlreadyReserved,
+  replayKey,
+  reserveKey,
+  type Transaction,
+} from './idempotency/idempotency.store';
+import { hashRequest } from './idempotency/request-hash';
 import { formatOrderNumber } from './order-number';
 import {
   priceOrder,
@@ -75,13 +83,63 @@ export class OrdersService {
     private readonly config: ConfigService<Env, true>,
   ) {}
 
+  /**
+   * Creates an order, or replays the one this key already produced (§5.7, E5).
+   *
+   * Everything happens in one transaction — the key reservation, the
+   * availability read, and the aggregate write — so the three cannot disagree.
+   * A refused basket rolls the whole lot back, including the reservation, which
+   * is what lets a kiosk retry an order that failed because an item was briefly
+   * sold out.
+   */
   async create(
     principal: Principal,
     input: CreateOrderInput,
+    idempotencyKey?: string,
+  ): Promise<{ order: OrderView; replayed: boolean }> {
+    const requestHash =
+      idempotencyKey === undefined
+        ? null
+        : hashRequest(scopeOf(principal), input);
+
+    try {
+      const order = await this.db.transaction(async (tx) => {
+        if (idempotencyKey !== undefined && requestHash !== null) {
+          await reserveKey(tx, idempotencyKey, requestHash, this.keyExpiry());
+        }
+
+        const view = await this.build(tx, principal, input);
+
+        if (idempotencyKey !== undefined) {
+          await completeKey(tx, idempotencyKey, 201, view);
+        }
+        return view;
+      });
+
+      return { order, replayed: false };
+    } catch (error) {
+      if (!isKeyAlreadyReserved(error)) throw error;
+      // Non-null by construction: the signal is only raised from the branch
+      // guarded on both being present.
+      const order = await replayKey<OrderView>(
+        this.db,
+        idempotencyKey as string,
+        requestHash as string,
+      );
+      return { order, replayed: true };
+    }
+  }
+
+  /** Price it, refuse it, or write it — the part that is the same either way. */
+  private async build(
+    tx: Transaction,
+    principal: Principal,
+    input: CreateOrderInput,
   ): Promise<OrderView> {
-    const channel = await this.resolveChannel(principal, input.channel);
+    const channel = await this.resolveChannel(tx, principal, input.channel);
 
     const catalog = await this.readCatalog(
+      tx,
       input.items.map((item) => item.menuItemId),
     );
     const priced = priceOrder(
@@ -100,7 +158,12 @@ export class OrdersService {
       throw new PriceMismatchError(input.expectedTotalMinor, priced.totalMinor);
     }
 
-    return this.persist(principal, channel, input, priced);
+    return this.persist(tx, principal, channel, input, priced);
+  }
+
+  /** 24 hours (§5.7); the §7.5 cleanup job is what eventually reaps the row. */
+  private keyExpiry(): Date {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000);
   }
 
   /**
@@ -112,6 +175,7 @@ export class OrdersService {
    * working entirely would leave it with nothing to show.
    */
   private async resolveChannel(
+    tx: Transaction,
     principal: Principal,
     submitted: OrderChannel,
   ): Promise<OrderChannel> {
@@ -122,7 +186,7 @@ export class OrdersService {
     }
 
     if (principal.type === 'device') {
-      const device = await this.db.query.kioskDevices.findFirst({
+      const device = await tx.query.kioskDevices.findFirst({
         where: eq(kioskDevices.id, principal.deviceId),
         columns: { status: true },
       });
@@ -148,9 +212,10 @@ export class OrdersService {
    * from before the change, which is precisely the E6 story.
    */
   private async readCatalog(
+    tx: Transaction,
     menuItemIds: string[],
   ): Promise<Map<string, CatalogItem>> {
-    const rows = await this.db.query.menuItems.findMany({
+    const rows = await tx.query.menuItems.findMany({
       where: inArray(menuItems.id, [...new Set(menuItemIds)]),
       columns: {
         id: true,
@@ -203,13 +268,14 @@ export class OrdersService {
   }
 
   /**
-   * Order, lines, option snapshots and the opening history row, in one
-   * transaction — the §4.3 Order aggregate boundary. A crash between any two of
-   * these statements leaves no order at all, which is the only acceptable
+   * Order, lines, option snapshots and the opening history row — the §4.3 Order
+   * aggregate, written inside the caller's transaction. A crash between any two
+   * of these statements leaves no order at all, which is the only acceptable
    * outcome: a half-written order with a queue number is one a barista would
    * eventually be handed.
    */
   private async persist(
+    tx: Transaction,
     principal: Principal,
     channel: OrderChannel,
     input: CreateOrderInput,
@@ -233,75 +299,72 @@ export class OrdersService {
         this.config.get('ORDER_EXPIRY_SECONDS', { infer: true }) * 1000,
     );
 
-    return this.db.transaction(async (tx) => {
-      const sequence = await nextOrderNumber(tx, businessDay);
+    const sequence = await nextOrderNumber(tx, businessDay);
 
-      const [order] = await tx
-        .insert(orders)
-        .values({
-          orderNumber: formatOrderNumber(sequence),
-          businessDay,
-          channel,
-          status,
-          kioskDeviceId:
-            principal.type === 'device' ? principal.deviceId : null,
-          createdByUserId: principal.type === 'staff' ? principal.userId : null,
-          customerName: input.customerName ?? null,
-          subtotalMinor: priced.subtotalMinor,
-          vatMinor: priced.vatMinor,
-          totalMinor: priced.totalMinor,
-          currency: this.config.get('CURRENCY', { infer: true }),
-          expiresAt,
-        })
-        .returning();
+    const [order] = await tx
+      .insert(orders)
+      .values({
+        orderNumber: formatOrderNumber(sequence),
+        businessDay,
+        channel,
+        status,
+        kioskDeviceId: principal.type === 'device' ? principal.deviceId : null,
+        createdByUserId: principal.type === 'staff' ? principal.userId : null,
+        customerName: input.customerName ?? null,
+        subtotalMinor: priced.subtotalMinor,
+        vatMinor: priced.vatMinor,
+        totalMinor: priced.totalMinor,
+        currency: this.config.get('CURRENCY', { infer: true }),
+        expiresAt,
+      })
+      .returning();
 
-      // One insert per level rather than per line: a 30-line order is two
-      // round trips, not sixty.
-      const lines = await tx
-        .insert(orderItems)
-        .values(
-          priced.lines.map((line) => ({
-            orderId: order.id,
-            menuItemId: line.menuItemId,
-            nameSnapshot: line.nameSnapshot,
-            unitPriceMinorSnapshot: line.unitPriceMinorSnapshot,
-            quantity: line.quantity,
-            lineTotalMinor: line.lineTotalMinor,
-            notes: line.notes,
-          })),
-        )
-        .returning({ id: orderItems.id });
-
-      const optionRows = priced.lines.flatMap((line, index) =>
-        line.options.map((option) => ({
-          orderItemId: lines[index].id,
-          optionId: option.optionId,
-          groupNameSnapshot: option.groupNameSnapshot,
-          optionNameSnapshot: option.optionNameSnapshot,
-          priceDeltaMinorSnapshot: option.priceDeltaMinorSnapshot,
+    // One insert per level rather than per line: a 30-line order is two
+    // round trips, not sixty.
+    const lines = await tx
+      .insert(orderItems)
+      .values(
+        priced.lines.map((line) => ({
+          orderId: order.id,
+          menuItemId: line.menuItemId,
+          nameSnapshot: line.nameSnapshot,
+          unitPriceMinorSnapshot: line.unitPriceMinorSnapshot,
+          quantity: line.quantity,
+          lineTotalMinor: line.lineTotalMinor,
+          notes: line.notes,
         })),
-      );
-      if (optionRows.length > 0) {
-        await tx.insert(orderItemOptions).values(optionRows);
-      }
+      )
+      .returning({ id: orderItems.id });
 
-      /**
-       * The order's first line in the audit trail (FR-22). `fromStatus` is null
-       * because there was no previous state — the row records a creation, not a
-       * transition, and inventing a "from" would make the history lie about how
-       * the order began.
-       */
-      await tx.insert(orderStatusHistory).values({
-        orderId: order.id,
-        fromStatus: null,
-        toStatus: status,
-        actorType: principal.type === 'device' ? 'DEVICE' : 'USER',
-        actorId:
-          principal.type === 'device' ? principal.deviceId : principal.userId,
-      });
+    const optionRows = priced.lines.flatMap((line, index) =>
+      line.options.map((option) => ({
+        orderItemId: lines[index].id,
+        optionId: option.optionId,
+        groupNameSnapshot: option.groupNameSnapshot,
+        optionNameSnapshot: option.optionNameSnapshot,
+        priceDeltaMinorSnapshot: option.priceDeltaMinorSnapshot,
+      })),
+    );
+    if (optionRows.length > 0) {
+      await tx.insert(orderItemOptions).values(optionRows);
+    }
 
-      return toView(order, priced);
+    /**
+     * The order's first line in the audit trail (FR-22). `fromStatus` is null
+     * because there was no previous state — the row records a creation, not a
+     * transition, and inventing a "from" would make the history lie about how
+     * the order began.
+     */
+    await tx.insert(orderStatusHistory).values({
+      orderId: order.id,
+      fromStatus: null,
+      toStatus: status,
+      actorType: principal.type === 'device' ? 'DEVICE' : 'USER',
+      actorId:
+        principal.type === 'device' ? principal.deviceId : principal.userId,
     });
+
+    return toView(order, priced);
   }
 }
 
@@ -327,7 +390,7 @@ export class OrdersService {
  * and it is the reason those statements are kept to four.
  */
 async function nextOrderNumber(
-  tx: Parameters<Parameters<Database['transaction']>[0]>[0],
+  tx: Transaction,
   businessDay: string,
 ): Promise<number> {
   const [counter] = await tx
@@ -341,6 +404,15 @@ async function nextOrderNumber(
 
   return counter.lastValue;
 }
+
+/**
+ * Binds an idempotency key to whoever presented it, so a guessed key cannot be
+ * used to pull back another tablet's order.
+ */
+const scopeOf = (principal: Principal): string =>
+  principal.type === 'device'
+    ? `device:${principal.deviceId}`
+    : `user:${principal.userId}`;
 
 function toView(
   order: typeof orders.$inferSelect,

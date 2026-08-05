@@ -11,6 +11,7 @@ export const OrderErrorCode = {
   ORDER_ITEM_UNAVAILABLE: 'ORDER_ITEM_UNAVAILABLE',
   OPTION_SELECTION_INVALID: 'OPTION_SELECTION_INVALID',
   PRICE_MISMATCH: 'PRICE_MISMATCH',
+  IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
 } as const;
 
 /**
@@ -117,6 +118,30 @@ export interface OptionSelectionViolation {
   /** Bounds context for MIN_SELECT / MAX_SELECT, so the message writes itself. */
   selected?: number;
   allowed?: { minSelect: number; maxSelect: number };
+}
+
+/**
+ * One idempotency key, two different requests (§5.7).
+ *
+ * The key means "this is the same logical attempt as before", so the same key
+ * carrying a different basket is a client bug — most often a kiosk that reused
+ * a key across two customers, which is exactly the mistake that would otherwise
+ * hand the second customer the first one's order.
+ *
+ * Refusing is the only safe answer. Serving the stored response would give the
+ * second customer a receipt for a basket they did not order; serving the new
+ * one would make the key meaningless.
+ */
+export class IdempotencyConflictError extends AppException {
+  constructor() {
+    super({
+      code: OrderErrorCode.IDEMPOTENCY_CONFLICT,
+      status: 409,
+      title: 'Idempotency key reused',
+      detail:
+        'That Idempotency-Key was already used for a different request. Use a new key for a new order.',
+    });
+  }
 }
 
 /**

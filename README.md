@@ -230,6 +230,16 @@ Rate limits (§10.2) are Redis-backed so they hold across instances: 20 login at
 
 When Redis is unreachable those limits deliberately stop behaving alike. The 600/min staff backstop **fails open**: it is a backstop, ordinary traffic is nowhere near it, and refusing requests to preserve it would close the cafe over a cache. Login and device activation **fail closed** with a `503 DEPENDENCY_UNAVAILABLE`, because on those two routes the limit *is* the brute-force defence, and serving them uncounted would turn an outage into an unlimited guessing window. Staff who are already signed in keep working throughout — access tokens are verified against a signature, not against Redis.
 
+### Idempotency
+
+`POST /orders` accepts an `Idempotency-Key` header (§5.7). It is optional, but a kiosk should always send one: the case it exists for is a tablet on flaky wifi that timed out and retried, and without a key that retry is a second order and, later, a second charge.
+
+The header is read rather than the body because it describes the *attempt*, not the order — the same basket submitted twice on purpose is legitimately two orders, and the key is what says which of the two a request means. A replay returns the original order with `Idempotency-Replayed: true`, so a client can tell "my retry worked" from "I just created another order". The same key carrying a different basket is a `409 IDEMPOTENCY_CONFLICT`; serving either answer would be wrong, since one hands a customer someone else's receipt and the other makes the key meaningless.
+
+Two details are load-bearing. The key row is inserted **before** the order is priced, with its response column still null — so a retry that arrives while the original is still in flight blocks on the primary key instead of racing past it. That is not a rare edge: the client only retries *because* it stopped waiting, so the concurrent case is the normal one. And because the reservation lives in the same transaction as the order, **a refused order stores nothing** — a basket rejected because an item was briefly 86'd leaves the key free, and the customer can retry the moment the pastry is back. Both are pinned in `test/orders-http.e2e-spec.ts`, the first by firing two identical requests at once and asserting exactly one of them did the work.
+
+The fingerprint is taken from the parsed body, not the raw bytes, so a client that serialises the same basket with its JSON keys in a different order gets a replay rather than a conflict. It is also scoped to the principal, so a guessed key cannot be used to pull back another tablet's order.
+
 ### The menu cache
 
 `GET /menu` is the only read a kiosk makes, so it is the one endpoint tuned for polling. A version counter in Redis keys a rendered copy of the document; the response carries `ETag: W/"catalog-<version>"` and `Cache-Control: private, no-cache`, so a kiosk asking every 10 seconds normally gets a `304` costing one Redis read and no database work. `no-cache` rather than a `max-age` is deliberate: a client-side lifetime would stack on top of the poll interval and put FR-3's 10-second propagation budget out of reach.
@@ -265,8 +275,10 @@ src/
   catalog/     categories/, items/ (incl. image upload and option-group
                attachment), option-groups/, menu/ (composite read, Redis
                cache, write-invalidation interceptor)
-  orders/      pricing/ (the pure server-side pricing function), business-day
-               boundary, queue numbers, errors/, and the order aggregate write
+  orders/      pricing/ (the pure server-side pricing function), idempotency/
+               (key parsing, request fingerprint, reserve-then-complete store),
+               business-day boundary, queue numbers, errors/, and the order
+               aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
                shared by main.ts and the e2e suite so it is never untested
   main.ts      composition root
@@ -281,7 +293,7 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, and the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`). Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are idempotency keys, `GET /orders` with cursor pagination, the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), and [idempotency keys](#idempotency). Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are `GET /orders` with cursor pagination, the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
 
 Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
 
