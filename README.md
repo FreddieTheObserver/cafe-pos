@@ -201,6 +201,7 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `POST /option-groups/:id/options` | Add a choice to a group | A, M |
 | `PATCH /options/:id` | Manage a choice (name, price delta) | A, M |
 | `PATCH /options/:id/availability` | 86 / un-86 a choice | A, M, C, B |
+| `POST /orders` | Place an order — priced, snapshotted and queue-numbered by the server | A, M, C, K |
 
 The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
 
@@ -264,6 +265,8 @@ src/
   catalog/     categories/, items/ (incl. image upload and option-group
                attachment), option-groups/, menu/ (composite read, Redis
                cache, write-invalidation interceptor)
+  orders/      pricing/ (the pure server-side pricing function), business-day
+               boundary, queue numbers, errors/, and the order aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
                shared by main.ts and the e2e suite so it is never untested
   main.ts      composition root
@@ -278,9 +281,11 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: next.** Order creation with server-side pricing and snapshots, queue numbers, the state machine and history, idempotency keys, list/search with cursor pagination, and the expiry job.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, and the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`). Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are idempotency keys, `GET /orders` with cursor pagination, the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
 
-Phase 2 leaves Phase 3 one obligation worth stating: option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. Keeping a line total from going below zero is server-side pricing's job, since only it sees the whole basket.
+Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
+
+Two Phase 3 notes worth carrying forward. **Queue numbers come from a counter table, not a sequence** — a sequence is deliberately non-transactional and would leave a permanent gap behind any rolled-back checkout, so the counter row's lock is what makes B3 both unique and gapless, at the cost of serializing same-day checkouts across one short transaction. And **an item in a deactivated category is refused as unavailable rather than as unknown**: `is_active` on a category is a publish switch, so those items are absent from `GET /menu` entirely and a basket naming one is holding a stale menu — which is exactly E6.
 
 One item from §6.1 is deliberately deferred: breached-password rejection on account creation. It needs an outbound call to a range API plus a policy for when that service is unreachable, and adding an external dependency to the account-creation path belongs with the rest of the §12.4 integrations rather than inside the auth phase. Minimum length 10 is enforced.
 

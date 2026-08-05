@@ -1,4 +1,6 @@
 import { AppException } from '../../common/errors/app.exception';
+import { ErrorCode } from '../../common/errors/error-codes';
+import type { OrderChannel } from '../../database/schema/enums';
 
 /**
  * The orders slice of the §9.2 catalog. As in the catalog module, codes are
@@ -10,6 +12,38 @@ export const OrderErrorCode = {
   OPTION_SELECTION_INVALID: 'OPTION_SELECTION_INVALID',
   PRICE_MISMATCH: 'PRICE_MISMATCH',
 } as const;
+
+/**
+ * The `channel` in the body contradicts the credential that sent it (§8).
+ *
+ * A device token can only place a KIOSK order and a staff token only a COUNTER
+ * one, so this field never decides anything — the principal does. It is checked
+ * because a client confused about which of the two it is would otherwise
+ * silently corrupt the channel split that every §5.2 report and the Z-report
+ * are cut along, and that is the kind of error that is only ever noticed a
+ * month later.
+ *
+ * Reuses `VALIDATION_FAILED` rather than inventing a code: §9.2 is the
+ * published contract, this is a field-level shape complaint, and 422 already
+ * carries `errors[]` for exactly this.
+ */
+export class OrderChannelMismatchError extends AppException {
+  constructor(submitted: OrderChannel, expected: OrderChannel) {
+    super({
+      code: ErrorCode.VALIDATION_FAILED,
+      status: 422,
+      title: 'Channel does not match the caller',
+      detail: `This credential places ${expected} orders; the request said ${submitted}.`,
+      errors: [
+        {
+          field: 'channel',
+          rule: 'principal',
+          message: `must be ${expected} for this credential`,
+        },
+      ],
+    });
+  }
+}
 
 /**
  * Something in the basket cannot be sold right now (E6, FR-3).

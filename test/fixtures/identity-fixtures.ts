@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { inArray } from 'drizzle-orm';
+import { inArray, or } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import request from 'supertest';
 import { REDIS } from '../../src/redis/redis.constants';
@@ -160,6 +160,7 @@ export class IdentityHarness {
    */
   async close(): Promise<void> {
     try {
+      await this.purgeOrders();
       if (this.userIds.length > 0) {
         await this.db
           .delete(schema.refreshTokens)
@@ -184,5 +185,54 @@ export class IdentityHarness {
     } finally {
       await this.app.close();
     }
+  }
+
+  /**
+   * Removes orders placed by this harness's principals, before the principals
+   * themselves go.
+   *
+   * Found by owner rather than tracked by id, the way devices created through
+   * the API are already found by `registeredBy`: every order a suite can create
+   * is placed by one of its own kiosks or staff accounts, and an ordering test
+   * that forgot to call a tracker would otherwise leave rows behind — and hold
+   * a foreign key that stops its own device and user cleanup.
+   *
+   * Deleted children-first because the schema says so: `order_items.order_id`
+   * is ON DELETE RESTRICT (an order that has been sold is not something a
+   * cascade should quietly erase) and the history rows carry no rule at all.
+   * Only `order_item_options` cascades, from its line.
+   *
+   * Public, and also called by `close()`. An ordering suite has to run this
+   * *before* it deletes the menu items its orders point at, and `close()` shuts
+   * the pg pool down — so a suite that waited for close() would be holding a
+   * foreign key it could no longer delete through. Running twice is a no-op.
+   */
+  async purgeOrders(): Promise<void> {
+    const owners = [
+      ...(this.deviceIds.length > 0
+        ? [inArray(schema.orders.kioskDeviceId, this.deviceIds)]
+        : []),
+      ...(this.userIds.length > 0
+        ? [inArray(schema.orders.createdByUserId, this.userIds)]
+        : []),
+    ];
+    if (owners.length === 0) return;
+
+    const mine = await this.db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(or(...owners));
+    if (mine.length === 0) return;
+
+    const orderIds = mine.map((row) => row.id);
+    await this.db
+      .delete(schema.orderItems)
+      .where(inArray(schema.orderItems.orderId, orderIds));
+    await this.db
+      .delete(schema.orderStatusHistory)
+      .where(inArray(schema.orderStatusHistory.orderId, orderIds));
+    await this.db
+      .delete(schema.orders)
+      .where(inArray(schema.orders.id, orderIds));
   }
 }

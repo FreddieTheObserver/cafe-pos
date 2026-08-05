@@ -253,6 +253,18 @@ const MATRIX: MatrixRow[] = [
     path: '/api/v1/menu',
     allow: [A, M, C, B, K],
   },
+  {
+    /**
+     * The kiosk-first API in one row (§3.6): a tablet and a cashier create
+     * orders through the same endpoint. BARISTA is absent because taking
+     * orders is not their job — they advance ones that already exist.
+     */
+    method: 'post',
+    route: '/api/v1/orders',
+    path: '/api/v1/orders',
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */
