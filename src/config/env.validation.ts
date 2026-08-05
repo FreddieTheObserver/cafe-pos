@@ -23,6 +23,24 @@ function isSecureOrLocal(value: string): boolean {
 }
 
 /**
+ * Whether the platform's timezone database knows this name.
+ *
+ * Asked by construction rather than against `Intl.supportedValuesOf`, because
+ * that list omits the backward-compatibility aliases (`Asia/Rangoon`,
+ * `US/Eastern`) that a real deployment's `TZ` may well be set to — and those
+ * resolve perfectly well. A `RangeError` here is the only authority worth
+ * trusting, and getting it at boot beats getting it on the first order.
+ */
+function isKnownTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The single source of truth for the environment this app needs.
  *
  * Parsed once at boot (see `validateEnv`, wired into ConfigModule). A missing
@@ -82,6 +100,54 @@ export const envSchema = z.object({
         .map((origin) => origin.trim())
         .filter(Boolean),
     ),
+  /**
+   * How this cafe trades (§16's product checklist: business-day boundary, VAT
+   * rate, currency and order-expiry TTL all configurable and confirmed with the
+   * owner). Every one of these is a number the owner can be wrong about in a
+   * way no test would catch, so each ships a documented default rather than
+   * being hardcoded somewhere in the ordering path.
+   */
+  BUSINESS_TIMEZONE: z
+    .string()
+    .min(1)
+    .default('Asia/Bangkok')
+    .refine(isKnownTimeZone, 'must be an IANA time zone name'),
+  /**
+   * The hour the trading day rolls over (B7, E10). 05:00 local is after any
+   * cafe closes and before any cafe opens, so an order rung up at 00:30 keeps
+   * the queue number and the Z-report line of the shift that is still running.
+   */
+  BUSINESS_DAY_START_HOUR: z.coerce.number().int().min(0).max(23).default(5),
+  /**
+   * VAT in basis points, extracted from a VAT-inclusive price rather than added
+   * to it (§3.3): 700 is Thailand's 7%, and the menu price is what the customer
+   * pays. Basis points keep the arithmetic integral until one rounding at the
+   * end — a float rate here is how receipts start disagreeing with reports.
+   *
+   * A cafe below the registration threshold sets 0, which is why the floor is
+   * zero rather than one.
+   */
+  VAT_BASIS_POINTS: z.coerce.number().int().min(0).max(10_000).default(700),
+  /** ISO 4217, single-currency by design (§3.5). Matches the `char(3)` column. */
+  CURRENCY: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .pipe(
+      z.string().regex(/^[A-Z]{3}$/, 'must be a three-letter ISO 4217 code'),
+    )
+    .default('THB'),
+  /**
+   * How long an unpaid order holds its queue number before the expiry job
+   * reclaims it (FR-10). Ten minutes is long enough for a customer to find a
+   * card and short enough that an abandoned kiosk screen clears itself before
+   * the next customer reaches it.
+   */
+  ORDER_EXPIRY_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10 * 60),
   /**
    * Object storage for item images (§10, §12.4).
    *

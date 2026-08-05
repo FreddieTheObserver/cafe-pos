@@ -89,14 +89,29 @@ export const paymentEvents = pgTable('payment_events', {
   processedAt: timestamp('processed_at', { withTimezone: true }),
 });
 
-/** Stores (key, request hash, response) so money-mutating retries replay safely (§5.7). */
+/**
+ * Stores (key, request hash, response) so money-mutating retries replay safely
+ * (§5.7).
+ *
+ * The response columns are **nullable, and that is the concurrency design**.
+ * The row is inserted at the start of the request's transaction, before there
+ * is anything to store — so a retry that arrives while the original is still
+ * running blocks on this primary key rather than racing it into a second order.
+ * NULL means "reserved, not yet answered"; it is only ever observed by a
+ * transaction that is itself blocked, and never by a reader, because the row
+ * becomes visible only when the transaction that filled it commits.
+ *
+ * A refused order therefore stores nothing at all: the reservation dies with
+ * the rolled-back transaction, and the kiosk is free to retry an order that
+ * failed because an item was briefly sold out.
+ */
 export const idempotencyKeys = pgTable(
   'idempotency_keys',
   {
     key: text('key').primaryKey(),
     requestHash: text('request_hash').notNull(),
-    responseStatus: integer('response_status').notNull(),
-    responseBody: jsonb('response_body').notNull(),
+    responseStatus: integer('response_status'),
+    responseBody: jsonb('response_body'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   },
   (t) => [index('idempotency_keys_expires_at_idx').on(t.expiresAt)],

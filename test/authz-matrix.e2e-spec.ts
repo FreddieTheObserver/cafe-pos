@@ -253,6 +253,68 @@ const MATRIX: MatrixRow[] = [
     path: '/api/v1/menu',
     allow: [A, M, C, B, K],
   },
+  {
+    /**
+     * The kiosk-first API in one row (§3.6): a tablet and a cashier create
+     * orders through the same endpoint. BARISTA is absent because taking
+     * orders is not their job — they advance ones that already exist.
+     */
+    method: 'post',
+    route: '/api/v1/orders',
+    path: '/api/v1/orders',
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
+  {
+    /**
+     * Staff only. §5.2 gives a kiosk the detail route for its own order and no
+     * list at all — a tablet in a public space has no business holding a
+     * queryable history of what the cafe sold today.
+     */
+    method: 'get',
+    route: '/api/v1/orders',
+    path: '/api/v1/orders',
+    allow: [A, M, C, B],
+  },
+  {
+    // A kiosk may read its own; the scoping that makes "its own" true is a
+    // query filter, and `orders-http` is where that is pinned.
+    method: 'get',
+    route: '/api/v1/orders/:id',
+    path: `/api/v1/orders/${uuidv7()}`,
+    allow: [A, M, C, B, K],
+  },
+  {
+    /**
+     * Every staff role, no device. §6.4 gives all four the same three KDS
+     * moves — at a small cafe whoever is free hands the drink over — and gives
+     * a kiosk none of them.
+     */
+    method: 'post',
+    route: '/api/v1/orders/:id/status',
+    path: `/api/v1/orders/${uuidv7()}/status`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
+  {
+    // Staff only, and no kiosk: a device cannot create a draft, so it can
+    // never have one to check out.
+    method: 'post',
+    route: '/api/v1/orders/:id/checkout',
+    path: `/api/v1/orders/${uuidv7()}/checkout`,
+    allow: [A, M, C],
+    body: EMPTY_BODY,
+  },
+  {
+    // A kiosk may call off its own order — a customer who walks away from the
+    // screen should not need to find a staff member. BARISTA is absent: a bar
+    // screen is not where an order is called off.
+    method: 'post',
+    route: '/api/v1/orders/:id/cancel',
+    path: `/api/v1/orders/${uuidv7()}/cancel`,
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */

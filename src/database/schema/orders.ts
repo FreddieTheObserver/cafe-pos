@@ -19,7 +19,16 @@ export const orders = pgTable(
   'orders',
   {
     id: primaryId(),
-    orderNumber: text('order_number').notNull(),
+    /**
+     * Null until checkout (B3): a parked DRAFT has not claimed a queue number,
+     * because a basket the customer is still deciding on should not consume one
+     * — nor leave a gap in the day's sequence when it is abandoned.
+     *
+     * The unique index below survives this. Postgres does not compare NULLs for
+     * uniqueness, so any number of drafts coexist on one business day while two
+     * checked-out orders still cannot share `A-042`.
+     */
+    orderNumber: text('order_number'),
     businessDay: date('business_day').notNull(),
     channel: text('channel', { enum: orderChannels }).notNull(),
     status: text('status', { enum: orderStatuses }).notNull(),
@@ -112,6 +121,15 @@ export const orderStatusHistory = pgTable(
     toStatus: text('to_status').notNull(),
     actorType: text('actor_type', { enum: actorTypes }).notNull(),
     actorId: uuidRef('actor_id'),
+    /**
+     * Why, for the transitions that have a why (§8's cancel `reason`). Null on
+     * the ones that do not: nobody explains why a barista started a drink.
+     *
+     * Lives on the history row rather than on `orders` because it belongs to a
+     * single event — an order cancelled and later refunded has two reasons, and
+     * a column on the order could only hold the last one.
+     */
+    reason: text('reason'),
     createdAt: createdAt(),
   },
   (t) => [

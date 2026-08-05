@@ -103,6 +103,11 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | Staff access-token lifetime (15 minutes, `DESIGN.md` §6.1). |
 | `REFRESH_TOKEN_TTL_SECONDS` | `1209600` | Refresh-token lifetime (14 days, §6.1). |
 | `PAIRING_CODE_TTL_SECONDS` | `600` | How long a kiosk pairing code stays usable (10 minutes, §6.2). |
+| `BUSINESS_TIMEZONE` | `Asia/Bangkok` | IANA zone. What "local" means in the business-day boundary below; validated at boot, because a typo would otherwise surface as a `RangeError` inside pricing. |
+| `BUSINESS_DAY_START_HOUR` | `5` | Hour the trading day rolls over (§4.5 B7, E10). An order rung up at 00:30 keeps the queue number and Z-report line of the shift that is still running. |
+| `VAT_BASIS_POINTS` | `700` | VAT **extracted** from a VAT-inclusive price, never added to it (§3.3). 700 is Thailand's 7%. Basis points rather than a float rate so the arithmetic stays integral until one rounding. Set `0` if the cafe is below the registration threshold. |
+| `CURRENCY` | `THB` | ISO 4217 code stamped on every order. Single-currency by design (§3.5); upper-cased to match the `char(3)` column. |
+| `ORDER_EXPIRY_SECONDS` | `600` | How long an unpaid order holds its queue number before the expiry job reclaims it (FR-10). |
 | `S3_BUCKET` | — | Required. Bucket holding item images. |
 | `S3_REGION` | `us-east-1` | Region passed to the S3 client. MinIO ignores it; AWS does not. |
 | `S3_ACCESS_KEY_ID` | — | Required. Object-storage access key. |
@@ -196,6 +201,12 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `POST /option-groups/:id/options` | Add a choice to a group | A, M |
 | `PATCH /options/:id` | Manage a choice (name, price delta) | A, M |
 | `PATCH /options/:id/availability` | 86 / un-86 a choice | A, M, C, B |
+| `POST /orders` | Place an order — priced, snapshotted and queue-numbered by the server | A, M, C, K |
+| `GET /orders` | Search and page the order list (filters, cursor pagination) | A, M, C, B |
+| `GET /orders/:id` | One order in full — lines, options, and its audit trail | A, M, C, B, K (own only) |
+| `POST /orders/:id/status` | Advance a ticket through the kitchen (§4.4) | A, M, C, B |
+| `POST /orders/:id/checkout` | Send a parked counter order to the queue (FR-7) | A, M, C |
+| `POST /orders/:id/cancel` | Call off an order before it has been paid for | A, M, C, K (own only) |
 
 The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
 
@@ -205,11 +216,15 @@ Every route must declare either `@Public()` or `@Roles(...)`; one that declares 
 
 ### Postman collection
 
-`postman/cafepos.postman_collection.json` covers every endpoint above — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.
+`postman/cafepos.postman_collection.json` covers every endpoint above, Phases 0-3 — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.
 
 Run **Auth → Login as ADMIN** first. Its test script captures the token into a collection variable, and the collection's bearer auth hands it to every other request, so no JWT is ever pasted by hand. Logging in as MANAGER, CASHIER or BARISTA overwrites the same variable, which makes the §6.4 matrix testable by hand: sign in as BARISTA, then watch `POST /categories` refuse and `PATCH /items/:id/availability` succeed.
 
 The same trick carries the rest of the flows — registering a kiosk captures its one-time `pairingCode`, activating captures the `deviceToken`, and `GET /menu` captures the `ETag` so the request beside it can demonstrate the `304`. Creating a category, item or option group captures its id, so the folders run top to bottom without copying UUIDs around.
+
+The Orders folder chains the same way: placing an order captures its id, queue number and business day, so the search, detail, KDS and cancel requests beside it run without pasting anything. The "idempotent retry" request sends a fresh `{{$guid}}` as its `Idempotency-Key` — send it twice *without* re-generating and the second call returns the same order with `Idempotency-Replayed: true`.
+
+Two of those requests are expected to fail today, and say so in their own descriptions: the KDS transitions need an order in `PAID`, which needs Phase 4. `DESIGN.md` §4.4 is explicit that an order becomes paid because a payment succeeded and never because an endpoint said so, so there is deliberately no way to reach that state by hand.
 
 Seeded credentials come from `pnpm db:seed`; the password lives in the `seedPassword` collection variable.
 
@@ -223,6 +238,42 @@ Two credential kinds arrive through the same `Authorization: Bearer` header and 
 Rate limits (§10.2) are Redis-backed so they hold across instances: 20 login attempts per 15 minutes per address, 5 device activations per hour per address, and 600 requests per minute per staff user as a backstop. Separately, five *failed* logins lock a single account for 15 minutes — the two mechanisms cover different attacks and neither substitutes for the other.
 
 When Redis is unreachable those limits deliberately stop behaving alike. The 600/min staff backstop **fails open**: it is a backstop, ordinary traffic is nowhere near it, and refusing requests to preserve it would close the cafe over a cache. Login and device activation **fail closed** with a `503 DEPENDENCY_UNAVAILABLE`, because on those two routes the limit *is* the brute-force defence, and serving them uncounted would turn an outage into an unlimited guessing window. Staff who are already signed in keep working throughout — access tokens are verified against a signature, not against Redis.
+
+### Idempotency
+
+`POST /orders` accepts an `Idempotency-Key` header (§5.7). It is optional, but a kiosk should always send one: the case it exists for is a tablet on flaky wifi that timed out and retried, and without a key that retry is a second order and, later, a second charge.
+
+The header is read rather than the body because it describes the *attempt*, not the order — the same basket submitted twice on purpose is legitimately two orders, and the key is what says which of the two a request means. A replay returns the original order with `Idempotency-Replayed: true`, so a client can tell "my retry worked" from "I just created another order". The same key carrying a different basket is a `409 IDEMPOTENCY_CONFLICT`; serving either answer would be wrong, since one hands a customer someone else's receipt and the other makes the key meaningless.
+
+Two details are load-bearing. The key row is inserted **before** the order is priced, with its response column still null — so a retry that arrives while the original is still in flight blocks on the primary key instead of racing past it. That is not a rare edge: the client only retries *because* it stopped waiting, so the concurrent case is the normal one. And because the reservation lives in the same transaction as the order, **a refused order stores nothing** — a basket rejected because an item was briefly 86'd leaves the key free, and the customer can retry the moment the pastry is back. Both are pinned in `test/orders-http.e2e-spec.ts`, the first by firing two identical requests at once and asserting exactly one of them did the work.
+
+The fingerprint is taken from the parsed body, not the raw bytes, so a client that serialises the same basket with its JSON keys in a different order gets a replay rather than a conflict. It is also scoped to the principal, so a guessed key cannot be used to pull back another tablet's order.
+
+### The order state machine
+
+`DESIGN.md` §4.4 is encoded as one table in `src/orders/state/order-state.ts`, and every door that moves an order reads it. By Phase 4 there will be four such doors — the gateway webhook, a manager's refund, the expiry job, and the KDS route — and a table is the only way they can agree on what an order may do next.
+
+**Every transition is a guarded update**: `UPDATE orders SET status = :to WHERE id = :id AND status = :from`. Two baristas tapping "start" on the same ticket both read `PAID` and both send the same request; without the guard the second silently overwrites the first and the history claims the order started twice. With it the loser updates zero rows and gets `409 ORDER_INVALID_TRANSITION` carrying the order's *actual* current status, so the screen that lost can resync from the response. §4.4 calls this the one pattern that resolves both that race (E8) and the webhook race (E2) without a lock anywhere.
+
+`POST /orders/:id/status` deliberately exposes **only three** of the machine's edges — `PAID → IN_PREPARATION → READY → COMPLETED`. Payment, refunds, expiry and cancellation each get their own door with their own authorization. Without that second, narrower table, a barista's token could mark an order paid, and the guarded update would happily let them. Asking for a real-but-not-yours transition is a 409 about the transition, not a 422 about the field, because §8 puts transition legality in the business layer.
+
+An order that leaves `PENDING_PAYMENT` has its `expires_at` cleared: the column stops meaning anything, and left behind it is a date a KDS would render as "expires in 3 minutes" on a drink that is already paid for.
+
+**Parked orders** (FR-7) are the counter's "hold this while the customer decides". A `DRAFT` is created by sending `"draft": true`, and it holds **no queue number and no expiry** — §4.5 B3 says a number is claimed at checkout, because one spent on a basket the customer is still deciding on either goes uncalled or leaves a gap when it is abandoned. That is why `orders.order_number` is nullable: Postgres does not compare NULLs for uniqueness, so any number of drafts coexist on a business day while two checked-out orders still cannot share `A-042`. A kiosk cannot park an order at all — §4.4 keeps its cart on the tablet, since a server-side row per browsing customer is a table full of baskets nobody completes.
+
+`POST /orders/:id/checkout` claims the number and the payment window in the same transaction that moves the status, so an order is never seen queued without a number or numbered without being queued. It keeps the business day it was *parked* on, not today's: an order taken at 04:55 and checked out at 05:05 belongs to the shift that took it (B7), and recomputing would move it into the next day's sequence where its number could collide with one already called. It deliberately does **not** re-price — §8 asks only that the order is a DRAFT and the caller is staff, and re-pricing would change a total the cashier has already read out to the customer standing in front of them.
+
+**Cancellation** has its own door because its authorization is a different shape — a kiosk may cancel, but only its own order and only before payment, and "its own" is a query filter rather than a role check (§6.3). Post-payment cancellation is specified in §5.2 for a manager, and is **not built**: §4.4 routes it to `REFUNDED` rather than `CANCELLED`, and the refund it depends on is Phase 4. Moving an order to a terminal state while the customer's money is still with the gateway is precisely the failure this design is arranged to prevent, so until refunds exist a paid order is refused like any other unavailable transition.
+
+**Unpaid orders expire on a sweep** that runs every minute (`ORDER_EXPIRY_SECONDS`, default 600). It transitions through the same guard as everything else, with FR-22's `SYSTEM` actor so the history says the system reclaimed the order rather than blaming whoever was signed in. Two instances (§11.3) both run it and neither coordinates: the guard makes the second a no-op, which is §9.3's "jobs are idempotent" holding without a distributed lock. Each order gets its own transaction, so one bad row cannot roll back a whole tick's progress. The e2e drives the sweep directly rather than waiting on the cron — a test that sleeps a minute is a test nobody runs.
+
+### Searching orders
+
+`GET /orders` is the cashier's lookup screen: `status` and `channel` as comma-separated enums, a `from`/`to` range on creation time or a `businessDay` for the cafe's own day (§4.5 B7), `q` for an exact queue number or a customer-name prefix, and `sort` restricted to a whitelist — arbitrary column sorting is both an injection surface and a licence to ask for an unindexed sort over every order the cafe has ever taken.
+
+Paging is by **cursor, not offset**. `OFFSET 50000` degrades linearly, but the reason that matters here is the other one: an order arriving mid-scroll shifts every later page, so a cashier hunting for a customer's order can page straight past it. The cursor carries the last row's sort value *and* its id, compared as a row value — `(created_at, id) < (…, …)` — because at peak two orders share a timestamp, and comparing the sort column alone would drop whichever of them landed on the page boundary. The sort spec is baked into the cursor, so carrying one across a change of `sort` is refused rather than silently answered with the wrong window.
+
+`GET /orders/:id` adds the line items, their option snapshots, and the status history. A kiosk may read only the orders it placed, and one belonging to another device answers **404, not 403** — §5.4 is explicit that an out-of-scope resource must be indistinguishable from a missing one, or the error code itself becomes a way for a tablet in a public space to enumerate what the cafe sold today. The e2e suite asserts the two answers are byte-identical rather than merely both-4xx.
 
 ### The menu cache
 
@@ -259,6 +310,13 @@ src/
   catalog/     categories/, items/ (incl. image upload and option-group
                attachment), option-groups/, menu/ (composite read, Redis
                cache, write-invalidation interceptor)
+  orders/      pricing/ (the pure server-side pricing function), idempotency/
+               (key parsing, request fingerprint, reserve-then-complete store),
+               query/ (list filters, cursor pagination, detail with scoping),
+               state/ (the §4.4 graph, the guarded transition primitive),
+               cancel/, checkout/, expiry/ (the FR-10 sweep),
+               business-day boundary, queue numbers, errors/, and the order
+               aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
                shared by main.ts and the e2e suite so it is never untested
   main.ts      composition root
@@ -273,9 +331,15 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: next.** Order creation with server-side pricing and snapshots, queue numbers, the state machine and history, idempotency keys, list/search with cursor pagination, and the expiry job.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id` — and [the state machine](#the-order-state-machine) behind `POST /orders/:id/status`. cancellation, the FR-10 expiry sweep, and parked orders with `POST /orders/:id/checkout`.
 
-Phase 2 leaves Phase 3 one obligation worth stating: option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. Keeping a line total from going below zero is server-side pricing's job, since only it sees the whole basket.
+**Everything §17 scopes to Phase 3 is built.** The one thing the phase's exit criterion names that is not here is the cash path: §17's own table lists cash tender under **Phase 4**, alongside the gateway and refunds, so "manual cash-paid" is read as marking an order paid by hand. `test/orders-http.e2e-spec.ts` walks exactly that — an order created, moved to `PAID`, then `IN_PREPARATION` → `READY` → `COMPLETED`. §4.4 leaves no endpoint that reaches `PAID`, on purpose: an order becomes paid because a payment succeeded, never because somebody asked.
+
+Resolving `DRAFT` needed a schema decision. §4.5 B3 assigns the queue number at checkout, but `orders.order_number` was `NOT NULL`, so a parked order had no legal value to hold. Migration 0004 makes the column nullable, which matches B3 exactly and keeps the unique index meaningful — the alternative, a `DRAFT-…` placeholder swapped at checkout, would have given one column two vocabularies and let a non-number leak onto a screen.
+
+Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
+
+Two Phase 3 notes worth carrying forward. **Queue numbers come from a counter table, not a sequence** — a sequence is deliberately non-transactional and would leave a permanent gap behind any rolled-back checkout, so the counter row's lock is what makes B3 both unique and gapless, at the cost of serializing same-day checkouts across one short transaction. And **an item in a deactivated category is refused as unavailable rather than as unknown**: `is_active` on a category is a publish switch, so those items are absent from `GET /menu` entirely and a basket naming one is holding a stale menu — which is exactly E6.
 
 One item from §6.1 is deliberately deferred: breached-password rejection on account creation. It needs an outbound call to a range API plus a policy for when that service is unreachable, and adding an external dependency to the account-creation path belongs with the rest of the §12.4 integrations rather than inside the auth phase. Minimum length 10 is enforced.
 

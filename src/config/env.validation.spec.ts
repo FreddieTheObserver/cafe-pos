@@ -93,6 +93,76 @@ describe('validateEnv', () => {
     });
   });
 
+  describe('trading settings', () => {
+    it('defaults to the single-cafe assumptions §3.5 states', () => {
+      const env = validateEnv({ ...REQUIRED });
+
+      expect(env.BUSINESS_TIMEZONE).toBe('Asia/Bangkok');
+      expect(env.BUSINESS_DAY_START_HOUR).toBe(5);
+      expect(env.VAT_BASIS_POINTS).toBe(700);
+      expect(env.CURRENCY).toBe('THB');
+      expect(env.ORDER_EXPIRY_SECONDS).toBe(10 * 60);
+    });
+
+    /**
+     * Caught at boot rather than at the first order. A typo here does not fail
+     * loudly on its own — `Intl` throws a `RangeError` deep inside the pricing
+     * path — so the check is worth its four lines.
+     */
+    it('rejects a time zone the platform does not know', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, BUSINESS_TIMEZONE: 'Asia/Bangkokk' }),
+      ).toThrow(/BUSINESS_TIMEZONE/);
+    });
+
+    // `Intl.supportedValuesOf` omits these, so a check written against that
+    // list would refuse a zone the runtime resolves perfectly well.
+    it('accepts a backward-compatibility alias', () => {
+      expect(
+        validateEnv({ ...REQUIRED, BUSINESS_TIMEZONE: 'Asia/Rangoon' })
+          .BUSINESS_TIMEZONE,
+      ).toBe('Asia/Rangoon');
+    });
+
+    it('rejects an hour outside the clock', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, BUSINESS_DAY_START_HOUR: '24' }),
+      ).toThrow(/BUSINESS_DAY_START_HOUR/);
+    });
+
+    it('accepts midnight as the boundary', () => {
+      expect(
+        validateEnv({ ...REQUIRED, BUSINESS_DAY_START_HOUR: '0' })
+          .BUSINESS_DAY_START_HOUR,
+      ).toBe(0);
+    });
+
+    // A cafe below the VAT registration threshold reports no VAT at all.
+    it('accepts a zero VAT rate', () => {
+      expect(
+        validateEnv({ ...REQUIRED, VAT_BASIS_POINTS: '0' }).VAT_BASIS_POINTS,
+      ).toBe(0);
+    });
+
+    it('rejects a VAT rate above 100%', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, VAT_BASIS_POINTS: '10001' }),
+      ).toThrow(/VAT_BASIS_POINTS/);
+    });
+
+    it('upper-cases the currency so it matches the char(3) column', () => {
+      expect(validateEnv({ ...REQUIRED, CURRENCY: 'thb' }).CURRENCY).toBe(
+        'THB',
+      );
+    });
+
+    it('rejects a currency that is not three letters', () => {
+      expect(() => validateEnv({ ...REQUIRED, CURRENCY: 'BAHT' })).toThrow(
+        /CURRENCY/,
+      );
+    });
+  });
+
   describe('object storage', () => {
     it('defaults the region and leaves the endpoint unset for real AWS', () => {
       const env = validateEnv({ ...REQUIRED });
