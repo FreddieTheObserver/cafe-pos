@@ -265,6 +265,25 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M, C, K],
     body: EMPTY_BODY,
   },
+  {
+    /**
+     * Staff only. §5.2 gives a kiosk the detail route for its own order and no
+     * list at all — a tablet in a public space has no business holding a
+     * queryable history of what the cafe sold today.
+     */
+    method: 'get',
+    route: '/api/v1/orders',
+    path: '/api/v1/orders',
+    allow: [A, M, C, B],
+  },
+  {
+    // A kiosk may read its own; the scoping that makes "its own" true is a
+    // query filter, and `orders-http` is where that is pinned.
+    method: 'get',
+    route: '/api/v1/orders/:id',
+    path: `/api/v1/orders/${uuidv7()}`,
+    allow: [A, M, C, B, K],
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */

@@ -74,4 +74,7 @@ const CreateOrderSchema = z.strictObject({
   expectedTotalMinor: z.int().min(0).max(MAX_EXPECTED_TOTAL_MINOR).optional(),
 });
 
+const OrderIdParamSchema = z.strictObject({ id: z.uuid() });
+
 export class CreateOrderDto extends createZodDto(CreateOrderSchema) {}
+export class OrderIdParamDto extends createZodDto(OrderIdParamSchema) {}

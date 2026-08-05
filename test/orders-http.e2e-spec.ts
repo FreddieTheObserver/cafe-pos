@@ -26,6 +26,19 @@ interface OrderBody {
   currency: string;
 }
 
+/** A row of `GET /orders` — the summary shape, without line items. */
+interface OrderSummaryBody {
+  id: string;
+  orderNumber: string;
+  status: string;
+  channel: string;
+  businessDay: string;
+  customerName: string | null;
+  totalMinor: number;
+  currency: string;
+  createdAt: string;
+}
+
 /**
  * `POST /orders` (FR-5, FR-6, FR-9, §5.2) against a real database.
  *
@@ -821,6 +834,313 @@ describe('Orders endpoint (e2e)', () => {
       const problem = res.body as ProblemDetails;
       expect(problem.code).toBe('VALIDATION_FAILED');
       expect(problem.errors?.[0].field).toBe('Idempotency-Key');
+    });
+  });
+
+  /**
+   * `GET /orders` and `GET /orders/:id` (§5.1, §5.2, §5.6).
+   *
+   * The list is filtered to this suite's own device wherever it can be, because
+   * other suites share the database and an assertion about "the first page"
+   * would otherwise depend on what else ran today.
+   */
+  describe('reading orders back', () => {
+    let mine: OrderBody[];
+
+    const listAs = (token: string, query = '') =>
+      harness
+        .http()
+        .get(`/api/v1/orders${query}`)
+        .set('Authorization', auth(token));
+
+    const pageOf = (res: { body: unknown }) =>
+      res.body as { orders: OrderSummaryBody[]; nextCursor: string | null };
+
+    beforeAll(async () => {
+      // Three orders, distinct totals, placed in a known sequence.
+      const responses: OrderBody[] = [];
+      for (const quantity of [1, 2, 3]) {
+        const res = await postOrder(kioskToken, {
+          channel: 'KIOSK',
+          customerName: quantity === 2 ? 'Priya' : null,
+          items: [{ menuItemId: croissantId, quantity, optionIds: [] }],
+        });
+        expect(res.status).toBe(201);
+        responses.push(res.body as OrderBody);
+      }
+      mine = responses;
+    });
+
+    it('lists orders newest first by default', async () => {
+      const res = await listAs(cashierToken, '?channel=KIOSK&limit=100');
+
+      expect(res.status).toBe(200);
+      const ids = pageOf(res).orders.map((order) => order.id);
+      const positions = mine.map((order) => ids.indexOf(order.id));
+      expect(positions.every((index) => index >= 0)).toBe(true);
+      // Placed 1, 2, 3 — so they come back 3, 2, 1.
+      expect(positions[0]).toBeGreaterThan(positions[1]);
+      expect(positions[1]).toBeGreaterThan(positions[2]);
+    });
+
+    it('carries the summary a lookup screen needs, and no line items', async () => {
+      const res = await listAs(cashierToken, '?channel=KIOSK&limit=100');
+      const found = pageOf(res).orders.find((o) => o.id === mine[0].id);
+
+      expect(found).toMatchObject({
+        orderNumber: mine[0].orderNumber,
+        status: 'PENDING_PAYMENT',
+        channel: 'KIOSK',
+        totalMinor: 2000,
+        currency: 'THB',
+      });
+      expect(found?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(found).not.toHaveProperty('items');
+    });
+
+    /**
+     * The property that makes cursor pagination worth the trouble: walking the
+     * pages visits every row exactly once, even though rows are being inserted
+     * by other cases while the walk happens.
+     */
+    it('walks every row exactly once across pages', async () => {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+
+      for (let page = 0; page < 20; page++) {
+        const query: string =
+          `?channel=KIOSK&limit=2` +
+          (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
+        const res = await listAs(cashierToken, query);
+        expect(res.status).toBe(200);
+
+        const body = pageOf(res);
+        seen.push(...body.orders.map((order) => order.id));
+        cursor = body.nextCursor;
+        if (cursor === null) break;
+      }
+
+      expect(new Set(seen).size).toBe(seen.length);
+      for (const order of mine) expect(seen).toContain(order.id);
+    });
+
+    it('stops handing out a cursor on the last page', async () => {
+      const res = await listAs(cashierToken, '?channel=KIOSK&limit=100');
+
+      expect(pageOf(res).nextCursor).toBeNull();
+    });
+
+    it('sorts by total when asked, and pages that way too', async () => {
+      const res = await listAs(
+        cashierToken,
+        '?channel=KIOSK&sort=totalMinor&limit=100',
+      );
+
+      const totals = pageOf(res).orders.map((order) => order.totalMinor);
+      expect(totals).toEqual([...totals].sort((a, b) => a - b));
+    });
+
+    /** A cursor cut for one sort is meaningless against another column. */
+    it('refuses a cursor carried across a change of sort', async () => {
+      const first = await listAs(cashierToken, '?channel=KIOSK&limit=1');
+      const cursor = pageOf(first).nextCursor;
+      expect(cursor).not.toBeNull();
+
+      const res = await listAs(
+        cashierToken,
+        `?channel=KIOSK&sort=totalMinor&limit=1&cursor=${encodeURIComponent(cursor as string)}`,
+      );
+
+      expect(res.status).toBe(422);
+      expect((res.body as ProblemDetails).errors?.[0].field).toBe('cursor');
+    });
+
+    it('filters by status', async () => {
+      const res = await listAs(cashierToken, '?status=PAID&limit=100');
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.every((order) => order.status === 'PAID')).toBe(
+        true,
+      );
+      expect(pageOf(res).orders.map((o) => o.id)).not.toContain(mine[0].id);
+    });
+
+    it('accepts a comma-separated list of statuses', async () => {
+      const res = await listAs(
+        cashierToken,
+        '?status=PENDING_PAYMENT,PAID&channel=KIOSK&limit=100',
+      );
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.map((o) => o.id)).toContain(mine[0].id);
+    });
+
+    it('refuses a status the enum does not have', async () => {
+      const res = await listAs(cashierToken, '?status=DELICIOUS');
+
+      expect(res.status).toBe(422);
+    });
+
+    it('finds an order by its queue number', async () => {
+      const res = await listAs(
+        cashierToken,
+        `?q=${encodeURIComponent(mine[0].orderNumber)}&businessDay=${mine[0].businessDay}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.map((o) => o.id)).toContain(mine[0].id);
+    });
+
+    it('finds an order by a customer-name prefix', async () => {
+      const res = await listAs(cashierToken, '?q=Pri&channel=KIOSK&limit=100');
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.map((o) => o.id)).toContain(mine[1].id);
+    });
+
+    /**
+     * A `q` of `%` would otherwise match every named order in the cafe. Not a
+     * disclosure a staff-only route frets about, but it is a needless full
+     * scan, and the same habit on a public route is how these become real.
+     */
+    it('treats a LIKE wildcard as a literal', async () => {
+      const res = await listAs(cashierToken, '?q=%25&channel=KIOSK&limit=100');
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.map((o) => o.id)).not.toContain(mine[1].id);
+    });
+
+    it('filters by business day', async () => {
+      const res = await listAs(
+        cashierToken,
+        `?businessDay=${mine[0].businessDay}&channel=KIOSK&limit=100`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(pageOf(res).orders.map((o) => o.id)).toContain(mine[0].id);
+
+      const empty = await listAs(cashierToken, '?businessDay=1999-01-01');
+      expect(pageOf(empty).orders).toHaveLength(0);
+    });
+
+    it('refuses a half-open date range', async () => {
+      const res = await listAs(cashierToken, '?from=2026-06-01T00:00:00Z');
+
+      expect(res.status).toBe(422);
+    });
+
+    it('refuses a range wider than 92 days', async () => {
+      const res = await listAs(
+        cashierToken,
+        '?from=2026-01-01T00:00:00Z&to=2026-12-31T00:00:00Z',
+      );
+
+      expect(res.status).toBe(422);
+    });
+
+    it('refuses a from after its to', async () => {
+      const res = await listAs(
+        cashierToken,
+        '?from=2026-06-10T00:00:00Z&to=2026-06-01T00:00:00Z',
+      );
+
+      expect(res.status).toBe(422);
+    });
+
+    it('refuses a limit above the ceiling', async () => {
+      expect((await listAs(cashierToken, '?limit=101')).status).toBe(422);
+      expect((await listAs(cashierToken, '?limit=0')).status).toBe(422);
+    });
+
+    it('refuses a sort outside the whitelist', async () => {
+      const res = await listAs(cashierToken, '?sort=passwordHash');
+
+      expect(res.status).toBe(422);
+    });
+
+    it('refuses an unknown filter rather than ignoring it', async () => {
+      const res = await listAs(cashierToken, '?statuss=PAID');
+
+      expect(res.status).toBe(422);
+    });
+
+    describe('one order in full', () => {
+      const detailAs = (token: string, id: string) =>
+        harness
+          .http()
+          .get(`/api/v1/orders/${id}`)
+          .set('Authorization', auth(token));
+
+      it('returns the lines, their options and the audit trail', async () => {
+        const created = await postOrder(kioskToken, {
+          channel: 'KIOSK',
+          items: [
+            {
+              menuItemId: latteId,
+              quantity: 1,
+              notes: 'extra hot',
+              optionIds: [largeId, extraShotId],
+            },
+          ],
+        });
+        const { id } = created.body as OrderBody;
+
+        const res = await detailAs(cashierToken, id);
+        expect(res.status).toBe(200);
+
+        const detail = res.body as OrderBody & {
+          statusHistory: { fromStatus: string | null; toStatus: string }[];
+        };
+        expect(detail.items).toHaveLength(1);
+        expect(detail.items[0].notes).toBe('extra hot');
+        expect(detail.items[0].options).toHaveLength(2);
+        expect(detail.statusHistory).toEqual([
+          expect.objectContaining({
+            fromStatus: null,
+            toStatus: 'PENDING_PAYMENT',
+            actorType: 'DEVICE',
+          }),
+        ]);
+      });
+
+      it('lets the kiosk that placed it read it back', async () => {
+        const res = await detailAs(kioskToken, mine[0].id);
+
+        expect(res.status).toBe(200);
+        expect((res.body as OrderBody).id).toBe(mine[0].id);
+      });
+
+      /**
+       * §5.4 is explicit: an out-of-scope resource must not be distinguishable
+       * from a missing one. A 403 here would let one tablet in a public space
+       * enumerate what the cafe sold today, one id at a time.
+       */
+      it('answers 404, not 403, for another device"s order', async () => {
+        const other = await harness.createDevice('ACTIVE');
+
+        const res = await detailAs(other.token, mine[0].id);
+
+        expect(res.status).toBe(404);
+        expect((res.body as ProblemDetails).code).toBe('RESOURCE_NOT_FOUND');
+      });
+
+      it('answers 404 identically for an order that never existed', async () => {
+        const other = await harness.createDevice('ACTIVE');
+
+        const missing = await detailAs(other.token, uuidv7());
+        const foreign = await detailAs(other.token, mine[0].id);
+
+        expect(missing.status).toBe(foreign.status);
+        expect((missing.body as ProblemDetails).code).toBe(
+          (foreign.body as ProblemDetails).code,
+        );
+      });
+
+      it('refuses an id that is not a uuid', async () => {
+        const res = await detailAs(cashierToken, 'not-a-uuid');
+
+        expect(res.status).toBe(422);
+      });
     });
   });
 

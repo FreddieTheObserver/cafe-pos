@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
+import { OrdersReadService } from './query/orders-read.service';
 
 /**
  * Phase 3 (§17): the order pipeline — server-side pricing, snapshots, queue
@@ -14,6 +15,6 @@ import { OrdersService } from './orders.service';
  */
 @Module({
   controllers: [OrdersController],
-  providers: [OrdersService],
+  providers: [OrdersService, OrdersReadService],
 })
 export class OrdersModule {}

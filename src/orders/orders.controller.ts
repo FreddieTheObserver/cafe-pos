@@ -1,10 +1,27 @@
-import { Body, Controller, Header, Headers, Post, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { CurrentPrincipal } from '../identity/decorators/current-principal.decorator';
 import { Roles } from '../identity/decorators/roles.decorator';
 import type { Principal } from '../identity/principal';
 import { parseIdempotencyKey } from './idempotency/idempotency-key';
+import { OrderIdParamDto } from './orders.dto';
 import { CreateOrderDto } from './orders.dto';
+import { OrdersQueryDto } from './query/orders-query.dto';
+import {
+  OrdersReadService,
+  type OrderDetail,
+  type OrderPage,
+} from './query/orders-read.service';
 import { OrdersService, type OrderView } from './orders.service';
 
 /**
@@ -18,7 +35,10 @@ import { OrdersService, type OrderView } from './orders.service';
  */
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly orders: OrdersService) {}
+  constructor(
+    private readonly orders: OrdersService,
+    private readonly read: OrdersReadService,
+  ) {}
 
   /**
    * `Idempotency-Key` is read from the header rather than the body (§5.1)
@@ -50,5 +70,28 @@ export class OrdersController {
     // can tell "my retry worked" from "I just created a second order".
     if (replayed) res.setHeader('Idempotency-Replayed', 'true');
     return order;
+  }
+
+  /**
+   * Staff only, deliberately. §5.2 gives a kiosk `GET /orders/:id` for its own
+   * order and no list at all: a tablet in a public space has no business
+   * holding a queryable history of what the cafe sold today, and it never needs
+   * one — it knows the id of the order it just placed.
+   */
+  @Roles('ADMIN', 'MANAGER', 'CASHIER', 'BARISTA')
+  @Header('Cache-Control', 'no-store')
+  @Get()
+  list(@Query() query: OrdersQueryDto): Promise<OrderPage> {
+    return this.read.list(query);
+  }
+
+  @Roles('ADMIN', 'MANAGER', 'CASHIER', 'BARISTA', 'KIOSK')
+  @Header('Cache-Control', 'no-store')
+  @Get(':id')
+  detail(
+    @CurrentPrincipal() principal: Principal,
+    @Param() params: OrderIdParamDto,
+  ): Promise<OrderDetail> {
+    return this.read.detail(principal, params.id);
   }
 }

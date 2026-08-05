@@ -202,6 +202,8 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `PATCH /options/:id` | Manage a choice (name, price delta) | A, M |
 | `PATCH /options/:id/availability` | 86 / un-86 a choice | A, M, C, B |
 | `POST /orders` | Place an order — priced, snapshotted and queue-numbered by the server | A, M, C, K |
+| `GET /orders` | Search and page the order list (filters, cursor pagination) | A, M, C, B |
+| `GET /orders/:id` | One order in full — lines, options, and its audit trail | A, M, C, B, K (own only) |
 
 The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
 
@@ -240,6 +242,14 @@ Two details are load-bearing. The key row is inserted **before** the order is pr
 
 The fingerprint is taken from the parsed body, not the raw bytes, so a client that serialises the same basket with its JSON keys in a different order gets a replay rather than a conflict. It is also scoped to the principal, so a guessed key cannot be used to pull back another tablet's order.
 
+### Searching orders
+
+`GET /orders` is the cashier's lookup screen: `status` and `channel` as comma-separated enums, a `from`/`to` range on creation time or a `businessDay` for the cafe's own day (§4.5 B7), `q` for an exact queue number or a customer-name prefix, and `sort` restricted to a whitelist — arbitrary column sorting is both an injection surface and a licence to ask for an unindexed sort over every order the cafe has ever taken.
+
+Paging is by **cursor, not offset**. `OFFSET 50000` degrades linearly, but the reason that matters here is the other one: an order arriving mid-scroll shifts every later page, so a cashier hunting for a customer's order can page straight past it. The cursor carries the last row's sort value *and* its id, compared as a row value — `(created_at, id) < (…, …)` — because at peak two orders share a timestamp, and comparing the sort column alone would drop whichever of them landed on the page boundary. The sort spec is baked into the cursor, so carrying one across a change of `sort` is refused rather than silently answered with the wrong window.
+
+`GET /orders/:id` adds the line items, their option snapshots, and the status history. A kiosk may read only the orders it placed, and one belonging to another device answers **404, not 403** — §5.4 is explicit that an out-of-scope resource must be indistinguishable from a missing one, or the error code itself becomes a way for a tablet in a public space to enumerate what the cafe sold today. The e2e suite asserts the two answers are byte-identical rather than merely both-4xx.
+
 ### The menu cache
 
 `GET /menu` is the only read a kiosk makes, so it is the one endpoint tuned for polling. A version counter in Redis keys a rendered copy of the document; the response carries `ETag: W/"catalog-<version>"` and `Cache-Control: private, no-cache`, so a kiosk asking every 10 seconds normally gets a `304` costing one Redis read and no database work. `no-cache` rather than a `max-age` is deliberate: a client-side lifetime would stack on top of the poll interval and put FR-3's 10-second propagation budget out of reach.
@@ -277,6 +287,7 @@ src/
                cache, write-invalidation interceptor)
   orders/      pricing/ (the pure server-side pricing function), idempotency/
                (key parsing, request fingerprint, reserve-then-complete store),
+               query/ (list filters, cursor pagination, detail with scoping),
                business-day boundary, queue numbers, errors/, and the order
                aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
@@ -293,7 +304,7 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), and [idempotency keys](#idempotency). Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are `GET /orders` with cursor pagination, the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), and [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id`. Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
 
 Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
 
