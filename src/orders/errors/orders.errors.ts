@@ -1,6 +1,6 @@
 import { AppException } from '../../common/errors/app.exception';
 import { ErrorCode } from '../../common/errors/error-codes';
-import type { OrderChannel } from '../../database/schema/enums';
+import type { OrderChannel, OrderStatus } from '../../database/schema/enums';
 
 /**
  * The orders slice of the §9.2 catalog. As in the catalog module, codes are
@@ -12,7 +12,31 @@ export const OrderErrorCode = {
   OPTION_SELECTION_INVALID: 'OPTION_SELECTION_INVALID',
   PRICE_MISMATCH: 'PRICE_MISMATCH',
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
+  ORDER_INVALID_TRANSITION: 'ORDER_INVALID_TRANSITION',
 } as const;
+
+/**
+ * The order is not where the caller thought it was, or may not go where they
+ * asked (§4.4, E8).
+ *
+ * Covers three situations a client tells apart from `meta`, not from the code:
+ * a transition the state machine forbids outright, one this endpoint does not
+ * expose even though the machine allows it, and the race where another screen
+ * moved the order first. That last one is why `currentStatus` is here — §9.1
+ * puts it in `meta` so a KDS that lost the race can resync from the response
+ * instead of refetching to find out what happened.
+ */
+export class OrderInvalidTransitionError extends AppException {
+  constructor(currentStatus: OrderStatus, requested: OrderStatus) {
+    super({
+      code: OrderErrorCode.ORDER_INVALID_TRANSITION,
+      status: 409,
+      title: 'Invalid order transition',
+      detail: `Order is ${currentStatus}; cannot transition to ${requested}.`,
+      meta: { currentStatus, requested },
+    });
+  }
+}
 
 /**
  * The `channel` in the body contradicts the credential that sent it (§8).

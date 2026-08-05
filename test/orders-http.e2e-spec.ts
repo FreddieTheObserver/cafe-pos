@@ -52,6 +52,7 @@ describe('Orders endpoint (e2e)', () => {
   let harness: IdentityHarness;
   let managerToken: string;
   let cashierToken: string;
+  let baristaToken: string;
   let kioskToken: string;
   let kioskDeviceId: string;
 
@@ -122,6 +123,7 @@ describe('Orders endpoint (e2e)', () => {
     harness = await IdentityHarness.boot();
     managerToken = await harness.accessTokenFor('MANAGER');
     cashierToken = await harness.accessTokenFor('CASHIER');
+    baristaToken = await harness.accessTokenFor('BARISTA');
     const device = await harness.createDevice('ACTIVE');
     kioskToken = device.token;
     kioskDeviceId = device.id;
@@ -1141,6 +1143,188 @@ describe('Orders endpoint (e2e)', () => {
 
         expect(res.status).toBe(422);
       });
+    });
+  });
+
+  /**
+   * `POST /orders/:id/status` (§4.4, §5.2, FR-16, E8).
+   *
+   * Every case starts from a `PAID` order written straight to the database.
+   * That is a fixture, not a shortcut: §4.4 is explicit that `PAID` is reached
+   * only from a payment-side fact, and there is no payment door until Phase 4.
+   * Writing the status directly sets up the state without pretending an
+   * endpoint exists that could.
+   */
+  describe('moving an order through the kitchen', () => {
+    const transition = (token: string, id: string, to: string) =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${id}/status`)
+        .set('Authorization', auth(token))
+        .send({ to });
+
+    /** An order parked in `PAID`, ready for the KDS to pick up. */
+    const paidOrder = async (): Promise<string> => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      expect(res.status).toBe(201);
+      const { id } = res.body as OrderBody;
+
+      await harness.db
+        .update(schema.orders)
+        .set({ status: 'PAID', expiresAt: null })
+        .where(eq(schema.orders.id, id));
+
+      return id;
+    };
+
+    it('walks the KDS path and returns the order at each step', async () => {
+      const id = await paidOrder();
+
+      const started = await transition(baristaToken, id, 'IN_PREPARATION');
+      expect(started.status).toBe(200);
+      expect((started.body as OrderSummaryBody).status).toBe('IN_PREPARATION');
+
+      const ready = await transition(baristaToken, id, 'READY');
+      expect(ready.status).toBe(200);
+      expect((ready.body as OrderSummaryBody).status).toBe('READY');
+
+      const done = await transition(baristaToken, id, 'COMPLETED');
+      expect(done.status).toBe(200);
+      expect((done.body as OrderSummaryBody).status).toBe('COMPLETED');
+    });
+
+    it('records every move with the staff member who made it (FR-22)', async () => {
+      const id = await paidOrder();
+      await transition(baristaToken, id, 'IN_PREPARATION');
+      await transition(baristaToken, id, 'READY');
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+
+      const moves = history
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .map((row) => [row.fromStatus, row.toStatus]);
+
+      // The creation row, then the two moves. The PAID fixture is a direct
+      // write and deliberately leaves no history behind.
+      expect(moves).toEqual([
+        [null, 'PENDING_PAYMENT'],
+        ['PAID', 'IN_PREPARATION'],
+        ['IN_PREPARATION', 'READY'],
+      ]);
+      expect(
+        history.filter((row) => row.toStatus === 'IN_PREPARATION')[0],
+      ).toMatchObject({ actorType: 'USER' });
+    });
+
+    /**
+     * E8, the reason the update is guarded. Two baristas tap "start" on the
+     * same ticket; both read PAID and both send the same request. Without
+     * `WHERE status = :from` the second silently overwrites the first and the
+     * history claims the order started twice.
+     */
+    it('lets exactly one of two baristas win the same ticket', async () => {
+      const id = await paidOrder();
+
+      const [a, b] = await Promise.all([
+        transition(baristaToken, id, 'IN_PREPARATION'),
+        transition(cashierToken, id, 'IN_PREPARATION'),
+      ]);
+
+      const statuses = [a.status, b.status].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      const loser = [a, b].find((res) => res.status === 409);
+      const problem = loser?.body as ProblemDetails;
+      expect(problem.code).toBe('ORDER_INVALID_TRANSITION');
+      // §9.1 puts the real status in meta so the losing screen can resync.
+      expect(problem.meta).toEqual({
+        currentStatus: 'IN_PREPARATION',
+        requested: 'IN_PREPARATION',
+      });
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+      expect(
+        history.filter((row) => row.toStatus === 'IN_PREPARATION'),
+      ).toHaveLength(1);
+    });
+
+    it('refuses a transition the state machine forbids', async () => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      const { id } = res.body as OrderBody;
+
+      const skipped = await transition(baristaToken, id, 'READY');
+
+      expect(skipped.status).toBe(409);
+      expect((skipped.body as ProblemDetails).meta).toEqual({
+        currentStatus: 'PENDING_PAYMENT',
+        requested: 'READY',
+      });
+    });
+
+    /**
+     * §4.4's standing rule: an order becomes paid because a payment succeeded,
+     * never because somebody asked. The machine permits
+     * PENDING_PAYMENT -> PAID; this door does not, and the refusal is a 409
+     * about the transition rather than a 422 about the field (§8 puts
+     * transition legality in the business layer).
+     */
+    it('will not let a barista mark an order paid', async () => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      const { id } = res.body as OrderBody;
+
+      const claimed = await transition(baristaToken, id, 'PAID');
+
+      expect(claimed.status).toBe(409);
+      expect((claimed.body as ProblemDetails).code).toBe(
+        'ORDER_INVALID_TRANSITION',
+      );
+
+      const [row] = await harness.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, id));
+      expect(row.status).toBe('PENDING_PAYMENT');
+    });
+
+    it('will not let a barista refund an order', async () => {
+      const id = await paidOrder();
+
+      const refunded = await transition(baristaToken, id, 'REFUNDED');
+
+      expect(refunded.status).toBe(409);
+      expect((refunded.body as ProblemDetails).code).toBe(
+        'ORDER_INVALID_TRANSITION',
+      );
+    });
+
+    it('refuses a status that is not in the enum', async () => {
+      const id = await paidOrder();
+
+      const res = await transition(baristaToken, id, 'DELICIOUS');
+
+      expect(res.status).toBe(422);
+      expect((res.body as ProblemDetails).code).toBe('VALIDATION_FAILED');
+    });
+
+    it('answers 404 for an order that does not exist', async () => {
+      const res = await transition(baristaToken, uuidv7(), 'IN_PREPARATION');
+
+      expect(res.status).toBe(404);
+    });
+
+    it('refuses a kiosk outright — no transition is a device"s (§6.4)', async () => {
+      const id = await paidOrder();
+
+      const res = await transition(kioskToken, id, 'IN_PREPARATION');
+
+      expect(res.status).toBe(403);
+      expect((res.body as ProblemDetails).code).toBe('FORBIDDEN_ROLE');
     });
   });
 

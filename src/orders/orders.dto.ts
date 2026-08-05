@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createZodDto } from '../common/validation/zod-dto';
-import { orderChannels } from '../database/schema/enums';
+import { orderChannels, orderStatuses } from '../database/schema/enums';
 
 /**
  * The §8 bounds for `POST /orders`, and each of them is load-bearing.
@@ -76,5 +76,18 @@ const CreateOrderSchema = z.strictObject({
 
 const OrderIdParamSchema = z.strictObject({ id: z.uuid() });
 
+/**
+ * `to` accepts the whole enum, and legality is decided by the service (§8).
+ *
+ * Narrowing this to the three transitions the route exposes would be tidier and
+ * wrong: §8 puts transition legality in the *business* layer, so asking for a
+ * move that is real but not yours must answer `409 ORDER_INVALID_TRANSITION`
+ * carrying the order's current status — not a 422 about a field.
+ */
+const TransitionOrderSchema = z.strictObject({
+  to: z.enum(orderStatuses),
+});
+
 export class CreateOrderDto extends createZodDto(CreateOrderSchema) {}
 export class OrderIdParamDto extends createZodDto(OrderIdParamSchema) {}
+export class TransitionOrderDto extends createZodDto(TransitionOrderSchema) {}

@@ -4,6 +4,7 @@ import {
   Get,
   Header,
   Headers,
+  HttpCode,
   Param,
   Post,
   Query,
@@ -14,15 +15,20 @@ import { CurrentPrincipal } from '../identity/decorators/current-principal.decor
 import { Roles } from '../identity/decorators/roles.decorator';
 import type { Principal } from '../identity/principal';
 import { parseIdempotencyKey } from './idempotency/idempotency-key';
-import { OrderIdParamDto } from './orders.dto';
-import { CreateOrderDto } from './orders.dto';
+import {
+  CreateOrderDto,
+  OrderIdParamDto,
+  TransitionOrderDto,
+} from './orders.dto';
 import { OrdersQueryDto } from './query/orders-query.dto';
 import {
   OrdersReadService,
   type OrderDetail,
   type OrderPage,
+  type OrderSummary,
 } from './query/orders-read.service';
 import { OrdersService, type OrderView } from './orders.service';
+import { OrderStatusService } from './state/order-status.service';
 
 /**
  * Orders (§5.2, §6.4).
@@ -38,6 +44,7 @@ export class OrdersController {
   constructor(
     private readonly orders: OrdersService,
     private readonly read: OrdersReadService,
+    private readonly status: OrderStatusService,
   ) {}
 
   /**
@@ -93,5 +100,25 @@ export class OrdersController {
     @Param() params: OrderIdParamDto,
   ): Promise<OrderDetail> {
     return this.read.detail(principal, params.id);
+  }
+
+  /**
+   * The KDS moving a ticket along (FR-16). Every staff role may, including
+   * CASHIER — at a small cafe the person who hands the drink over is whoever
+   * is free, and §6.4 gives all four the same three moves.
+   *
+   * 200, not 204: the response is the order in its new state, which is what
+   * lets the screen that made the move re-render without a second request.
+   */
+  @Roles('ADMIN', 'MANAGER', 'CASHIER', 'BARISTA')
+  @Header('Cache-Control', 'no-store')
+  @HttpCode(200)
+  @Post(':id/status')
+  transition(
+    @CurrentPrincipal() principal: Principal,
+    @Param() params: OrderIdParamDto,
+    @Body() body: TransitionOrderDto,
+  ): Promise<OrderSummary> {
+    return this.status.transition(principal, params.id, body.to);
   }
 }

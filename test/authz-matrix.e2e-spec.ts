@@ -284,6 +284,18 @@ const MATRIX: MatrixRow[] = [
     path: `/api/v1/orders/${uuidv7()}`,
     allow: [A, M, C, B, K],
   },
+  {
+    /**
+     * Every staff role, no device. §6.4 gives all four the same three KDS
+     * moves — at a small cafe whoever is free hands the drink over — and gives
+     * a kiosk none of them.
+     */
+    method: 'post',
+    route: '/api/v1/orders/:id/status',
+    path: `/api/v1/orders/${uuidv7()}/status`,
+    allow: [A, M, C, B],
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */

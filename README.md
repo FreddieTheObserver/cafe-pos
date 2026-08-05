@@ -204,6 +204,7 @@ Roles follow the permission matrix in `DESIGN.md` [§6.4](./DESIGN.md#64-permiss
 | `POST /orders` | Place an order — priced, snapshotted and queue-numbered by the server | A, M, C, K |
 | `GET /orders` | Search and page the order list (filters, cursor pagination) | A, M, C, B |
 | `GET /orders/:id` | One order in full — lines, options, and its audit trail | A, M, C, B, K (own only) |
+| `POST /orders/:id/status` | Advance a ticket through the kitchen (§4.4) | A, M, C, B |
 
 The catalog `GET` routes are management reads: they return inactive categories and 86'd items, because a back office cannot restore what it cannot see. `GET /menu` is the kiosk-shaped read and is the one a device may call.
 
@@ -241,6 +242,16 @@ The header is read rather than the body because it describes the *attempt*, not 
 Two details are load-bearing. The key row is inserted **before** the order is priced, with its response column still null — so a retry that arrives while the original is still in flight blocks on the primary key instead of racing past it. That is not a rare edge: the client only retries *because* it stopped waiting, so the concurrent case is the normal one. And because the reservation lives in the same transaction as the order, **a refused order stores nothing** — a basket rejected because an item was briefly 86'd leaves the key free, and the customer can retry the moment the pastry is back. Both are pinned in `test/orders-http.e2e-spec.ts`, the first by firing two identical requests at once and asserting exactly one of them did the work.
 
 The fingerprint is taken from the parsed body, not the raw bytes, so a client that serialises the same basket with its JSON keys in a different order gets a replay rather than a conflict. It is also scoped to the principal, so a guessed key cannot be used to pull back another tablet's order.
+
+### The order state machine
+
+`DESIGN.md` §4.4 is encoded as one table in `src/orders/state/order-state.ts`, and every door that moves an order reads it. By Phase 4 there will be four such doors — the gateway webhook, a manager's refund, the expiry job, and the KDS route — and a table is the only way they can agree on what an order may do next.
+
+**Every transition is a guarded update**: `UPDATE orders SET status = :to WHERE id = :id AND status = :from`. Two baristas tapping "start" on the same ticket both read `PAID` and both send the same request; without the guard the second silently overwrites the first and the history claims the order started twice. With it the loser updates zero rows and gets `409 ORDER_INVALID_TRANSITION` carrying the order's *actual* current status, so the screen that lost can resync from the response. §4.4 calls this the one pattern that resolves both that race (E8) and the webhook race (E2) without a lock anywhere.
+
+`POST /orders/:id/status` deliberately exposes **only three** of the machine's edges — `PAID → IN_PREPARATION → READY → COMPLETED`. Payment, refunds, expiry and cancellation each get their own door with their own authorization. Without that second, narrower table, a barista's token could mark an order paid, and the guarded update would happily let them. Asking for a real-but-not-yours transition is a 409 about the transition, not a 422 about the field, because §8 puts transition legality in the business layer.
+
+An order that leaves `PENDING_PAYMENT` has its `expires_at` cleared: the column stops meaning anything, and left behind it is a date a KDS would render as "expires in 3 minutes" on a drink that is already paid for.
 
 ### Searching orders
 
@@ -288,6 +299,7 @@ src/
   orders/      pricing/ (the pure server-side pricing function), idempotency/
                (key parsing, request fingerprint, reserve-then-complete store),
                query/ (list filters, cursor pagination, detail with scoping),
+               state/ (the §4.4 graph, the guarded transition primitive),
                business-day boundary, queue numbers, errors/, and the order
                aggregate write
   bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
@@ -304,7 +316,7 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), and [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id`. Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are the state machine and its transitions, checkout from `DRAFT`, cancellation, and the expiry job.
+- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id` — and [the state machine](#the-order-state-machine) behind `POST /orders/:id/status`. Still to come before the phase's exit criterion — order → cash-paid → COMPLETED — are checkout from `DRAFT`, cancellation, the expiry job, and the cash-tender path that makes `PAID` reachable at all.
 
 Phase 2's handover obligation is discharged. Option price deltas may be **negative**, because the schema puts no `CHECK` on `price_delta_minor` (unlike `base_price_minor`) and "small size, −10฿" is a real menu. `priceOrder` clamps a unit price the deltas drove below zero rather than refusing the order: a menu misconfigured that far is a back-office mistake, and a free croissant costs the cafe one croissant where a rejection would close every kiosk for that item until somebody noticed. What must not happen is the negative reaching the database, where one line could pay for another and a refund could exceed what was captured.
 
