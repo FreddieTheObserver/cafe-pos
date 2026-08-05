@@ -29,7 +29,26 @@ export const payments = pgTable(
       .references(() => orders.id),
     provider: text('provider', { enum: paymentProviders }).notNull(),
     providerIntentId: text('provider_intent_id').unique(),
-    method: text('method', { enum: paymentMethods }).notNull(),
+    /**
+     * Which rail the money actually came down — **not known when the row is
+     * written** for a gateway payment, which is why this is nullable.
+     *
+     * §5.3 has the kiosk naming the method up front and this column was NOT
+     * NULL to match. Stripe's guidance is the opposite and is emphatic about
+     * it: never pin `payment_method_types`, because doing so opts out of
+     * dynamic payment methods and freezes the accepted rails into deployed
+     * code. So the customer chooses inside the Payment Element, after the
+     * PaymentIntent already exists, and the webhook tells us what they chose.
+     *
+     * NULL therefore means "a gateway payment that has not resolved yet" — a
+     * state that only exists between creation and the terminal webhook. CASH
+     * never passes through Stripe and is written with its method set, so a
+     * NULL here is always a card-or-PromptPay attempt still in flight.
+     *
+     * The CHECK below still holds: `NULL in (...)` is NULL, and a constraint
+     * fails only on FALSE.
+     */
+    method: text('method', { enum: paymentMethods }),
     status: text('status', { enum: paymentStatuses }).notNull(),
     amountMinor: integer('amount_minor').notNull(),
     currency: char('currency', { length: 3 }).notNull().default('THB'),

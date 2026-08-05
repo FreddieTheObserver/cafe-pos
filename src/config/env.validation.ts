@@ -213,21 +213,34 @@ export const envSchema = z.object({
    *
    * Comma-separated, like CORS_ORIGINS above. One value is the steady state.
    */
+  /**
+   * Validated on the raw string and transformed *last*, so the outermost
+   * operator is a `.transform()` — exactly the shape CORS_ORIGINS has. Adding
+   * a `.refine()` after the transform instead nests the effects deeply enough
+   * that `ConfigService`'s `infer` gives up and hands back `any`, silently
+   * defeating the typing this file exists to provide.
+   */
   STRIPE_WEBHOOK_SECRETS: z
     .string()
     .min(1)
-    .transform((value) =>
-      value
-        .split(',')
-        .map((secret) => secret.trim())
-        .filter(Boolean),
+    .refine(
+      (value) => splitSecrets(value).length > 0,
+      'at least one signing secret is required',
     )
-    .pipe(
-      z
-        .array(z.string().startsWith('whsec_', 'must begin with whsec_'))
-        .nonempty('at least one signing secret is required'),
-    ),
+    .refine(
+      (value) => splitSecrets(value).every((s) => s.startsWith('whsec_')),
+      'every signing secret must begin with whsec_',
+    )
+    .transform(splitSecrets),
 });
+
+/** Shared by the validation and the transform, so they cannot disagree. */
+function splitSecrets(value: string): string[] {
+  return value
+    .split(',')
+    .map((secret) => secret.trim())
+    .filter(Boolean);
+}
 
 /** Fully typed, validated config shape — inferred from the schema, never drifts. */
 export type Env = z.infer<typeof envSchema>;

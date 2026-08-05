@@ -11,6 +11,7 @@ import { HealthModule } from './health/health.module';
 import { IdentityModule } from './identity/identity.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { OrdersModule } from './orders/orders.module';
+import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
 
 @Module({
@@ -37,6 +38,13 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     IdentityModule,
     CatalogModule,
     OrdersModule,
+    /**
+     * Imported before it has a single route, on purpose. Nest instantiates
+     * providers eagerly, so being here means the Stripe client is built during
+     * boot — and a malformed key is a process that refuses to start rather
+     * than a 500 the first time a customer taps Pay.
+     */
+    PaymentsModule,
   ],
 })
 export class AppModule {}
