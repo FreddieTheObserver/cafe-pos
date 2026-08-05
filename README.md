@@ -103,6 +103,11 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | Staff access-token lifetime (15 minutes, `DESIGN.md` §6.1). |
 | `REFRESH_TOKEN_TTL_SECONDS` | `1209600` | Refresh-token lifetime (14 days, §6.1). |
 | `PAIRING_CODE_TTL_SECONDS` | `600` | How long a kiosk pairing code stays usable (10 minutes, §6.2). |
+| `BUSINESS_TIMEZONE` | `Asia/Bangkok` | IANA zone. What "local" means in the business-day boundary below; validated at boot, because a typo would otherwise surface as a `RangeError` inside pricing. |
+| `BUSINESS_DAY_START_HOUR` | `5` | Hour the trading day rolls over (§4.5 B7, E10). An order rung up at 00:30 keeps the queue number and Z-report line of the shift that is still running. |
+| `VAT_BASIS_POINTS` | `700` | VAT **extracted** from a VAT-inclusive price, never added to it (§3.3). 700 is Thailand's 7%. Basis points rather than a float rate so the arithmetic stays integral until one rounding. Set `0` if the cafe is below the registration threshold. |
+| `CURRENCY` | `THB` | ISO 4217 code stamped on every order. Single-currency by design (§3.5); upper-cased to match the `char(3)` column. |
+| `ORDER_EXPIRY_SECONDS` | `600` | How long an unpaid order holds its queue number before the expiry job reclaims it (FR-10). |
 | `S3_BUCKET` | — | Required. Bucket holding item images. |
 | `S3_REGION` | `us-east-1` | Region passed to the S3 client. MinIO ignores it; AWS does not. |
 | `S3_ACCESS_KEY_ID` | — | Required. Object-storage access key. |
