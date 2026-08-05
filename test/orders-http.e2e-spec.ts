@@ -958,6 +958,29 @@ describe('Orders endpoint (e2e)', () => {
       expect((res.body as ProblemDetails).errors?.[0].field).toBe('cursor');
     });
 
+    /**
+     * A cursor is opaque, not trusted. It carries a value that reaches a cast
+     * in the WHERE clause, so a well-shaped cursor with a nonsense value must
+     * still be refused at the edge — otherwise the driver raises on
+     * `'nope'::timestamptz` and a client input problem surfaces as a 500.
+     */
+    it.each([
+      ['-createdAt', 'not-a-timestamp'],
+      ['totalMinor', 'not-a-number'],
+    ])('refuses a %s cursor carrying a nonsense value', async (sort, value) => {
+      const forged = Buffer.from(
+        JSON.stringify({ s: sort, v: value, i: uuidv7() }),
+      ).toString('base64url');
+
+      const res = await listAs(
+        cashierToken,
+        `?sort=${sort}&limit=5&cursor=${encodeURIComponent(forged)}`,
+      );
+
+      expect(res.status).toBe(422);
+      expect((res.body as ProblemDetails).errors?.[0].field).toBe('cursor');
+    });
+
     it('filters by status', async () => {
       const res = await listAs(cashierToken, '?status=PAID&limit=100');
 

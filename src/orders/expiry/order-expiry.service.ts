@@ -2,6 +2,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { and, eq, lt } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
+import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
+import { OrderInvalidTransitionError } from '../errors/orders.errors';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders } from '../../database/schema';
@@ -17,6 +19,20 @@ import { transitionOrder } from '../state/transition-order';
  * the cafe is trying to trade. Whatever is left is taken on the next tick.
  */
 const MAX_PER_TICK = 200;
+
+/**
+ * Whether this failure is the sweep losing a race it was always going to lose
+ * sometimes, rather than something being wrong.
+ *
+ * Exactly two outcomes qualify, and both are the guard doing its job in the
+ * window between the scan and the update: the order moved on (paid, cancelled)
+ * so `WHERE status = 'PENDING_PAYMENT'` matched nothing, or it was deleted
+ * outright. Exported so the discrimination is testable on real exception
+ * instances instead of inferred from a log line.
+ */
+export const isLostRace = (error: unknown): boolean =>
+  error instanceof OrderInvalidTransitionError ||
+  error instanceof ResourceNotFoundError;
 
 /**
  * Expiring unpaid orders (FR-10, §4.4).
@@ -102,10 +118,23 @@ export class OrderExpiryService {
        * paid, or a cashier cancelled, in the moment between the scan and the
        * update. The guard refuses, and there is nothing to report — logging it
        * would fill the log with the system working correctly.
+       *
+       * Anything else is a fault and says so. Treating every failure as a lost
+       * race would let a deadlock, a broken connection or a constraint the
+       * schema grew later stop the sweep making progress in total silence,
+       * visible only to whoever thought to turn on debug logging.
        */
-      this.logger.debug(
+      if (isLostRace(error)) {
+        this.logger.debug(
+          { orderId, err: describeError(error) },
+          'order was no longer expirable',
+        );
+        return false;
+      }
+
+      this.logger.error(
         { orderId, err: describeError(error) },
-        'order was no longer expirable',
+        'failed to expire order',
       );
       return false;
     }

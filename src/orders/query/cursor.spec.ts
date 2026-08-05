@@ -78,6 +78,51 @@ describe('order list cursor', () => {
       expect(() => decodeCursor(cursor, SORT)).toThrow(AppException);
     });
 
+    /**
+     * `v` is not inert — it reaches a `::timestamptz` or `::integer` cast in
+     * the WHERE clause. A well-shaped cursor carrying nonsense would otherwise
+     * be refused by the driver, which turns a client input problem into a 500.
+     */
+    const forge = (sort: string, value: unknown) =>
+      Buffer.from(JSON.stringify({ s: sort, v: value, i: ID })).toString(
+        'base64url',
+      );
+
+    it.each([
+      'not-a-timestamp',
+      '2026',
+      'Jun 11 2026',
+      '2026-06-11',
+      '2026-06-11T07:32:10Z',
+      '2026-13-45T07:32:10.000Z',
+      '',
+    ])('refuses a date-sorted cursor holding %p', (value) => {
+      expect(() =>
+        decodeCursor(forge('-createdAt', value), '-createdAt'),
+      ).toThrow(AppException);
+    });
+
+    it.each([
+      'not-a-number',
+      '17500.5',
+      '1e5',
+      '',
+      ' 17500',
+      '99999999999999999999',
+    ])('refuses a total-sorted cursor holding %p', (value) => {
+      expect(() =>
+        decodeCursor(forge('totalMinor', value), 'totalMinor'),
+      ).toThrow(AppException);
+    });
+
+    // A free order is a real order, and a negative is what a cursor would carry
+    // if the floor ever moved — neither should be refused as malformed.
+    it.each(['0', '-1000', '17500'])('accepts the integer %p', (value) => {
+      expect(decodeCursor(forge('totalMinor', value), 'totalMinor').value).toBe(
+        value,
+      );
+    });
+
     it('refuses with a 422 naming the parameter', () => {
       try {
         decodeCursor('rubbish', SORT);
