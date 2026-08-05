@@ -184,6 +184,49 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * The payment gateway (§10.5, §12.4).
+   *
+   * Both prefixes are accepted because a **restricted key (`rk_`) is the one to
+   * prefer**: this service needs to create and cancel intents and issue refunds,
+   * and nothing else. A full secret key (`sk_`) also grants the ability to read
+   * every customer, move balances and rotate the account's own keys — authority
+   * this process has no use for and should not be holding when it is reachable
+   * from a cafe's network. `sk_` still parses so that a first local spike is not
+   * blocked on minting a scoped key.
+   */
+  STRIPE_SECRET_KEY: z
+    .string()
+    .regex(
+      /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/,
+      'must be a Stripe secret or restricted key (prefer rk_)',
+    ),
+  /**
+   * Signing secrets for the webhook endpoint, newest first.
+   *
+   * A list rather than a string because §10.5 specifies rotation with a
+   * dual-accept window: for the 24 hours after a roll, events signed with
+   * either the old or the new secret are genuine, and an endpoint that knows
+   * only one of them drops half of them on the floor. Stripe's
+   * `constructEvent` verifies against a single secret, so accepting both means
+   * trying each — which only works if both are configured.
+   *
+   * Comma-separated, like CORS_ORIGINS above. One value is the steady state.
+   */
+  STRIPE_WEBHOOK_SECRETS: z
+    .string()
+    .min(1)
+    .transform((value) =>
+      value
+        .split(',')
+        .map((secret) => secret.trim())
+        .filter(Boolean),
+    )
+    .pipe(
+      z
+        .array(z.string().startsWith('whsec_', 'must begin with whsec_'))
+        .nonempty('at least one signing secret is required'),
+    ),
 });
 
 /** Fully typed, validated config shape — inferred from the schema, never drifts. */

@@ -54,6 +54,14 @@ jobs:
       # The bucket is a job-scoped container here, so let the app create it
       # rather than adding an mc step just to mkdir.
       S3_AUTO_CREATE_BUCKET: 'true'
+      # Payment gateway (§10.5). Deliberately NOT repository secrets: these are
+      # syntactically valid and functionally dead, so every suite that boots the
+      # app gets a config it can parse, and any test that reaches the network
+      # fails loudly here instead of quietly charging a real sandbox. Tests that
+      # need gateway behaviour stub the PaymentProvider port or talk to
+      # stripe-mock; none of them authenticate.
+      STRIPE_SECRET_KEY: rk_test_ciplaceholdernotarealkey
+      STRIPE_WEBHOOK_SECRETS: whsec_ciplaceholdernotarealsecret
 
     steps:
       - uses: actions/checkout@v4
