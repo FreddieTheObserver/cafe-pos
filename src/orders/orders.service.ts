@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import type { Env } from '../config/env.validation';
 import type { Database } from '../database/database.module';
 import { DRIZZLE } from '../database/drizzle.constants';
@@ -9,7 +9,6 @@ import {
   menuItems,
   orderItemOptions,
   orderItems,
-  orderNumberCounters,
   orders,
   orderStatusHistory,
 } from '../database/schema';
@@ -19,6 +18,7 @@ import type { Principal } from '../identity/principal';
 import { businessDayOf } from './business-day';
 import {
   OrderChannelMismatchError,
+  OrderDraftNotAllowedError,
   PriceMismatchError,
 } from './errors/orders.errors';
 import {
@@ -29,7 +29,7 @@ import {
   type Transaction,
 } from './idempotency/idempotency.store';
 import { hashRequest } from './idempotency/request-hash';
-import { formatOrderNumber } from './order-number';
+import { nextOrderNumber } from './order-number';
 import {
   priceOrder,
   type CatalogItem,
@@ -42,12 +42,15 @@ export interface CreateOrderInput {
   items: RequestedItem[];
   customerName?: string | null;
   expectedTotalMinor?: number;
+  /** Park it instead of checking out (FR-7). Counter only — see `resolveChannel`. */
+  draft?: boolean;
 }
 
 /** An order as the API returns it (§5.3). */
 export interface OrderView {
   id: string;
-  orderNumber: string;
+  /** Null while the order is a parked DRAFT — checkout assigns it (B3). */
+  orderNumber: string | null;
   status: OrderStatus;
   channel: OrderChannel;
   businessDay: string;
@@ -136,7 +139,7 @@ export class OrdersService {
     principal: Principal,
     input: CreateOrderInput,
   ): Promise<OrderView> {
-    const channel = await this.resolveChannel(tx, principal, input.channel);
+    const channel = await this.resolveChannel(tx, principal, input);
 
     const catalog = await this.readCatalog(
       tx,
@@ -177,15 +180,23 @@ export class OrdersService {
   private async resolveChannel(
     tx: Transaction,
     principal: Principal,
-    submitted: OrderChannel,
+    input: CreateOrderInput,
   ): Promise<OrderChannel> {
     const expected: OrderChannel =
       principal.type === 'device' ? 'KIOSK' : 'COUNTER';
-    if (submitted !== expected) {
-      throw new OrderChannelMismatchError(submitted, expected);
+    if (input.channel !== expected) {
+      throw new OrderChannelMismatchError(input.channel, expected);
     }
 
     if (principal.type === 'device') {
+      /**
+       * §4.4: a kiosk cart lives client-side, and creating server-side drafts
+       * for every browsing customer would litter the table with rows nobody
+       * checks out. A device asking to park one is a client that has confused
+       * itself for a counter.
+       */
+      if (input.draft === true) throw new OrderDraftNotAllowedError();
+
       const device = await tx.query.kioskDevices.findFirst({
         where: eq(kioskDevices.id, principal.deviceId),
         columns: { status: true },
@@ -289,22 +300,27 @@ export class OrdersService {
     );
 
     /**
-     * Straight to PENDING_PAYMENT. DRAFT is the counter's "park this while the
-     * customer decides" and arrives with `POST /orders/:id/checkout`; creating
-     * one here would spend a queue number on a basket nobody has committed to.
+     * A parked basket claims nothing yet (B3, FR-7). No queue number, because
+     * one spent on an order the customer is still deciding on either consumes a
+     * number nobody calls or leaves a gap when it is abandoned; and no expiry,
+     * because FR-10's ten minutes is a payment window, and a draft has not
+     * reached payment. `POST /orders/:id/checkout` claims both at once.
      */
-    const status: OrderStatus = 'PENDING_PAYMENT';
-    const expiresAt = new Date(
-      now.getTime() +
-        this.config.get('ORDER_EXPIRY_SECONDS', { infer: true }) * 1000,
-    );
-
-    const sequence = await nextOrderNumber(tx, businessDay);
+    const status: OrderStatus =
+      input.draft === true ? 'DRAFT' : 'PENDING_PAYMENT';
+    const expiresAt =
+      status === 'DRAFT'
+        ? null
+        : new Date(
+            now.getTime() +
+              this.config.get('ORDER_EXPIRY_SECONDS', { infer: true }) * 1000,
+          );
 
     const [order] = await tx
       .insert(orders)
       .values({
-        orderNumber: formatOrderNumber(sequence),
+        orderNumber:
+          status === 'DRAFT' ? null : await nextOrderNumber(tx, businessDay),
         businessDay,
         channel,
         status,
@@ -366,43 +382,6 @@ export class OrdersService {
 
     return toView(order, priced);
   }
-}
-
-/**
- * Allocates the next queue number for a business day (B3).
- *
- * One statement, and an upsert rather than a read-then-write because two kiosks
- * checking out in the same second is the normal case at peak, not an edge one.
- * `ON CONFLICT DO UPDATE` makes the counter row's own lock the serialization
- * point: the losing transaction waits for the winner to commit and then reads
- * the incremented value. No duplicates, and no application-level lock to get
- * wrong.
- *
- * A counter table rather than a Postgres sequence, and that is the whole reason
- * it exists. A sequence is deliberately non-transactional — it would keep
- * counting through a rolled-back checkout and leave A-041 permanently missing.
- * This increment rolls back with the order it was for, which is what makes B3's
- * "unique per business day" also gapless.
- *
- * The cost is real and bounded: because the lock is taken here and released at
- * commit, checkouts on the same business day serialize across the four
- * statements that follow. At §3.5's peak of ~6 orders a minute that is nothing,
- * and it is the reason those statements are kept to four.
- */
-async function nextOrderNumber(
-  tx: Transaction,
-  businessDay: string,
-): Promise<number> {
-  const [counter] = await tx
-    .insert(orderNumberCounters)
-    .values({ businessDay, lastValue: 1 })
-    .onConflictDoUpdate({
-      target: orderNumberCounters.businessDay,
-      set: { lastValue: sql`${orderNumberCounters.lastValue} + 1` },
-    })
-    .returning({ lastValue: orderNumberCounters.lastValue });
-
-  return counter.lastValue;
 }
 
 /**

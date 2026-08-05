@@ -72,6 +72,12 @@ const CreateOrderSchema = z.strictObject({
    * "never charged a number they did not see" guarantee.
    */
   expectedTotalMinor: z.int().min(0).max(MAX_EXPECTED_TOTAL_MINOR).optional(),
+  /**
+   * Park it rather than check it out (FR-7). Counter only — §4.4 keeps a kiosk
+   * cart on the tablet, because a server-side row per browsing customer is a
+   * table full of baskets nobody ever completes.
+   */
+  draft: z.boolean().optional(),
 });
 
 const OrderIdParamSchema = z.strictObject({ id: z.uuid() });

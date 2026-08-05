@@ -71,6 +71,37 @@ export class OrderChannelMismatchError extends AppException {
 }
 
 /**
+ * A kiosk asked to park an order (§4.4, FR-7).
+ *
+ * Drafts are the counter's "hold this while the customer decides". A kiosk cart
+ * lives client-side on purpose: creating a server-side row for every browsing
+ * customer would fill the table with baskets nobody checks out, and §4.4 says so
+ * outright.
+ *
+ * 422, and `VALIDATION_FAILED` rather than a new code: the request is
+ * well-formed but asks for something this credential can never do, which is the
+ * same shape of complaint as the channel mismatch above.
+ */
+export class OrderDraftNotAllowedError extends AppException {
+  constructor() {
+    super({
+      code: ErrorCode.VALIDATION_FAILED,
+      status: 422,
+      title: 'Kiosks cannot park orders',
+      detail:
+        'A draft is a counter hold; a kiosk basket lives on the tablet until checkout.',
+      errors: [
+        {
+          field: 'draft',
+          rule: 'principal',
+          message: 'must be false or absent for a kiosk device',
+        },
+      ],
+    });
+  }
+}
+
+/**
  * Something in the basket cannot be sold right now (E6, FR-3).
  *
  * Covers three cases the kiosk reacts to identically — an 86'd item, an 86'd

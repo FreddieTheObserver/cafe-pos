@@ -297,6 +297,15 @@ const MATRIX: MatrixRow[] = [
     body: EMPTY_BODY,
   },
   {
+    // Staff only, and no kiosk: a device cannot create a draft, so it can
+    // never have one to check out.
+    method: 'post',
+    route: '/api/v1/orders/:id/checkout',
+    path: `/api/v1/orders/${uuidv7()}/checkout`,
+    allow: [A, M, C],
+    body: EMPTY_BODY,
+  },
+  {
     // A kiosk may call off its own order — a customer who walks away from the
     // screen should not need to find a staff member. BARISTA is absent: a bar
     // screen is not where an order is called off.

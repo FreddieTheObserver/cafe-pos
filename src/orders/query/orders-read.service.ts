@@ -22,7 +22,8 @@ import type { OrderSort } from './orders-query.dto';
 /** A row of the order list — everything a lookup screen shows, and no lines. */
 export interface OrderSummary {
   id: string;
-  orderNumber: string;
+  /** Null while the order is a parked DRAFT — checkout assigns it (B3). */
+  orderNumber: string | null;
   status: string;
   channel: string;
   businessDay: string;
@@ -296,7 +297,7 @@ function cursorPredicate(
  */
 export const toOrderSummary = (row: {
   id: string;
-  orderNumber: string;
+  orderNumber: string | null;
   status: string;
   channel: string;
   businessDay: string;

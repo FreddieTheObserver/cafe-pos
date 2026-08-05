@@ -7,7 +7,7 @@ import { IdentityHarness } from './fixtures/identity-fixtures';
 
 interface OrderBody {
   id: string;
-  orderNumber: string;
+  orderNumber: string | null;
   status: string;
   channel: string;
   businessDay: string;
@@ -30,7 +30,7 @@ interface OrderBody {
 /** A row of `GET /orders` — the summary shape, without line items. */
 interface OrderSummaryBody {
   id: string;
-  orderNumber: string;
+  orderNumber: string | null;
   status: string;
   channel: string;
   businessDay: string;
@@ -985,9 +985,12 @@ describe('Orders endpoint (e2e)', () => {
     });
 
     it('finds an order by its queue number', async () => {
+      // Non-null because these were checked out, not parked — a DRAFT has no
+      // number to search for, which is B3's whole point.
+      const queueNumber = mine[0].orderNumber as string;
       const res = await listAs(
         cashierToken,
-        `?q=${encodeURIComponent(mine[0].orderNumber)}&businessDay=${mine[0].businessDay}`,
+        `?q=${encodeURIComponent(queueNumber)}&businessDay=${mine[0].businessDay}`,
       );
 
       expect(res.status).toBe(200);
@@ -1560,6 +1563,197 @@ describe('Orders endpoint (e2e)', () => {
         1,
       );
       expect(await statusOf(id)).toBe('EXPIRED');
+    });
+  });
+
+  /**
+   * Parked orders and checkout (FR-7, §4.5 B3, §5.2).
+   *
+   * B3's rule is the whole point: a queue number is claimed at checkout, not at
+   * draft. A basket the customer is still deciding on must not consume a number
+   * nobody calls, nor leave a gap in the day's sequence when it is abandoned.
+   */
+  describe('parking a counter order', () => {
+    const park = (overrides: Record<string, unknown> = {}) =>
+      postOrder(cashierToken, {
+        channel: 'COUNTER',
+        draft: true,
+        items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
+        ...overrides,
+      });
+
+    const checkout = (token: string, id: string) =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${id}/checkout`)
+        .set('Authorization', auth(token))
+        .send({});
+
+    it('holds no queue number and no expiry while parked', async () => {
+      const res = await park();
+
+      expect(res.status).toBe(201);
+      const order = res.body as OrderBody;
+      expect(order.status).toBe('DRAFT');
+      expect(order.orderNumber).toBeNull();
+      expect(order.expiresAt).toBeNull();
+    });
+
+    it('is priced and snapshotted like any other order', async () => {
+      const res = await park({
+        items: [{ menuItemId: croissantId, quantity: 3, optionIds: [] }],
+      });
+
+      const order = res.body as OrderBody;
+      expect(order.totalMinor).toBe(6000);
+      expect(order.items[0].unitPriceMinor).toBe(2000);
+    });
+
+    it('claims a number and a payment window at checkout', async () => {
+      const { id } = (await park()).body as OrderBody;
+
+      const res = await checkout(cashierToken, id);
+
+      expect(res.status).toBe(200);
+      const order = res.body as OrderSummaryBody & { expiresAt: string | null };
+      expect(order.status).toBe('PENDING_PAYMENT');
+      expect(order.orderNumber).toMatch(/^A-\d{3,}$/);
+      expect(order.expiresAt).not.toBeNull();
+    });
+
+    /**
+     * The reason the column had to become nullable rather than carry a
+     * placeholder: Postgres does not compare NULLs for uniqueness, so any
+     * number of drafts coexist on a business day while two checked-out orders
+     * still cannot share `A-042`.
+     */
+    it('lets several drafts sit on the same business day at once', async () => {
+      const drafts = await Promise.all([park(), park(), park()]);
+
+      expect(drafts.map((res) => res.status)).toEqual([201, 201, 201]);
+      expect(
+        drafts.every((res) => (res.body as OrderBody).orderNumber === null),
+      ).toBe(true);
+    });
+
+    it('gives concurrent checkouts distinct numbers', async () => {
+      const ids = await Promise.all(
+        [1, 2, 3].map(async () => ((await park()).body as OrderBody).id),
+      );
+
+      const results = await Promise.all(
+        ids.map((id) => checkout(cashierToken, id)),
+      );
+
+      const numbers = results.map(
+        (res) => (res.body as OrderSummaryBody).orderNumber,
+      );
+      expect(new Set(numbers).size).toBe(3);
+    });
+
+    /**
+     * B7: an order parked at 04:55 and checked out at 05:05 belongs to the
+     * shift that took it. Recomputing the day here would move it into the next
+     * day's sequence, where its number could collide with one already called.
+     */
+    it('keeps the business day it was parked on', async () => {
+      const { id } = (await park()).body as OrderBody;
+      await harness.db
+        .update(schema.orders)
+        .set({ businessDay: '2020-01-01' })
+        .where(eq(schema.orders.id, id));
+
+      const res = await checkout(cashierToken, id);
+
+      expect((res.body as OrderSummaryBody).businessDay).toBe('2020-01-01');
+    });
+
+    it('records the checkout in the audit trail', async () => {
+      const { id } = (await park()).body as OrderBody;
+      await checkout(cashierToken, id);
+
+      const history = await harness.db
+        .select()
+        .from(schema.orderStatusHistory)
+        .where(eq(schema.orderStatusHistory.orderId, id));
+
+      expect(
+        history
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+          .map((row) => [row.fromStatus, row.toStatus]),
+      ).toEqual([
+        [null, 'DRAFT'],
+        ['DRAFT', 'PENDING_PAYMENT'],
+      ]);
+    });
+
+    it('refuses to check the same order out twice', async () => {
+      const { id } = (await park()).body as OrderBody;
+      await checkout(cashierToken, id);
+
+      const again = await checkout(cashierToken, id);
+
+      expect(again.status).toBe(409);
+      expect((again.body as ProblemDetails).meta).toEqual({
+        currentStatus: 'PENDING_PAYMENT',
+        requested: 'PENDING_PAYMENT',
+      });
+    });
+
+    it('can be cancelled while still parked', async () => {
+      const { id } = (await park()).body as OrderBody;
+
+      const res = await harness
+        .http()
+        .post(`/api/v1/orders/${id}/cancel`)
+        .set('Authorization', auth(cashierToken))
+        .send({ reason: 'customer left' });
+
+      expect(res.status).toBe(200);
+      expect((res.body as OrderSummaryBody).status).toBe('CANCELLED');
+    });
+
+    /** A draft has not reached payment, so FR-10's window does not apply. */
+    it('is left alone by the expiry sweep', async () => {
+      const { id } = (await park()).body as OrderBody;
+
+      await harness.app.get(OrderExpiryService).expireOverdue();
+
+      const [row] = await harness.db
+        .select()
+        .from(schema.orders)
+        .where(eq(schema.orders.id, id));
+      expect(row.status).toBe('DRAFT');
+    });
+
+    /**
+     * §4.4 keeps a kiosk cart on the tablet: a server-side row per browsing
+     * customer is a table full of baskets nobody ever completes.
+     */
+    it('refuses a kiosk asking to park one', async () => {
+      const res = await postOrder(kioskToken, kioskBasket({ draft: true }));
+
+      expect(res.status).toBe(422);
+      const problem = res.body as ProblemDetails;
+      expect(problem.code).toBe('VALIDATION_FAILED');
+      expect(problem.errors?.[0].field).toBe('draft');
+    });
+
+    it('refuses to check out an order that was never a draft', async () => {
+      const res = await postOrder(kioskToken, kioskBasket());
+      const { id } = res.body as OrderBody;
+
+      const checkedOut = await checkout(cashierToken, id);
+
+      expect(checkedOut.status).toBe(409);
+      expect((checkedOut.body as ProblemDetails).meta).toEqual({
+        currentStatus: 'PENDING_PAYMENT',
+        requested: 'PENDING_PAYMENT',
+      });
+    });
+
+    it('answers 404 for an order that does not exist', async () => {
+      expect((await checkout(cashierToken, uuidv7())).status).toBe(404);
     });
   });
 

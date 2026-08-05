@@ -19,7 +19,16 @@ export const orders = pgTable(
   'orders',
   {
     id: primaryId(),
-    orderNumber: text('order_number').notNull(),
+    /**
+     * Null until checkout (B3): a parked DRAFT has not claimed a queue number,
+     * because a basket the customer is still deciding on should not consume one
+     * — nor leave a gap in the day's sequence when it is abandoned.
+     *
+     * The unique index below survives this. Postgres does not compare NULLs for
+     * uniqueness, so any number of drafts coexist on one business day while two
+     * checked-out orders still cannot share `A-042`.
+     */
+    orderNumber: text('order_number'),
     businessDay: date('business_day').notNull(),
     channel: text('channel', { enum: orderChannels }).notNull(),
     status: text('status', { enum: orderStatuses }).notNull(),

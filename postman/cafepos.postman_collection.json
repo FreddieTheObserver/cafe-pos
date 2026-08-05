@@ -104,6 +104,10 @@
     {
       "key": "nextCursor",
       "value": ""
+    },
+    {
+      "key": "draftOrderId",
+      "value": ""
     }
   ],
   "item": [
@@ -958,6 +962,83 @@
               }
             }
           ]
+        },
+        {
+          "name": "Park an order (counter draft)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channel\": \"COUNTER\",\n  \"draft\": true,\n  \"items\": [\n    {\n      \"menuItemId\": \"{{itemId}}\",\n      \"quantity\": 1,\n      \"optionIds\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "description": "FR-7: hold a basket while the customer decides. The response has `\"orderNumber\": null` and `\"expiresAt\": null` - B3 claims the queue number at checkout, because one spent on a basket nobody completes either goes uncalled or leaves a gap in the day.\n\nA kiosk sending `draft: true` is refused: 4.4 keeps its cart on the tablet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('draftOrderId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Check the parked order out",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{draftOrderId}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{draftOrderId}}",
+                "checkout"
+              ]
+            },
+            "description": "Claims the queue number and the payment window in the same transaction that moves DRAFT -> PENDING_PAYMENT, so the order is never seen queued without a number.\n\nKeeps the business day it was *parked* on, not today: an order taken at 04:55 and checked out at 05:05 belongs to the shift that took it (B7). Does not re-price - the snapshot is the quote the cashier already read out."
+          }
         },
         {
           "name": "Search orders",

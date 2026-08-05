@@ -4,6 +4,7 @@ import { OrdersService } from './orders.service';
 import { OrdersReadService } from './query/orders-read.service';
 import { OrderStatusService } from './state/order-status.service';
 import { CancelOrderService } from './cancel/cancel-order.service';
+import { CheckoutOrderService } from './checkout/checkout-order.service';
 import { OrderExpiryService } from './expiry/order-expiry.service';
 
 /**
@@ -23,6 +24,7 @@ import { OrderExpiryService } from './expiry/order-expiry.service';
     OrdersReadService,
     OrderStatusService,
     CancelOrderService,
+    CheckoutOrderService,
     OrderExpiryService,
   ],
 })

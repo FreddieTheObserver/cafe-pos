@@ -22,6 +22,7 @@ import {
   TransitionOrderDto,
 } from './orders.dto';
 import { CancelOrderService } from './cancel/cancel-order.service';
+import { CheckoutOrderService } from './checkout/checkout-order.service';
 import { OrdersQueryDto } from './query/orders-query.dto';
 import {
   OrdersReadService,
@@ -48,6 +49,7 @@ export class OrdersController {
     private readonly read: OrdersReadService,
     private readonly status: OrderStatusService,
     private readonly cancellation: CancelOrderService,
+    private readonly checkout: CheckoutOrderService,
   ) {}
 
   /**
@@ -123,6 +125,23 @@ export class OrdersController {
     @Body() body: TransitionOrderDto,
   ): Promise<OrderSummary> {
     return this.status.transition(principal, params.id, body.to);
+  }
+
+  /**
+   * A parked counter order joining the queue (FR-7, §5.2).
+   *
+   * Staff only, and no kiosk: a device cannot create a draft, so it can never
+   * have one to check out.
+   */
+  @Roles('ADMIN', 'MANAGER', 'CASHIER')
+  @Header('Cache-Control', 'no-store')
+  @HttpCode(200)
+  @Post(':id/checkout')
+  checkoutOrder(
+    @CurrentPrincipal() principal: Principal,
+    @Param() params: OrderIdParamDto,
+  ): Promise<OrderSummary> {
+    return this.checkout.checkout(principal, params.id);
   }
 
   /**
