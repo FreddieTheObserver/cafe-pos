@@ -5,18 +5,25 @@ import type { OrderStatus } from '../../database/schema/enums';
 /**
  * The payments slice of the §9.2 catalog.
  *
- * Two codes the catalog lists are deliberately absent. `REFUND_EXCEEDS_REMAINING`
- * and `PAYMENT_NOT_REFUNDABLE` both police a gateway refund, and this system
- * issues none — refunds are bookkeeping against the till, so there is no
- * remaining-amount arithmetic to get wrong and no gateway state to be
- * refundable or not. As elsewhere, codes live beside the exceptions that raise
- * them so this object cannot grow an entry nothing produces.
+ * `REFUND_EXCEEDS_REMAINING` and `PAYMENT_NOT_REFUNDABLE` were once absent from
+ * here, on the grounds that a system issuing no gateway refunds has no
+ * remaining-amount arithmetic to get wrong. That was wrong: no *money* moves
+ * through Stripe on a refund, but the amounts are still tracked — the `refunds`
+ * table carries `amount_minor` precisely so a partial refund is a record rather
+ * than a rounding of the order — and E9's `amount ≤ captured − already
+ * refunded` is arithmetic whether the till or the gateway settles it. Refusing
+ * to over-refund is the check; who hands over the cash is not the point.
+ *
+ * As elsewhere, codes live beside the exceptions that raise them so this object
+ * cannot grow an entry nothing produces.
  */
 export const PaymentErrorCode = {
   PAYMENT_ALREADY_ACTIVE: 'PAYMENT_ALREADY_ACTIVE',
   ORDER_NOT_PAYABLE: 'ORDER_NOT_PAYABLE',
   ORDER_EXPIRED: 'ORDER_EXPIRED',
   WEBHOOK_SIGNATURE_INVALID: 'WEBHOOK_SIGNATURE_INVALID',
+  REFUND_EXCEEDS_REMAINING: 'REFUND_EXCEEDS_REMAINING',
+  PAYMENT_NOT_REFUNDABLE: 'PAYMENT_NOT_REFUNDABLE',
 } as const;
 
 /**
@@ -113,6 +120,47 @@ export class WebhookSignatureInvalidError extends AppException {
       status: 400,
       title: 'Invalid webhook signature',
       detail: 'The request signature could not be verified.',
+    });
+  }
+}
+
+/**
+ * The refund would take back more than was captured (E9).
+ *
+ * 422 rather than 409: the request is well-formed and the payment is in a state
+ * that accepts refunds — it is the *number* that is wrong, and a client that
+ * subtracts differently can fix it by sending a smaller one. `remainingMinor`
+ * rides along so a manager's screen can show what is actually left instead of
+ * making them work it out from the receipt.
+ */
+export class RefundExceedsRemainingError extends AppException {
+  constructor(requestedMinor: number, remainingMinor: number) {
+    super({
+      code: PaymentErrorCode.REFUND_EXCEEDS_REMAINING,
+      status: 422,
+      title: 'Refund is larger than what is left',
+      detail: `Requested ${requestedMinor}, but only ${remainingMinor} of this payment has not been refunded.`,
+      meta: { requestedMinor, remainingMinor },
+    });
+  }
+}
+
+/**
+ * This payment cannot be refunded (§5.2).
+ *
+ * Two reasons reach here and both are about state, not arithmetic: money that
+ * was never captured (a payment that failed, was cancelled, or is still in
+ * flight) cannot be given back, and §3.3 confines refunds to the business day
+ * that took them — a till reconciled at close cannot be reopened by a refund
+ * against yesterday.
+ */
+export class PaymentNotRefundableError extends AppException {
+  constructor(reason: string) {
+    super({
+      code: PaymentErrorCode.PAYMENT_NOT_REFUNDABLE,
+      status: 409,
+      title: 'Payment cannot be refunded',
+      detail: reason,
     });
   }
 }

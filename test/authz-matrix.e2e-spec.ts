@@ -340,6 +340,16 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M, C, B, K],
   },
   {
+    // §6.4: the one money-moving route a cashier cannot reach. A refund is the
+    // single operation that takes cash *out* of the till, and whoever took the
+    // payment should not reverse it unsupervised.
+    method: 'post',
+    route: '/api/v1/payments/:id/refunds',
+    path: `/api/v1/payments/${uuidv7()}/refunds`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
     /**
      * PUBLIC because Stripe holds no credential — the signature over the raw
      * body is the authentication (§10.1), and a guard here would refuse every
