@@ -25,10 +25,14 @@ describe('Order expiry cancels the intent (e2e)', () => {
   const cancelled: string[] = [];
 
   /** Stands in for Stripe so both answers are reachable without confirming a payment. */
+  let gatewayReachable = true;
+
   const provider = {
     cancelIntent: (intentId: string): Promise<CancelIntentOutcome> => {
       cancelled.push(intentId);
-      return Promise.resolve(cancelOutcome);
+      return gatewayReachable
+        ? Promise.resolve(cancelOutcome)
+        : Promise.reject(new Error('Stripe is unreachable'));
     },
   };
 
@@ -100,6 +104,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
   beforeEach(() => {
     cancelOutcome = 'CANCELLED';
     cancelled.length = 0;
+    gatewayReachable = true;
   });
 
   afterAll(async () => {
@@ -170,6 +175,30 @@ describe('Order expiry cancels the intent (e2e)', () => {
       expect(cancelled).toContain(intentId);
       expect(await orderStatusOf(orderId)).toBe('CANCELLED');
       expect(await paymentStatusOf(paymentId)).toBe('CANCELLED');
+    });
+
+    /**
+     * Fails closed when the gateway is unreachable, and says so as a 503.
+     *
+     * Cancelling the order while the intent is still live is the leak this
+     * whole path exists to prevent, so an unreachable Stripe has to stop the
+     * request rather than wave it through. 503 rather than 500 because the
+     * refusal is deliberate and retrying works — and nothing is lost by
+     * waiting, since an order nobody cancels expires and the sweep cancels the
+     * intent then.
+     */
+    it('refuses to cancel when the gateway cannot be reached', async () => {
+      const { orderId, paymentId } = await givenOverdueOrder();
+      gatewayReachable = false;
+
+      const res = await cancel(orderId);
+
+      expect(res.status).toBe(503);
+      expect((res.body as { code: string }).code).toBe(
+        'DEPENDENCY_UNAVAILABLE',
+      );
+      expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
+      expect(await paymentStatusOf(paymentId)).toBe('PENDING');
     });
 
     /** Lost the race: the customer confirmed while the cancel was in flight. */
