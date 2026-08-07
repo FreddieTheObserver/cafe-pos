@@ -7,6 +7,8 @@ import { PAYMENT_PROVIDER } from './provider/payment-provider';
 import { StripePaymentProvider } from './provider/stripe-payment.provider';
 import { CreatePaymentController } from './create/create-payment.controller';
 import { CreatePaymentService } from './create/create-payment.service';
+import { OrderPaymentsController } from './query/order-payments.controller';
+import { OrderPaymentsService } from './query/order-payments.service';
 import { PaymentEventProcessor } from './webhooks/payment-event-processor.service';
 import { StripeWebhookController } from './webhooks/stripe-webhook.controller';
 import { WebhookInboxService } from './webhooks/webhook-inbox.service';
@@ -21,11 +23,16 @@ import { WebhookInboxService } from './webhooks/webhook-inbox.service';
  * money.
  */
 @Module({
-  controllers: [StripeWebhookController, CreatePaymentController],
+  controllers: [
+    StripeWebhookController,
+    CreatePaymentController,
+    OrderPaymentsController,
+  ],
   providers: [
     WebhookInboxService,
     PaymentEventProcessor,
     CreatePaymentService,
+    OrderPaymentsService,
     {
       provide: STRIPE_CLIENT,
       inject: [ConfigService],

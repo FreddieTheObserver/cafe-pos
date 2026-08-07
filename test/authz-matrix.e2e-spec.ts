@@ -332,6 +332,14 @@ const MATRIX: MatrixRow[] = [
     body: EMPTY_BODY,
   },
   {
+    // BARISTA reads here but cannot post above: a bar screen may need to see
+    // why an order is not paid, and can never open a payment to find out.
+    method: 'get',
+    route: '/api/v1/orders/:id/payments',
+    path: `/api/v1/orders/${uuidv7()}/payments`,
+    allow: [A, M, C, B, K],
+  },
+  {
     /**
      * PUBLIC because Stripe holds no credential — the signature over the raw
      * body is the authentication (§10.1), and a guard here would refuse every

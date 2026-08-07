@@ -255,6 +255,55 @@ describe('Create payment endpoint (e2e)', () => {
     });
   });
 
+  describe('listing the attempts', () => {
+    it('returns the payments behind an order, oldest first', async () => {
+      const orderId = await givenOrder({ ownedByKiosk: false });
+      await pay(orderId, cashierToken, {
+        method: 'CASH',
+        cashTenderedMinor: 20_000,
+      });
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/orders/${orderId}/payments`)
+        .set('Authorization', `Bearer ${cashierToken}`);
+
+      expect(res.status).toBe(200);
+      const attempts = res.body as PaymentBody[];
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({
+        status: 'SUCCEEDED',
+        method: 'CASH',
+        provider: 'CASH',
+      });
+    });
+
+    /** The secret authorises confirming a payment; it is served once, never again. */
+    it('never re-serves a client secret', async () => {
+      const orderId = await givenOrder();
+      await pay(orderId, kioskToken, { method: 'CARD' });
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/orders/${orderId}/payments`)
+        .set('Authorization', `Bearer ${kioskToken}`);
+
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain('_secret_');
+    }, 30_000);
+
+    it('hides another principal’s order from a kiosk', async () => {
+      const orderId = await givenOrder({ ownedByKiosk: false });
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/orders/${orderId}/payments`)
+        .set('Authorization', `Bearer ${kioskToken}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
   /**
    * §5.7: the kiosk retries a request it never saw answered, and must get the
    * original payment rather than a second one against the same basket.
