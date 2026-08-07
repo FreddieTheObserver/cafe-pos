@@ -150,6 +150,26 @@ export interface PaymentProvider {
   interpret(payload: unknown): GatewayOutcome;
 
   /**
+   * What the gateway says it captured for intents we already know about (FR-20).
+   *
+   * Asked per intent rather than by listing a time window, because the window
+   * would have to be derived from a business day — and §3.3's day starts at 05:00
+   * local, so that inverse is a date calculation with a DST edge nobody would
+   * test. Asking about the intents we hold needs no such arithmetic, and it
+   * compares exactly the payments this system claims: the other direction —
+   * money at the gateway we have no row for — is what the unprocessed inbox is
+   * already there to surface.
+   *
+   * `notCaptured` is for intents the gateway holds but did not capture, which
+   * is a real disagreement worth reporting. A failure to *reach* the gateway is
+   * not: it throws, because a reconciliation that silently counts unreachable
+   * intents as zero would page a human about a delta that does not exist.
+   */
+  capturedTotalFor(
+    intentIds: readonly string[],
+  ): Promise<{ totalMinor: number; notCaptured: string[] }>;
+
+  /**
    * Which rail the customer actually chose — **best effort**.
    *
    * Separate from `parseWebhook` because it costs a network round trip that

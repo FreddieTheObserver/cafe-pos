@@ -7,6 +7,7 @@ import { PAYMENT_PROVIDER } from './provider/payment-provider';
 import { StripePaymentProvider } from './provider/stripe-payment.provider';
 import { CreatePaymentController } from './create/create-payment.controller';
 import { CreatePaymentService } from './create/create-payment.service';
+import { ReconciliationService } from './reconciliation/reconciliation.service';
 import { CreateRefundController } from './refunds/create-refund.controller';
 import { CreateRefundService } from './refunds/create-refund.service';
 import { OrderPaymentsController } from './query/order-payments.controller';
@@ -37,6 +38,7 @@ import { WebhookInboxService } from './webhooks/webhook-inbox.service';
     CreatePaymentService,
     OrderPaymentsService,
     CreateRefundService,
+    ReconciliationService,
     {
       provide: STRIPE_CLIENT,
       inject: [ConfigService],

@@ -128,6 +128,29 @@ export class StripePaymentProvider implements PaymentProvider {
     return toOutcome(payload);
   }
 
+  async capturedTotalFor(
+    intentIds: readonly string[],
+  ): Promise<{ totalMinor: number; notCaptured: string[] }> {
+    let totalMinor = 0;
+    const notCaptured: string[] = [];
+
+    for (const intentId of intentIds) {
+      /**
+       * Deliberately not wrapped in a try. Everything else in this adapter
+       * degrades rather than fails, because a coffee is worth more than a
+       * label — but reconciliation is the one job whose entire output is a
+       * number that must be right. Counting an unreachable intent as zero
+       * would manufacture a delta and page a human at 3am about nothing.
+       */
+      const intent = await this.stripe.paymentIntents.retrieve(intentId);
+
+      if (intent.status === 'succeeded') totalMinor += intent.amount_received;
+      else notCaptured.push(intentId);
+    }
+
+    return { totalMinor, notCaptured };
+  }
+
   /**
    * Verifies against every configured secret before giving up.
    *
