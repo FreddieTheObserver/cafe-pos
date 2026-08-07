@@ -54,6 +54,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+  # Stripe's protocol-accurate fake, pinned like everything else here so CI and
+  # local dev cannot drift. Not wired up by default: local development talks to
+  # real Stripe in test mode, because that is the only place PromptPay, dynamic
+  # payment methods and the Dashboard behave like they will in production.
+  # Point at it deliberately when you want the gateway path offline:
+  #   STRIPE_API_BASE=http://localhost:12111 pnpm test:e2e
+  stripe-mock:
+    image: stripe/stripe-mock:v0.196.0
+    container_name: cafepos-stripe-mock
+    restart: unless-stopped
+    ports:
+      - '12111:12111'
+
 volumes:
   cafepos_pgdata:
   cafepos_miniodata:

@@ -17,6 +17,25 @@ import { StripeWebhookController } from './webhooks/stripe-webhook.controller';
 import { WebhookInboxService } from './webhooks/webhook-inbox.service';
 
 /**
+ * Splits a base URL into the three pieces the Stripe client wants separately.
+ *
+ * The SDK takes `host`, `port` and `protocol` rather than a URL, so this is the
+ * adapter between a single readable env var and that shape.
+ */
+function apiBase(
+  base: string | undefined,
+): Pick<Stripe.StripeConfig, 'host' | 'port' | 'protocol'> {
+  if (base === undefined) return {};
+
+  const url = new URL(base);
+  return {
+    host: url.hostname,
+    port: Number(url.port),
+    protocol: url.protocol === 'https:' ? 'https' : 'http',
+  };
+}
+
+/**
  * Payments (§17 phase 4).
  *
  * Not `@Global`, unlike the database, Redis and storage modules: those are
@@ -44,6 +63,12 @@ import { WebhookInboxService } from './webhooks/webhook-inbox.service';
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>) =>
         new Stripe(config.get('STRIPE_SECRET_KEY', { infer: true }), {
+          /**
+           * Empty unless `STRIPE_API_BASE` is set, which only CI does — see the
+           * env contract. Spread first so a mistyped base cannot silently
+           * override the settings below it.
+           */
+          ...apiBase(config.get('STRIPE_API_BASE', { infer: true })),
           /**
            * Pinned, not left to drift. An unpinned client follows whatever
            * version the account is set to, so a Dashboard change — or Stripe

@@ -202,6 +202,20 @@ export const envSchema = z.object({
       'must be a Stripe secret or restricted key (prefer rk_)',
     ),
   /**
+   * Points the Stripe client somewhere other than api.stripe.com.
+   *
+   * Exists for `stripe-mock`, which speaks the real protocol and returns
+   * fixture responses without authenticating — so CI can exercise the actual
+   * SDK and adapter rather than a stub of them, and still hold to the rule that
+   * no test reaches the network. Unset in production and in local development,
+   * where the client goes to Stripe.
+   *
+   * Deliberately not derived from NODE_ENV. A test suite that silently retargets
+   * the gateway based on an ambient flag is one nobody can point at when they
+   * ask which Stripe a given run was talking to.
+   */
+  STRIPE_API_BASE: z.url().optional(),
+  /**
    * Signing secrets for the webhook endpoint, newest first.
    *
    * A list rather than a string because §10.5 specifies rotation with a
