@@ -315,6 +315,57 @@ const MATRIX: MatrixRow[] = [
     allow: [A, M, C, K],
     body: EMPTY_BODY,
   },
+  {
+    /**
+     * KIOSK is admitted here and refused *inside* for CASH (B6). The matrix
+     * cannot express that: the same route serves the card and QR payments a
+     * kiosk may open, and it is the method in the body that makes one
+     * forbidden — which is why `CashPaymentNotAllowedError` reuses
+     * FORBIDDEN_ROLE rather than minting a code the guards could have applied.
+     *
+     * BARISTA is absent: a bar screen takes no money (§6.4).
+     */
+    method: 'post',
+    route: '/api/v1/orders/:id/payments',
+    path: `/api/v1/orders/${uuidv7()}/payments`,
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
+  {
+    // BARISTA reads here but cannot post above: a bar screen may need to see
+    // why an order is not paid, and can never open a payment to find out.
+    method: 'get',
+    route: '/api/v1/orders/:id/payments',
+    path: `/api/v1/orders/${uuidv7()}/payments`,
+    allow: [A, M, C, B, K],
+  },
+  {
+    // §6.4: the one money-moving route a cashier cannot reach. A refund is the
+    // single operation that takes cash *out* of the till, and whoever took the
+    // payment should not reverse it unsupervised.
+    method: 'post',
+    route: '/api/v1/payments/:id/refunds',
+    path: `/api/v1/payments/${uuidv7()}/refunds`,
+    allow: [A, M],
+    body: EMPTY_BODY,
+  },
+  {
+    /**
+     * PUBLIC because Stripe holds no credential — the signature over the raw
+     * body is the authentication (§10.1), and a guard here would refuse every
+     * genuine delivery.
+     *
+     * Every caller in this sweep gets 400, staff tokens included: an unsigned
+     * body is turned away on its signature rather than on who sent it. That is
+     * precisely the boundary this table asserts — no row is ever refused with a
+     * guard code, so presenting a token buys nothing on this route.
+     */
+    method: 'post',
+    route: '/api/v1/webhooks/stripe',
+    path: '/api/v1/webhooks/stripe',
+    allow: PUBLIC,
+    body: EMPTY_BODY,
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */

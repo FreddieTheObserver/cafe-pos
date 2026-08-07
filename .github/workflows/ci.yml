@@ -35,6 +35,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
+      # Stripe's own protocol-accurate fake. It authenticates nothing and
+      # returns fixtures, so the payment suites exercise the real SDK and the
+      # real adapter without a key and without the network — which is the only
+      # way `pnpm test:e2e` can cover the gateway path at all. No healthcheck:
+      # the image ships no curl or shell tools, so the wait is a step below.
+      stripe-mock:
+        image: stripe/stripe-mock:v0.196.0
+        ports:
+          - 12111:12111
 
     env:
       NODE_ENV: test
@@ -54,6 +63,18 @@ jobs:
       # The bucket is a job-scoped container here, so let the app create it
       # rather than adding an mc step just to mkdir.
       S3_AUTO_CREATE_BUCKET: 'true'
+      # Payment gateway (§10.5). Deliberately NOT repository secrets: these are
+      # syntactically valid and functionally dead, so every suite that boots the
+      # app gets a config it can parse, and any test that reaches the network
+      # fails loudly here instead of quietly charging a real sandbox. Tests that
+      # need gateway behaviour stub the PaymentProvider port or talk to
+      # stripe-mock; none of them authenticate.
+      STRIPE_SECRET_KEY: rk_test_ciplaceholdernotarealkey
+      STRIPE_WEBHOOK_SECRETS: whsec_ciplaceholdernotarealsecret
+      # Retargets the SDK at the fake above. The key stays dead on purpose:
+      # stripe-mock ignores it, so a suite that somehow escaped to the real API
+      # would still fail loudly rather than quietly charging a sandbox.
+      STRIPE_API_BASE: http://localhost:12111
 
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +94,20 @@ jobs:
           done
           echo "MinIO did not become healthy" >&2
           docker logs minio >&2
+          exit 1
+
+      # The service container has no healthcheck (no shell in the image), so
+      # readiness is proven from the runner instead. Any HTTP answer means the
+      # listener is up; 401 is a perfectly good one.
+      - name: Wait for stripe-mock
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://localhost:12111/v1/payment_intents; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "stripe-mock did not become reachable" >&2
           exit 1
 
       - uses: pnpm/action-setup@v4

@@ -11,6 +11,7 @@ import { HealthModule } from './health/health.module';
 import { IdentityModule } from './identity/identity.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { OrdersModule } from './orders/orders.module';
+import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
 
 @Module({
@@ -37,6 +38,13 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     IdentityModule,
     CatalogModule,
     OrdersModule,
+    /**
+     * Carries the webhook route, and — because Nest instantiates providers
+     * eagerly — builds the Stripe client during boot, so a malformed key is a
+     * process that refuses to start rather than a 500 the first time a
+     * customer taps Pay.
+     */
+    PaymentsModule,
   ],
 })
 export class AppModule {}

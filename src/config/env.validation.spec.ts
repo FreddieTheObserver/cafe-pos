@@ -8,6 +8,8 @@ const REQUIRED = {
   S3_ACCESS_KEY_ID: 'key',
   S3_SECRET_ACCESS_KEY: 'secret',
   S3_PUBLIC_BASE_URL: 'https://cdn.cafe.test',
+  STRIPE_SECRET_KEY: 'rk_test_notarealkey',
+  STRIPE_WEBHOOK_SECRETS: 'whsec_notarealsecret',
 };
 
 describe('validateEnv', () => {
@@ -254,6 +256,87 @@ describe('validateEnv', () => {
         expect(() =>
           validateEnv({ ...REQUIRED, S3_AUTO_CREATE_BUCKET: 'yes' }),
         ).toThrow(/S3_AUTO_CREATE_BUCKET/);
+      });
+    });
+  });
+
+  describe('payment gateway', () => {
+    describe('STRIPE_SECRET_KEY', () => {
+      it('accepts a restricted key, which is the one to prefer', () => {
+        const env = validateEnv({
+          ...REQUIRED,
+          STRIPE_SECRET_KEY: 'rk_live_abc123',
+        });
+
+        expect(env.STRIPE_SECRET_KEY).toBe('rk_live_abc123');
+      });
+
+      it('still accepts a full secret key, so a first spike is not blocked', () => {
+        const env = validateEnv({
+          ...REQUIRED,
+          STRIPE_SECRET_KEY: 'sk_test_abc123',
+        });
+
+        expect(env.STRIPE_SECRET_KEY).toBe('sk_test_abc123');
+      });
+
+      /**
+       * The publishable key is the one that belongs in a kiosk bundle, and it
+       * is one transposed line away in the Dashboard. Booting with it would get
+       * an authentication error from Stripe on the first order rather than at
+       * deploy time — and worse, it is the mistake whose *inverse* leaks a
+       * secret key to every client, so the shape is worth asserting.
+       */
+      it('rejects a publishable key', () => {
+        expect(() =>
+          validateEnv({ ...REQUIRED, STRIPE_SECRET_KEY: 'pk_test_abc123' }),
+        ).toThrow(/STRIPE_SECRET_KEY/);
+      });
+
+      it('rejects a key with no mode in it', () => {
+        expect(() =>
+          validateEnv({ ...REQUIRED, STRIPE_SECRET_KEY: 'rk_abc123' }),
+        ).toThrow(/STRIPE_SECRET_KEY/);
+      });
+    });
+
+    describe('STRIPE_WEBHOOK_SECRETS', () => {
+      it('reads a single secret as a one-element list', () => {
+        const env = validateEnv({ ...REQUIRED });
+
+        expect(env.STRIPE_WEBHOOK_SECRETS).toEqual(['whsec_notarealsecret']);
+      });
+
+      /**
+       * §10.5's rotation window: for 24 hours after a roll, events signed with
+       * either secret are genuine. Both have to survive parsing or the endpoint
+       * silently drops half its traffic — as 400s, which look like an attack
+       * rather than a config change.
+       */
+      it('keeps both secrets through a rotation, in order', () => {
+        const env = validateEnv({
+          ...REQUIRED,
+          STRIPE_WEBHOOK_SECRETS: 'whsec_new, whsec_old',
+        });
+
+        expect(env.STRIPE_WEBHOOK_SECRETS).toEqual(['whsec_new', 'whsec_old']);
+      });
+
+      it('rejects a secret that is not a signing secret', () => {
+        expect(() =>
+          validateEnv({ ...REQUIRED, STRIPE_WEBHOOK_SECRETS: 'rk_test_abc' }),
+        ).toThrow(/STRIPE_WEBHOOK_SECRETS/);
+      });
+
+      /**
+       * A trailing comma is what a half-finished rotation looks like. Dropping
+       * the empty entry is right; ending up with *no* secrets is not, because
+       * an empty list would verify against nothing and reject every event.
+       */
+      it('rejects a value that is only separators', () => {
+        expect(() =>
+          validateEnv({ ...REQUIRED, STRIPE_WEBHOOK_SECRETS: ' , , ' }),
+        ).toThrow(/STRIPE_WEBHOOK_SECRETS/);
       });
     });
   });

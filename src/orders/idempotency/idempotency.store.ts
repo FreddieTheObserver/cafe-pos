@@ -65,6 +65,32 @@ export const isKeyAlreadyReserved = (error: unknown): boolean =>
   error instanceof KeyAlreadyReserved;
 
 /**
+ * What a key has already answered, or `undefined` if it has not answered yet.
+ *
+ * For callers that must recognise a replay *before* they validate anything. A
+ * retried payment is the case that needs it: the first attempt moved the order
+ * to PAID, so re-running the "is this order payable" checks would refuse the
+ * retry with a 409 about state the retry itself created. The reservation inside
+ * the transaction is still the authority — this only lets a caller skip work it
+ * can already see the answer to.
+ */
+export async function completedResponseFor(
+  db: Database,
+  key: string,
+): Promise<{ requestHash: string; responseBody: unknown } | undefined> {
+  const [stored] = await db
+    .select()
+    .from(idempotencyKeys)
+    .where(eq(idempotencyKeys.key, key));
+
+  // A reservation with no response belongs to a transaction still in flight;
+  // it is not something to replay, and `reserveKey` will block on it properly.
+  if (!stored || stored.responseBody === null) return undefined;
+
+  return { requestHash: stored.requestHash, responseBody: stored.responseBody };
+}
+
+/**
  * Returns what the first request answered, or refuses the key.
  *
  * Read after the losing transaction has rolled back, so this sees the winner's

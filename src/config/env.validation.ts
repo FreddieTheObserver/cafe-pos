@@ -184,7 +184,87 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * The payment gateway (§10.5, §12.4).
+   *
+   * Both prefixes are accepted because a **restricted key (`rk_`) is the one to
+   * prefer**. What this service actually needs is narrow: *write* on
+   * PaymentIntents (create, cancel, retrieve) and *read* on Charges — the
+   * latter only because `resolveMethod` expands `latest_charge` to learn which
+   * rail the customer used. It needs **no refund permission at all**: refunds
+   * here are bookkeeping against the till, and the port has no refund verb.
+   *
+   * Charges: Read is the one worth getting right, because omitting it fails
+   * quietly — `resolveMethod` swallows its errors by contract, so a key without
+   * it records every payment with a null method and looks like a labelling
+   * quirk rather than a permission problem.
+   *
+   * A full secret key (`sk_`) also grants the ability to read
+   * every customer, move balances and rotate the account's own keys — authority
+   * this process has no use for and should not be holding when it is reachable
+   * from a cafe's network. `sk_` still parses so that a first local spike is not
+   * blocked on minting a scoped key.
+   */
+  STRIPE_SECRET_KEY: z
+    .string()
+    .regex(
+      /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/,
+      'must be a Stripe secret or restricted key (prefer rk_)',
+    ),
+  /**
+   * Points the Stripe client somewhere other than api.stripe.com.
+   *
+   * Exists for `stripe-mock`, which speaks the real protocol and returns
+   * fixture responses without authenticating — so CI can exercise the actual
+   * SDK and adapter rather than a stub of them, and still hold to the rule that
+   * no test reaches the network. Unset in production and in local development,
+   * where the client goes to Stripe.
+   *
+   * Deliberately not derived from NODE_ENV. A test suite that silently retargets
+   * the gateway based on an ambient flag is one nobody can point at when they
+   * ask which Stripe a given run was talking to.
+   */
+  STRIPE_API_BASE: z.url().optional(),
+  /**
+   * Signing secrets for the webhook endpoint, newest first.
+   *
+   * A list rather than a string because §10.5 specifies rotation with a
+   * dual-accept window: for the 24 hours after a roll, events signed with
+   * either the old or the new secret are genuine, and an endpoint that knows
+   * only one of them drops half of them on the floor. Stripe's
+   * `constructEvent` verifies against a single secret, so accepting both means
+   * trying each — which only works if both are configured.
+   *
+   * Comma-separated, like CORS_ORIGINS above. One value is the steady state.
+   */
+  /**
+   * Validated on the raw string and transformed *last*, so the outermost
+   * operator is a `.transform()` — exactly the shape CORS_ORIGINS has. Adding
+   * a `.refine()` after the transform instead nests the effects deeply enough
+   * that `ConfigService`'s `infer` gives up and hands back `any`, silently
+   * defeating the typing this file exists to provide.
+   */
+  STRIPE_WEBHOOK_SECRETS: z
+    .string()
+    .min(1)
+    .refine(
+      (value) => splitSecrets(value).length > 0,
+      'at least one signing secret is required',
+    )
+    .refine(
+      (value) => splitSecrets(value).every((s) => s.startsWith('whsec_')),
+      'every signing secret must begin with whsec_',
+    )
+    .transform(splitSecrets),
 });
+
+/** Shared by the validation and the transform, so they cannot disagree. */
+function splitSecrets(value: string): string[] {
+  return value
+    .split(',')
+    .map((secret) => secret.trim())
+    .filter(Boolean);
+}
 
 /** Fully typed, validated config shape — inferred from the schema, never drifts. */
 export type Env = z.infer<typeof envSchema>;

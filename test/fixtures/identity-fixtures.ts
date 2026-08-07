@@ -3,6 +3,10 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray, or } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import request from 'supertest';
+import {
+  PAYMENT_PROVIDER,
+  type PaymentProvider,
+} from '../../src/payments/provider/payment-provider';
 import { REDIS } from '../../src/redis/redis.constants';
 import { uuidv7 } from 'uuidv7';
 import { AppModule } from '../../src/app.module';
@@ -41,13 +45,31 @@ export class IdentityHarness {
    */
   static async boot({
     redis,
-  }: { redis?: Redis } = {}): Promise<IdentityHarness> {
+    paymentProvider,
+  }: {
+    redis?: Redis;
+    /**
+     * Replaces the Stripe adapter for the lifetime of the app. The gateway's
+     * *answer* is the input to decisions no other seam can reach — whether an
+     * ageing order's intent had already been paid, for one — and those branches
+     * cannot be reached against the real Stripe without confirming payments
+     * from a test. Every other suite leaves it alone and gets the real adapter.
+     */
+    paymentProvider?: Partial<PaymentProvider>;
+  } = {}): Promise<IdentityHarness> {
     const builder = Test.createTestingModule({ imports: [AppModule] });
     if (redis) builder.overrideProvider(REDIS).useValue(redis);
+    if (paymentProvider) {
+      builder.overrideProvider(PAYMENT_PROVIDER).useValue(paymentProvider);
+    }
     const moduleRef = await builder.compile();
 
     const app = moduleRef.createNestApplication<NestExpressApplication>({
       bodyParser: false,
+      // Same pair `main.ts` uses. The webhook suite needs `req.rawBody`, and a
+      // harness that boots differently from production would be testing a
+      // different app than the one that ships.
+      rawBody: true,
     });
     configureApp(app, { corsOrigins: [] });
 

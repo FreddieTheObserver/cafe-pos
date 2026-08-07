@@ -1,13 +1,21 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, inArray, lt } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import { OrderInvalidTransitionError } from '../errors/orders.errors';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
-import { orders } from '../../database/schema';
+import { orders, payments } from '../../database/schema';
+import type { PaymentStatus } from '../../database/schema/enums';
+import {
+  PAYMENT_PROVIDER,
+  type PaymentProvider,
+} from '../../payments/provider/payment-provider';
 import { transitionOrder } from '../state/transition-order';
+
+/** The statuses `one_live_payment` treats as live — an intent still in flight. */
+const LIVE: readonly PaymentStatus[] = ['PENDING', 'PROCESSING'];
 
 /**
  * How many orders one tick will reap.
@@ -46,7 +54,10 @@ export const isLostRace = (error: unknown): boolean =>
 export class OrderExpiryService {
   private readonly logger = new Logger(OrderExpiryService.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+  ) {}
 
   /**
    * Every minute. The TTL is ten (§5.7's sibling, `ORDER_EXPIRY_SECONDS`), so a
@@ -100,8 +111,38 @@ export class OrderExpiryService {
 
   private async expireOne(orderId: string): Promise<boolean> {
     try {
-      await this.db.transaction((tx) =>
-        transitionOrder(tx, {
+      const [live] = await this.db
+        .select({ id: payments.id, intentId: payments.providerIntentId })
+        .from(payments)
+        .where(
+          and(eq(payments.orderId, orderId), inArray(payments.status, LIVE)),
+        );
+
+      /**
+       * The gateway is asked *before* the order is expired, and its answer can
+       * call the whole thing off (E3).
+       *
+       * A customer who scans the QR at 9:59 and a sweep that fires at 10:00 are
+       * both behaving correctly, and only Stripe knows which won. If the
+       * payment already succeeded, expiring the order would strand money
+       * against an order nobody will make a coffee for — and EXPIRED is
+       * terminal, so nothing downstream could put it right. Leaving the order
+       * in PENDING_PAYMENT costs one more tick and lets the webhook mark it
+       * PAID through the ordinary door.
+       */
+      if (live?.intentId != null) {
+        const outcome = await this.provider.cancelIntent(live.intentId);
+
+        if (outcome === 'ALREADY_SUCCEEDED') {
+          this.logger.warn(
+            `Order ${orderId} aged out but its payment had already succeeded; leaving it for the webhook.`,
+          );
+          return false;
+        }
+      }
+
+      await this.db.transaction(async (tx) => {
+        await transitionOrder(tx, {
           orderId,
           from: 'PENDING_PAYMENT',
           to: 'EXPIRED',
@@ -109,8 +150,21 @@ export class OrderExpiryService {
           // this, so the history says the system reclaimed the order rather
           // than attributing it to whoever happened to be signed in.
           actor: { actorType: 'SYSTEM', actorId: null },
-        }),
-      );
+        });
+
+        /**
+         * CANCELLED rather than EXPIRED, though both exist. The intent was
+         * cancelled — that is what we just did to it — and the
+         * `payment_intent.canceled` webhook this triggers then decides SKIP
+         * instead of flipping the row a second time.
+         */
+        if (live !== undefined) {
+          await tx
+            .update(payments)
+            .set({ status: 'CANCELLED' })
+            .where(eq(payments.id, live.id));
+        }
+      });
       return true;
     } catch (error) {
       /**
