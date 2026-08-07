@@ -25,6 +25,7 @@ export const PaymentErrorCode = {
   REFUND_EXCEEDS_REMAINING: 'REFUND_EXCEEDS_REMAINING',
   PAYMENT_NOT_REFUNDABLE: 'PAYMENT_NOT_REFUNDABLE',
   CASH_TENDER_INSUFFICIENT: 'CASH_TENDER_INSUFFICIENT',
+  ORDER_ALREADY_PAID: 'ORDER_ALREADY_PAID',
 } as const;
 
 /**
@@ -121,6 +122,32 @@ export class WebhookSignatureInvalidError extends AppException {
       status: 400,
       title: 'Invalid webhook signature',
       detail: 'The request signature could not be verified.',
+    });
+  }
+}
+
+/**
+ * The customer paid in the moment the cancel was being asked for (E3).
+ *
+ * The mirror of the expiry sweep standing down on `ALREADY_SUCCEEDED`. A kiosk
+ * cancel and a customer confirming a QR are both legitimate, and only the
+ * gateway knows which won — so when the gateway says the money is taken, the
+ * cancel loses. Cancelling anyway would move the order to a terminal state with
+ * the customer's money sitting at Stripe and no order to fulfil.
+ *
+ * Its own code rather than `ORDER_INVALID_TRANSITION`, because the client's
+ * recovery differs: there is nothing to retry and nothing to resync *yet* — the
+ * webhook is about to mark the order PAID, and the right thing for a kiosk to
+ * do is show the customer their order number, not an error.
+ */
+export class OrderAlreadyPaidError extends AppException {
+  constructor() {
+    super({
+      code: PaymentErrorCode.ORDER_ALREADY_PAID,
+      status: 409,
+      title: 'Payment already went through',
+      detail:
+        'This order was paid while the cancellation was being processed. It will be marked paid shortly.',
     });
   }
 }

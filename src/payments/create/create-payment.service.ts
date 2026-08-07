@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
+import { isUniqueViolation } from '../../common/database/postgres-errors';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
@@ -205,19 +206,16 @@ export class CreatePaymentService {
     }
 
     return this.write(idempotencyKey, requestHash, async (tx) => {
-      const [row] = await tx
-        .insert(payments)
-        .values({
-          orderId: order.id,
-          provider: 'CASH',
-          method: 'CASH',
-          status: 'SUCCEEDED',
-          amountMinor: order.totalMinor,
-          currency: order.currency,
-          cashTenderedMinor: tendered,
-          idempotencyKey: idempotencyKey ?? null,
-        })
-        .returning({ id: payments.id });
+      const paymentId = await this.insertPayment(tx, order.id, {
+        orderId: order.id,
+        provider: 'CASH',
+        method: 'CASH',
+        status: 'SUCCEEDED',
+        amountMinor: order.totalMinor,
+        currency: order.currency,
+        cashTenderedMinor: tendered,
+        idempotencyKey: idempotencyKey ?? null,
+      });
 
       await transitionOrder(tx, {
         orderId: order.id,
@@ -227,7 +225,7 @@ export class CreatePaymentService {
       });
 
       return {
-        id: row.id,
+        id: paymentId,
         status: 'SUCCEEDED' as const,
         method: 'CASH' as const,
         amountMinor: order.totalMinor,
@@ -263,21 +261,18 @@ export class CreatePaymentService {
     });
 
     return this.write(idempotencyKey, requestHash, async (tx) => {
-      const [row] = await tx
-        .insert(payments)
-        .values({
-          orderId: order.id,
-          provider: 'STRIPE',
-          providerIntentId: intent.intentId,
-          status: 'PENDING',
-          amountMinor: order.totalMinor,
-          currency: order.currency,
-          idempotencyKey: idempotencyKey ?? null,
-        })
-        .returning({ id: payments.id });
+      const paymentId = await this.insertPayment(tx, order.id, {
+        orderId: order.id,
+        provider: 'STRIPE',
+        providerIntentId: intent.intentId,
+        status: 'PENDING',
+        amountMinor: order.totalMinor,
+        currency: order.currency,
+        idempotencyKey: idempotencyKey ?? null,
+      });
 
       return {
-        id: row.id,
+        id: paymentId,
         status: 'PENDING' as const,
         // Unknown until the customer picks inside the Payment Element.
         method: null,
@@ -299,6 +294,43 @@ export class CreatePaymentService {
    * reservation shares the transaction with the work, so a refused payment
    * stores nothing and the caller may retry.
    */
+  /**
+   * Turns the `one_live_payment` constraint into the 409 §5.2 promises.
+   *
+   * `loadPayableOrder`'s check is an optimisation — it runs outside any
+   * transaction, so two tills racing both pass it and the partial unique index
+   * is what actually settles them. Without this, the loser's insert raises a
+   * bare SQLSTATE 23505 that no filter recognises, and the caller gets a 500
+   * INTERNAL: read by most clients as "the server is broken", answered with a
+   * retry, which is the exact wrong response to "someone else got there first".
+   */
+  private async insertPayment(
+    tx: Parameters<Parameters<Database['transaction']>[0]>[0],
+    orderId: string,
+    values: typeof payments.$inferInsert,
+  ): Promise<string> {
+    try {
+      const [row] = await tx
+        .insert(payments)
+        .values(values)
+        .returning({ id: payments.id });
+      return row.id;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+
+      // Re-read so the 409 carries the id that won, which is what lets a
+      // racing client reuse that payment instead of opening another.
+      const [winner] = await this.db
+        .select({ id: payments.id })
+        .from(payments)
+        .where(
+          and(eq(payments.orderId, orderId), inArray(payments.status, LIVE)),
+        );
+
+      throw new PaymentAlreadyActiveError(winner?.id ?? orderId);
+    }
+  }
+
   private async write(
     idempotencyKey: string | undefined,
     requestHash: string | null,

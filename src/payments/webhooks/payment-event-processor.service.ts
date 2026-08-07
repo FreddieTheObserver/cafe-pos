@@ -1,11 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, notInArray } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, paymentEvents, payments } from '../../database/schema';
-import type { PaymentMethod } from '../../database/schema/enums';
+import type { PaymentMethod, PaymentStatus } from '../../database/schema/enums';
 import type { Transaction } from '../../orders/idempotency/idempotency.store';
 import { transitionOrder } from '../../orders/state/transition-order';
 import {
@@ -27,6 +27,13 @@ import {
  * cafe is trying to trade; the rest is taken next tick.
  */
 const MAX_PER_TICK = 100;
+
+/**
+ * Payment states a later event may not overwrite. Mirrors `SETTLED` in
+ * `decide-payment-outcome.ts` — that one refuses the decision, this one refuses
+ * the write when the decision was made against a stale read.
+ */
+const SETTLED_STATUSES: readonly PaymentStatus[] = ['SUCCEEDED'];
 
 /**
  * The other half of §4.2: the inbox, drained.
@@ -135,10 +142,29 @@ export class PaymentEventProcessor {
 
       case 'MARK_PAYMENT':
         await this.db.transaction(async (tx) => {
+          /**
+           * Guarded on the status, not just the id — the same shape
+           * `transitionOrder` uses on `orders.status`, and for the same reason.
+           *
+           * `decidePaymentOutcome` refuses to overwrite a settled payment, but
+           * it judges a snapshot read *outside* this transaction. Dynamic
+           * payment methods make the interleaving ordinary rather than exotic:
+           * a customer whose card declines retries with PromptPay on the same
+           * intent, so `payment_intent.payment_failed` and
+           * `payment_intent.succeeded` arrive together and the controller kicks
+           * both without awaiting. Both snapshots then say PENDING, and an
+           * unguarded write lets the failure land after the success — leaving
+           * `order = PAID, payment = FAILED` and a reconciliation delta at 3am.
+           */
           await tx
             .update(payments)
             .set({ status: decision.status })
-            .where(eq(payments.id, decision.paymentId));
+            .where(
+              and(
+                eq(payments.id, decision.paymentId),
+                notInArray(payments.status, [...SETTLED_STATUSES]),
+              ),
+            );
           await this.markProcessed(eventId, decision.paymentId, tx);
         });
         return true;

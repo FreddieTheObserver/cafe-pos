@@ -89,9 +89,12 @@ describe('Order expiry cancels the intent (e2e)', () => {
       })
     )?.status;
 
+  let cashierToken: string;
+
   beforeAll(async () => {
     harness = await IdentityHarness.boot({ paymentProvider: provider });
     cashierId = (await harness.createStaff('CASHIER')).id;
+    cashierToken = await harness.accessTokenFor('CASHIER');
   }, 60_000);
 
   beforeEach(() => {
@@ -140,6 +143,48 @@ describe('Order expiry cancels the intent (e2e)', () => {
     expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
     // Still live: the webhook is about to settle it.
     expect(await paymentStatusOf(paymentId)).toBe('PENDING');
+  });
+
+  /**
+   * The *other* door out of PENDING_PAYMENT, and the one the first pass of this
+   * work missed. `POST /orders/:id/cancel` reaches the same state the expiry
+   * sweep does, so it needs the same handling — otherwise a customer who scans
+   * the QR, changes their mind and taps cancel leaves a live intent they can
+   * still pay, and the webhook then finds a CANCELLED order and refuses. Money
+   * captured, no order to fulfil, and only the nightly reconciliation to notice.
+   */
+  describe('cancelling an order', () => {
+    const cancel = (orderId: string) =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${cashierToken}`)
+        .send({ reason: 'Customer changed their mind' });
+
+    it('cancels the intent behind the order it is cancelling', async () => {
+      const { orderId, paymentId, intentId } = await givenOverdueOrder();
+
+      const res = await cancel(orderId);
+
+      expect(res.status).toBe(200);
+      expect(cancelled).toContain(intentId);
+      expect(await orderStatusOf(orderId)).toBe('CANCELLED');
+      expect(await paymentStatusOf(paymentId)).toBe('CANCELLED');
+    });
+
+    /** Lost the race: the customer confirmed while the cancel was in flight. */
+    it('refuses to cancel an order whose payment already succeeded', async () => {
+      const { orderId, paymentId } = await givenOverdueOrder();
+      cancelOutcome = 'ALREADY_SUCCEEDED';
+
+      const res = await cancel(orderId);
+
+      expect(res.status).toBe(409);
+      expect((res.body as { code: string }).code).toBe('ORDER_ALREADY_PAID');
+      // Left alone for the webhook to mark PAID through the ordinary door.
+      expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
+      expect(await paymentStatusOf(paymentId)).toBe('PENDING');
+    });
   });
 
   /** And it stays reclaimable — the next tick tries again, and the one after. */
