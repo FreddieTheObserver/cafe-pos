@@ -48,6 +48,10 @@ export class IdentityHarness {
 
     const app = moduleRef.createNestApplication<NestExpressApplication>({
       bodyParser: false,
+      // Same pair `main.ts` uses. The webhook suite needs `req.rawBody`, and a
+      // harness that boots differently from production would be testing a
+      // different app than the one that ships.
+      rawBody: true,
     });
     configureApp(app, { corsOrigins: [] });
 

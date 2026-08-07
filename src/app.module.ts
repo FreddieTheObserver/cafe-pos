@@ -39,10 +39,10 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     CatalogModule,
     OrdersModule,
     /**
-     * Imported before it has a single route, on purpose. Nest instantiates
-     * providers eagerly, so being here means the Stripe client is built during
-     * boot — and a malformed key is a process that refuses to start rather
-     * than a 500 the first time a customer taps Pay.
+     * Carries the webhook route, and — because Nest instantiates providers
+     * eagerly — builds the Stripe client during boot, so a malformed key is a
+     * process that refuses to start rather than a 500 the first time a
+     * customer taps Pay.
      */
     PaymentsModule,
   ],

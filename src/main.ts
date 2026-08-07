@@ -12,6 +12,14 @@ async function bootstrap() {
     bufferLogs: true,
     // configureApp registers the only JSON body parser, with our size limit.
     bodyParser: false,
+    /**
+     * Keeps the untouched bytes on `req.rawBody` alongside the parsed body.
+     * The Stripe webhook signature covers exactly what was sent, so a JSON
+     * round-trip — key order, whitespace, number formatting — invalidates it.
+     * Set here rather than in `configureApp` because it is a factory option:
+     * the parsers have to be built knowing they must keep a copy.
+     */
+    rawBody: true,
   });
   app.useLogger(app.get(Logger));
 

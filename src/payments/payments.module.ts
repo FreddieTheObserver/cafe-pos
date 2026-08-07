@@ -5,6 +5,8 @@ import type { Env } from '../config/env.validation';
 import { STRIPE_CLIENT, STRIPE_WEBHOOK_SECRETS } from './payments.constants';
 import { PAYMENT_PROVIDER } from './provider/payment-provider';
 import { StripePaymentProvider } from './provider/stripe-payment.provider';
+import { StripeWebhookController } from './webhooks/stripe-webhook.controller';
+import { WebhookInboxService } from './webhooks/webhook-inbox.service';
 
 /**
  * Payments (§17 phase 4).
@@ -16,7 +18,9 @@ import { StripePaymentProvider } from './provider/stripe-payment.provider';
  * money.
  */
 @Module({
+  controllers: [StripeWebhookController],
   providers: [
+    WebhookInboxService,
     {
       provide: STRIPE_CLIENT,
       inject: [ConfigService],

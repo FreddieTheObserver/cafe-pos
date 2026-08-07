@@ -48,9 +48,13 @@ const UNPREFIXED_ROUTES = [
  * test app through exactly the same code path — otherwise the hardening below
  * would be untested by construction.
  *
- * **Callers must create the app with `{ bodyParser: false }`**, so the limit
- * below is the only JSON parser registered; Nest's default 100 KB parser would
- * otherwise consume the request first and silently win.
+ * **Callers must create the app with `{ bodyParser: false, rawBody: true }`.**
+ * The first makes the limit below the only JSON parser registered; Nest's
+ * default 100 KB parser would otherwise consume the request first and silently
+ * win. The second makes `useBodyParser` keep the untouched bytes on
+ * `req.rawBody`, which is the only thing the Stripe webhook can verify a
+ * signature against — and it must be set at creation, because the parser is
+ * built with that behaviour or without it.
  */
 export function configureApp(
   app: NestExpressApplication,
