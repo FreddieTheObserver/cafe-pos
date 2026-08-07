@@ -24,6 +24,7 @@ export const PaymentErrorCode = {
   WEBHOOK_SIGNATURE_INVALID: 'WEBHOOK_SIGNATURE_INVALID',
   REFUND_EXCEEDS_REMAINING: 'REFUND_EXCEEDS_REMAINING',
   PAYMENT_NOT_REFUNDABLE: 'PAYMENT_NOT_REFUNDABLE',
+  CASH_TENDER_INSUFFICIENT: 'CASH_TENDER_INSUFFICIENT',
 } as const;
 
 /**
@@ -120,6 +121,32 @@ export class WebhookSignatureInvalidError extends AppException {
       status: 400,
       title: 'Invalid webhook signature',
       detail: 'The request signature could not be verified.',
+    });
+  }
+}
+
+/**
+ * The customer did not hand over enough (§8's `cashTenderedMinor ≥ total`).
+ *
+ * Not in §9.2's catalog, and added anyway. The alternative was reusing
+ * `ORDER_NOT_PAYABLE`, which produced a response that contradicted itself —
+ * "Order is PENDING_PAYMENT; only a PENDING_PAYMENT order accepts a payment"
+ * — telling a cashier the order was in the wrong state when the order was
+ * fine and the money was short. A code the catalog has to grow is cheaper than
+ * a message nobody can act on.
+ *
+ * 422 rather than 409, matching `RefundExceedsRemainingError` and the DTO's
+ * refusal of a missing tender: the order is in exactly the right state and it
+ * is the *number* that is wrong, which the till can fix by taking more cash.
+ */
+export class CashTenderInsufficientError extends AppException {
+  constructor(tenderedMinor: number, requiredMinor: number) {
+    super({
+      code: PaymentErrorCode.CASH_TENDER_INSUFFICIENT,
+      status: 422,
+      title: 'Cash tendered is less than the total',
+      detail: `Tendered ${tenderedMinor}, but the order comes to ${requiredMinor}.`,
+      meta: { tenderedMinor, requiredMinor },
     });
   }
 }

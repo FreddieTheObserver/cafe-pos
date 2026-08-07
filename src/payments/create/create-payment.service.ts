@@ -18,6 +18,7 @@ import { hashRequest } from '../../orders/idempotency/request-hash';
 import { transitionOrder } from '../../orders/state/transition-order';
 import {
   CashPaymentNotAllowedError,
+  CashTenderInsufficientError,
   OrderExpiredError,
   OrderNotPayableError,
   PaymentAlreadyActiveError,
@@ -192,9 +193,15 @@ export class CreatePaymentService {
     // There is no drawer at a kiosk and nobody standing at it to open one.
     if (principal.type === 'device') throw new CashPaymentNotAllowedError();
 
+    /**
+     * The DTO already refuses CASH with no tender at all, so `undefined` here
+     * would be a wiring fault rather than a client one — but it is narrowed
+     * anyway, and lands on the same error a short tender does, which is the
+     * honest description either way.
+     */
     const tendered = input.cashTenderedMinor;
     if (tendered === undefined || tendered < order.totalMinor) {
-      throw new OrderNotPayableError('PENDING_PAYMENT');
+      throw new CashTenderInsufficientError(tendered ?? 0, order.totalMinor);
     }
 
     return this.write(idempotencyKey, requestHash, async (tx) => {

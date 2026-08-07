@@ -136,6 +136,12 @@ describe('Create payment endpoint (e2e)', () => {
       expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
     });
 
+    /**
+     * 422 with its own code, not a reused ORDER_NOT_PAYABLE. The order is in
+     * exactly the right state — the money is short — and the response has to
+     * say so, or a cashier reads "only a PENDING_PAYMENT order accepts a
+     * payment" about an order that is PENDING_PAYMENT.
+     */
     it('refuses a tender that does not cover the total', async () => {
       const orderId = await givenOrder({ ownedByKiosk: false });
 
@@ -144,7 +150,9 @@ describe('Create payment endpoint (e2e)', () => {
         cashTenderedMinor: 100,
       });
 
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(422);
+      expect(problemOf(res).code).toBe('CASH_TENDER_INSUFFICIENT');
+      expect(problemOf(res).meta).toMatchObject({ requiredMinor: TOTAL });
       expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
     });
 

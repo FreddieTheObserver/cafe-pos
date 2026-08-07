@@ -188,8 +188,18 @@ export const envSchema = z.object({
    * The payment gateway (§10.5, §12.4).
    *
    * Both prefixes are accepted because a **restricted key (`rk_`) is the one to
-   * prefer**: this service needs to create and cancel intents and issue refunds,
-   * and nothing else. A full secret key (`sk_`) also grants the ability to read
+   * prefer**. What this service actually needs is narrow: *write* on
+   * PaymentIntents (create, cancel, retrieve) and *read* on Charges — the
+   * latter only because `resolveMethod` expands `latest_charge` to learn which
+   * rail the customer used. It needs **no refund permission at all**: refunds
+   * here are bookkeeping against the till, and the port has no refund verb.
+   *
+   * Charges: Read is the one worth getting right, because omitting it fails
+   * quietly — `resolveMethod` swallows its errors by contract, so a key without
+   * it records every payment with a null method and looks like a labelling
+   * quirk rather than a permission problem.
+   *
+   * A full secret key (`sk_`) also grants the ability to read
    * every customer, move balances and rotate the account's own keys — authority
    * this process has no use for and should not be holding when it is reachable
    * from a cafe's network. `sk_` still parses so that a first local spike is not

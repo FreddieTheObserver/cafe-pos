@@ -30,7 +30,13 @@ function apiBase(
   const url = new URL(base);
   return {
     host: url.hostname,
-    port: Number(url.port),
+    /**
+     * Omitted rather than coerced when the URL carries no explicit port.
+     * `new URL('https://gateway.internal').port` is the empty string, and
+     * `Number('')` is 0 — a port the client would try to use and fail on,
+     * instead of falling back to the scheme's default.
+     */
+    ...(url.port === '' ? {} : { port: Number(url.port) }),
     protocol: url.protocol === 'https:' ? 'https' : 'http',
   };
 }
