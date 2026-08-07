@@ -14,6 +14,7 @@ import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
 } from '../provider/payment-provider';
+import { PaymentEventProcessor } from './payment-event-processor.service';
 import { WebhookInboxService } from './webhook-inbox.service';
 
 /**
@@ -36,6 +37,7 @@ export class StripeWebhookController {
   constructor(
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly inbox: WebhookInboxService,
+    private readonly processor: PaymentEventProcessor,
   ) {}
 
   /**
@@ -76,7 +78,20 @@ export class StripeWebhookController {
     if (signature === undefined) throw new WebhookSignatureInvalidError();
 
     const event = this.provider.parseWebhook(rawBody, signature);
-    await this.inbox.record(event);
+    const { eventRowId } = await this.inbox.record(event);
+
+    /**
+     * Kicked, not awaited. A cafe cannot wait 30 seconds for the sweep to
+     * notice — the barista needs the ticket now — but neither may the ack wait
+     * on an order transition, or a slow one becomes a Stripe timeout and a
+     * redelivery of an event already on disk. Starting the work and returning
+     * gets both.
+     *
+     * `processEvent` never rejects, and the row survives whatever happens to
+     * this promise, so the sweep is the backstop rather than this being
+     * fire-and-forget in the careless sense.
+     */
+    if (eventRowId !== null) void this.processor.processEvent(eventRowId);
 
     return { received: true };
   }

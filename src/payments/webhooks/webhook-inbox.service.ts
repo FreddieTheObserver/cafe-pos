@@ -5,6 +5,18 @@ import { paymentEvents } from '../../database/schema/payments';
 import type { GatewayEvent } from '../provider/payment-provider';
 
 /**
+ * The outcome of storing one delivery.
+ *
+ * `eventRowId` is null for a redelivery the unique index turned away. The
+ * caller uses it to decide whether there is new work to kick off — processing
+ * an event a previous delivery already stored is at best a no-op and at worst
+ * two workers racing over one row.
+ */
+export interface InboxWrite {
+  eventRowId: string | null;
+}
+
+/**
  * The §4.2 append-only inbox: every verified event is written down before
  * anything is done about it.
  *
@@ -31,14 +43,20 @@ export class WebhookInboxService {
    * insert. Letting Postgres arbitrate is the only version of this that is
    * correct under concurrency.
    */
-  async record(event: GatewayEvent): Promise<void> {
-    await this.db
+  async record(event: GatewayEvent): Promise<InboxWrite> {
+    const [row] = await this.db
       .insert(paymentEvents)
       .values({
         providerEventId: event.eventId,
         eventType: event.type,
         payload: event.payload,
       })
-      .onConflictDoNothing({ target: paymentEvents.providerEventId });
+      .onConflictDoNothing({ target: paymentEvents.providerEventId })
+      .returning({ id: paymentEvents.id });
+
+    // No row back means the conflict fired: this delivery is a redelivery of
+    // an event already stored, and the id of the row that won belongs to
+    // whoever is processing it.
+    return { eventRowId: row?.id ?? null };
   }
 }

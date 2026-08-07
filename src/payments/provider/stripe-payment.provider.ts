@@ -120,8 +120,12 @@ export class StripePaymentProvider implements PaymentProvider {
       type: event.type,
       // Stored whole, before anything is interpreted (§4.2's inbox).
       payload: event,
-      outcome: toOutcome(event),
+      outcome: this.interpret(event),
     };
+  }
+
+  interpret(payload: unknown): GatewayOutcome {
+    return toOutcome(payload);
   }
 
   /**
@@ -200,7 +204,17 @@ export class StripePaymentProvider implements PaymentProvider {
  * failure. It is stored in the inbox and acked, because returning 5xx would
  * have Stripe retry a payload we will never do anything with, forever.
  */
-function toOutcome(event: Stripe.Event): GatewayOutcome {
+function toOutcome(payload: unknown): GatewayOutcome {
+  /**
+   * The replay path arrives here as whatever `jsonb` handed back, so the shape
+   * is checked before it is trusted. On the wire path this is already a
+   * verified `Stripe.Event` and the check costs three comparisons; on the
+   * replay path it is the difference between an unreadable row being ignored
+   * and it throwing inside the sweep that was trying to drain the inbox.
+   */
+  if (!hasEventShape(payload)) return { kind: 'IGNORED' };
+  const event = payload as Stripe.Event;
+
   switch (event.type) {
     case 'payment_intent.succeeded': {
       const intent = event.data.object;
@@ -227,4 +241,16 @@ function toOutcome(event: Stripe.Event): GatewayOutcome {
     default:
       return { kind: 'IGNORED' };
   }
+}
+
+/** Enough of an event to switch on: a `type`, and a `data.object` to read. */
+function hasEventShape(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const { type, data } = payload as { type?: unknown; data?: unknown };
+  if (typeof type !== 'string') return false;
+  if (typeof data !== 'object' || data === null) return false;
+
+  const { object } = data as { object?: unknown };
+  return typeof object === 'object' && object !== null;
 }

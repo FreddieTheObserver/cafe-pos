@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { WebhookSignatureInvalidError } from '../errors/payments.errors';
 import type { GatewayEvent } from '../provider/payment-provider';
 import { StripePaymentProvider } from '../provider/stripe-payment.provider';
+import type { PaymentEventProcessor } from './payment-event-processor.service';
 import { StripeWebhookController } from './stripe-webhook.controller';
 import type { WebhookInboxService } from './webhook-inbox.service';
 
@@ -52,16 +53,33 @@ function sign(payload: string): string {
 class RecordingInbox {
   readonly recorded: GatewayEvent[] = [];
 
-  record(event: GatewayEvent): Promise<void> {
+  /** `null` reproduces the redelivery case: the unique index turned it away. */
+  constructor(private readonly rowId: string | null = 'evt_row_1') {}
+
+  record(event: GatewayEvent): Promise<{ eventRowId: string | null }> {
     this.recorded.push(event);
-    return Promise.resolve();
+    return Promise.resolve({ eventRowId: this.rowId });
   }
 }
 
-function controllerWith(inbox: RecordingInbox): StripeWebhookController {
+/** Records which rows the controller asked to have processed. */
+class RecordingProcessor {
+  readonly kicked: string[] = [];
+
+  processEvent(eventId: string): Promise<boolean> {
+    this.kicked.push(eventId);
+    return Promise.resolve(true);
+  }
+}
+
+function controllerWith(
+  inbox: RecordingInbox,
+  processor: RecordingProcessor = new RecordingProcessor(),
+): StripeWebhookController {
   return new StripeWebhookController(
     new StripePaymentProvider(stripe, [SECRET]),
     inbox as unknown as WebhookInboxService,
+    processor as unknown as PaymentEventProcessor,
   );
 }
 
@@ -89,6 +107,38 @@ describe('StripeWebhookController', () => {
       amountMinor: 12_500,
       currency: 'THB',
     });
+  });
+
+  it('kicks processing for the row it just stored', async () => {
+    const body = eventBody();
+    const processor = new RecordingProcessor();
+
+    await controllerWith(new RecordingInbox('evt_row_7'), processor).receive(
+      requestWith(Buffer.from(body)),
+      sign(body),
+    );
+
+    expect(processor.kicked).toEqual(['evt_row_7']);
+  });
+
+  /**
+   * A redelivery the unique index turned away has no new row, and the original
+   * is already someone else's work. Kicking anyway would put two workers on one
+   * row for no gain — the guarded `processed_at IS NULL` would settle it, but
+   * racing on purpose is not a design.
+   */
+  it('does not kick processing for a redelivery it did not store', async () => {
+    const body = eventBody();
+    const processor = new RecordingProcessor();
+
+    const response = await controllerWith(
+      new RecordingInbox(null),
+      processor,
+    ).receive(requestWith(Buffer.from(body)), sign(body));
+
+    // Still acked: a duplicate is not an error.
+    expect(response).toEqual({ received: true });
+    expect(processor.kicked).toEqual([]);
   });
 
   /**

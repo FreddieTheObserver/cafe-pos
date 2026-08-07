@@ -133,6 +133,23 @@ export interface PaymentProvider {
   parseWebhook(rawBody: Buffer, signature: string): GatewayEvent;
 
   /**
+   * What a stored payload means — verification already done, or not needed.
+   *
+   * The inbox keeps the event, not the conclusion (§4.2), so replaying a row
+   * has to re-derive its outcome; by then the bytes the signature covered are
+   * gone, and re-verifying is neither possible nor the point. Anything this
+   * cannot make sense of is `IGNORED` rather than an error: the inbox is
+   * append-only and holds whatever arrived, including events from an API
+   * version a later build no longer recognises, and one such row must not stop
+   * the sweep that found it.
+   *
+   * `parseWebhook` is verification plus this. Keeping them one implementation
+   * is what stops the wire path and the replay path disagreeing about whether
+   * an order was paid.
+   */
+  interpret(payload: unknown): GatewayOutcome;
+
+  /**
    * Which rail the customer actually chose — **best effort**.
    *
    * Separate from `parseWebhook` because it costs a network round trip that

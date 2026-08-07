@@ -201,6 +201,60 @@ describe('StripePaymentProvider', () => {
     });
   });
 
+  /**
+   * Replay (§4.2). The inbox stores the payload, not the outcome, so processing
+   * a stored row has to re-derive what the event meant — and there is no
+   * signature to check by then, because the bytes it covered are long gone.
+   *
+   * Split from `parseWebhook` rather than duplicated inside the processor so
+   * there is exactly one place that decides what a gateway event means. Two
+   * copies of that mapping would drift, and the way they would announce it is
+   * an order that the webhook marks PAID and a replay does not.
+   */
+  describe('interpret', () => {
+    const provider = providerWith([NEW_SECRET]);
+
+    it('derives the same outcome from a stored payload as from the wire', () => {
+      const body = eventBody('payment_intent.succeeded', {
+        id: 'pi_9',
+        amount_received: 12_500,
+        currency: 'thb',
+      });
+
+      const fromWire = provider.parseWebhook(
+        Buffer.from(body),
+        sign(body, NEW_SECRET),
+      );
+      // What a jsonb column hands back: parsed, unsigned, structurally equal.
+      const fromInbox = provider.interpret(JSON.parse(body));
+
+      expect(fromInbox).toEqual(fromWire.outcome);
+    });
+
+    it('needs no signature, because a stored row has none', () => {
+      const stored = JSON.parse(
+        eventBody('payment_intent.canceled', { id: 'pi_10' }),
+      ) as unknown;
+
+      expect(provider.interpret(stored)).toEqual({
+        kind: 'CANCELLED',
+        intentId: 'pi_10',
+      });
+    });
+
+    /**
+     * A row that cannot be interpreted must not crash the sweep that found it.
+     * The inbox is append-only and holds whatever arrived, including events
+     * from an API version this build predates.
+     */
+    it('ignores a payload it cannot make sense of', () => {
+      expect(provider.interpret({ nonsense: true })).toEqual({
+        kind: 'IGNORED',
+      });
+      expect(provider.interpret(null)).toEqual({ kind: 'IGNORED' });
+    });
+  });
+
   describe('cancelIntent', () => {
     function clientWhere(
       cancel: () => Promise<unknown>,

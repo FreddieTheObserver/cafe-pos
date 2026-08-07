@@ -5,6 +5,7 @@ import type { Env } from '../config/env.validation';
 import { STRIPE_CLIENT, STRIPE_WEBHOOK_SECRETS } from './payments.constants';
 import { PAYMENT_PROVIDER } from './provider/payment-provider';
 import { StripePaymentProvider } from './provider/stripe-payment.provider';
+import { PaymentEventProcessor } from './webhooks/payment-event-processor.service';
 import { StripeWebhookController } from './webhooks/stripe-webhook.controller';
 import { WebhookInboxService } from './webhooks/webhook-inbox.service';
 
@@ -21,6 +22,7 @@ import { WebhookInboxService } from './webhooks/webhook-inbox.service';
   controllers: [StripeWebhookController],
   providers: [
     WebhookInboxService,
+    PaymentEventProcessor,
     {
       provide: STRIPE_CLIENT,
       inject: [ConfigService],
