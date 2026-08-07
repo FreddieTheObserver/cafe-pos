@@ -317,6 +317,22 @@ const MATRIX: MatrixRow[] = [
   },
   {
     /**
+     * KIOSK is admitted here and refused *inside* for CASH (B6). The matrix
+     * cannot express that: the same route serves the card and QR payments a
+     * kiosk may open, and it is the method in the body that makes one
+     * forbidden — which is why `CashPaymentNotAllowedError` reuses
+     * FORBIDDEN_ROLE rather than minting a code the guards could have applied.
+     *
+     * BARISTA is absent: a bar screen takes no money (§6.4).
+     */
+    method: 'post',
+    route: '/api/v1/orders/:id/payments',
+    path: `/api/v1/orders/${uuidv7()}/payments`,
+    allow: [A, M, C, K],
+    body: EMPTY_BODY,
+  },
+  {
+    /**
      * PUBLIC because Stripe holds no credential — the signature over the raw
      * body is the authentication (§10.1), and a guard here would refuse every
      * genuine delivery.
