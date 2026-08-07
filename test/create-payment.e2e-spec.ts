@@ -313,6 +313,57 @@ describe('Create payment endpoint (e2e)', () => {
   });
 
   /**
+   * The invariant `CreatedIntent` states: the client secret is never written
+   * down. It was — `completeKey` stored the whole response view, secret
+   * included, for 24 hours. The earlier "never re-serves a client secret" test
+   * could not see it, because it only checked an API response; this one reads
+   * the table.
+   */
+  it('keeps the client secret out of the idempotency store', async () => {
+    const orderId = await givenOrder();
+    const key = `key-${uuidv7()}`;
+
+    const res = await harness
+      .http()
+      .post(`/api/v1/orders/${orderId}/payments`)
+      .set('Authorization', `Bearer ${kioskToken}`)
+      .set('Idempotency-Key', key)
+      .send({ method: 'CARD' });
+    expect(paymentOf(res).clientAction?.clientSecret).toMatch(/_secret_/);
+
+    const stored = await harness.db.query.idempotencyKeys.findFirst({
+      where: eq(schema.idempotencyKeys.key, key),
+    });
+    expect(JSON.stringify(stored?.responseBody)).not.toContain('_secret_');
+  }, 30_000);
+
+  /**
+   * And the redaction must not cost the replay its usefulness. A kiosk that
+   * timed out has no secret of its own, so §5.7's "indistinguishable from the
+   * original" is precisely what it needs — the secret comes back from the
+   * gateway rather than from the table.
+   */
+  it('replays a gateway payment with its client secret restored', async () => {
+    const orderId = await givenOrder();
+    const key = `key-${uuidv7()}`;
+    const send = () =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${orderId}/payments`)
+        .set('Authorization', `Bearer ${kioskToken}`)
+        .set('Idempotency-Key', key)
+        .send({ method: 'CARD' });
+
+    const first = await send();
+    const second = await send();
+
+    expect(second.status).toBe(201);
+    expect(second.headers['idempotent-replay']).toBe('true');
+    expect(paymentOf(second).id).toBe(paymentOf(first).id);
+    expect(paymentOf(second).clientAction?.clientSecret).toMatch(/_secret_/);
+  }, 30_000);
+
+  /**
    * §5.7: the kiosk retries a request it never saw answered, and must get the
    * original payment rather than a second one against the same basket.
    */

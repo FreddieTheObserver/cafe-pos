@@ -118,6 +118,22 @@ export interface PaymentProvider {
   cancelIntent(intentId: string): Promise<CancelIntentOutcome>;
 
   /**
+   * Fetches the client secret for an intent we already opened.
+   *
+   * Exists so `clientSecret` can stay out of the database and still survive a
+   * §5.7 replay. The idempotency store keeps the response a key stands for, and
+   * storing the secret there would leave a value that authorises confirming the
+   * payment sitting in a table for 24 hours — which is exactly what
+   * `CreatedIntent` says is never written down. So the stored copy is redacted
+   * and a replay asks the gateway again, using the intent id we did persist.
+   *
+   * Safe to call repeatedly: the gateway returns the same secret for the same
+   * intent, so a replay is genuinely indistinguishable from the original
+   * response rather than a degraded one.
+   */
+  clientSecretFor(intentId: string): Promise<string>;
+
+  /**
    * Verifies the signature and parses the body, or throws.
    *
    * Takes the **raw** bytes, not a parsed object: the signature covers the

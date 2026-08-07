@@ -114,7 +114,7 @@ export class CreatePaymentService {
           throw new IdempotencyConflictError();
         }
         return {
-          payment: answered.responseBody as PaymentView,
+          payment: await this.rehydrate(answered.responseBody as PaymentView),
           replayed: true,
         };
       }
@@ -347,7 +347,17 @@ export class CreatePaymentService {
         const view = await work(tx);
 
         if (idempotencyKey !== undefined) {
-          await completeKey(tx, idempotencyKey, 201, view);
+          /**
+           * Redacted before it is stored. `completeKey` writes this row to
+           * `idempotency_keys.response_body` with a 24-hour TTL, and the client
+           * secret authorises confirming the payment (§10.5) — a value
+           * `CreatedIntent` says is never written down. A replay rebuilds it
+           * from the gateway instead; see `rehydrate`.
+           */
+          await completeKey(tx, idempotencyKey, 201, {
+            ...view,
+            clientAction: null,
+          });
         }
         return view;
       });
@@ -363,14 +373,42 @@ export class CreatePaymentService {
       }
 
       return {
-        payment: await replayKey<PaymentView>(
-          this.db,
-          idempotencyKey,
-          requestHash,
+        payment: await this.rehydrate(
+          await replayKey<PaymentView>(this.db, idempotencyKey, requestHash),
         ),
         replayed: true,
       };
     }
+  }
+
+  /**
+   * Puts back the client secret the stored copy deliberately dropped.
+   *
+   * §5.7 asks that a replay be indistinguishable from the original response,
+   * and the client that most needs one is precisely the kiosk that timed out —
+   * it has no secret of its own, so a replay without one is a 201 it cannot
+   * act on. The intent id *is* persisted, so the gateway can be asked again.
+   *
+   * Cash carries no `clientAction` at all and needs nothing done. Neither does
+   * a payment that has since settled: `provider_intent_id` is still there, but
+   * confirming it is over.
+   */
+  private async rehydrate(view: PaymentView): Promise<PaymentView> {
+    if (view.provider !== 'STRIPE' || view.status !== 'PENDING') return view;
+
+    const [row] = await this.db
+      .select({ intentId: payments.providerIntentId })
+      .from(payments)
+      .where(eq(payments.id, view.id));
+    if (row?.intentId == null) return view;
+
+    return {
+      ...view,
+      clientAction: {
+        type: 'CONFIRM_WITH_CLIENT_SECRET',
+        clientSecret: await this.provider.clientSecretFor(row.intentId),
+      },
+    };
   }
 
   /** 24 hours (§5.7), matching `OrdersService`; §7.5's job reaps the row. */

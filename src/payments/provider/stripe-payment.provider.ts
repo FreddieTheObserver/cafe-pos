@@ -112,6 +112,19 @@ export class StripePaymentProvider implements PaymentProvider {
     }
   }
 
+  async clientSecretFor(intentId: string): Promise<string> {
+    const intent = await this.stripe.paymentIntents.retrieve(intentId);
+
+    if (intent.client_secret === null) {
+      // Stripe types it nullable; an intent we opened always has one. A null
+      // here means the intent is not what we think it is, and handing the
+      // kiosk a broken Payment Element would be worse than saying so.
+      throw new Error(`Stripe returned no client secret for ${intentId}`);
+    }
+
+    return intent.client_secret;
+  }
+
   parseWebhook(rawBody: Buffer, signature: string): GatewayEvent {
     const event = this.verify(rawBody, signature);
 
