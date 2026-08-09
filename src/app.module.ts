@@ -14,6 +14,7 @@ import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
 import { RealtimeModule } from './realtime/realtime.module';
+import { KdsModule } from './kds/kds.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { RealtimeModule } from './realtime/realtime.module';
      * customer taps Pay.
      */
     PaymentsModule,
+    KdsModule,
   ],
 })
 export class AppModule {}
