@@ -13,6 +13,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     DatabaseModule,
     RedisModule,
     StorageModule,
+    RealtimeModule,
     CommonModule,
     HealthModule,
     IdentityModule,
