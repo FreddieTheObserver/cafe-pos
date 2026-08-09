@@ -161,7 +161,7 @@ Being critical, as requested — these are holes in the original problem stateme
 1. **Offline behavior is undefined.** "Full kiosk" implies the kiosk works… until the internet doesn't. **Decision for v1:** kiosks hard-require connectivity; on backend unreachability they display "Please order at the counter." Offline-first ordering (local queue + sync) is a v3-level project with hairy payment implications (§15). The counter POS with cash remains the degraded mode.
 2. **Receipt printing.** Customers may want receipts; Thai businesses may need to issue tax invoices on request. v1: e-receipt rendered by kiosk from order data + a printed queue-number slip via kiosk-local printer (kiosk's job, not the backend's — backend just serves order JSON). Full tax-invoice generation is out of scope and flagged to stakeholders.
 3. **Tax model.** Assumed: **VAT-inclusive pricing at 7%** (Thai convention — the menu price is what the customer pays; VAT is extracted for reporting, `vat = total × 7/107`). A US-style add-on tax changes the pricing pipeline and rounding rules; this must be confirmed before any code is written.
-4. **Refund policy.** Who may refund (manager), within what window (same business day for v1), to original payment method only. Cash refunds for QR payments are explicitly disallowed in v1 (reconciliation nightmare).
+4. **Refund policy.** Who may refund (manager), within what window (same business day for v1), and — settled in Phase 4 against Stripe's actual PromptPay behaviour — **from the till, not the gateway**. The original-payment-method rule this section first assumed is not implementable for QR: Stripe refunds a PromptPay charge only if it holds the customer's email, captured at confirmation, and only after the customer replies with the bank account they paid from. CafePOS collects neither, and §7.5 minimizes exactly that data on purpose. So a refund here is a **bookkeeping record plus cash across the counter**: `refunds.provider_refund_id` is always null, no gateway call is made, and the Z-report's reconciliation treats a till-settled refund as an expected delta rather than a mismatch. The nightmare this paragraph feared is real; it is paid for with a same-day window and an audit row, not avoided. Collecting an email at the kiosk was rejected — friction plus new PII, to buy back a flow the till already handles — as was card-only refunds, which leaves staff with no answer to the first wrong drink paid by QR. Card chargebacks are the owner's job in the Stripe Dashboard (§10.6).
 5. **PDPA (Thai data protection).** The only customer PII is an optional first name for call-out. Decision: keep it that way in v1; names purged after 90 days (§7.5). Loyalty (v2) is what triggers real PDPA work.
 6. **Order throttling under kitchen overload.** What happens when 40 orders are queued and prep time exceeds 25 min? v1: KDS shows queue depth; manager can pause kiosk ordering (device-level `ORDERING_PAUSED` flag). Auto-throttling by estimated wait is v2.
 7. **Multi-currency / tipping.** Out: single currency (THB). Tipping is uncommon at Thai kiosks; excluded.
@@ -374,12 +374,12 @@ stateDiagram-v2
     PENDING_PAYMENT --> EXPIRED : TTL job (10 min)
     PENDING_PAYMENT --> CANCELLED : customer/staff cancels
     PAID --> IN_PREPARATION : barista starts
-    PAID --> REFUNDED : cancelled before prep (auto-refund)
+    PAID --> REFUNDED : manager refund
     IN_PREPARATION --> READY : barista finishes
     IN_PREPARATION --> REFUNDED : manager refund
     READY --> COMPLETED : picked up
     READY --> REFUNDED : manager refund
-    COMPLETED --> REFUNDED : manager refund (same business day)
+    COMPLETED --> REFUNDED : manager refund
     EXPIRED --> [*]
     CANCELLED --> [*]
     COMPLETED --> [*]
@@ -393,6 +393,7 @@ Rules that the diagram can't show:
 - **`PAID` is reachable only from a payment-side fact** — a `payments` row entering `SUCCEEDED` (gateway webhook, or cash tender by staff). No endpoint sets an order to PAID directly.
 - **Every transition writes `ORDER_STATUS_HISTORY`** with the actor (FR-22). The history is the audit trail; `orders.status` is just the current pointer.
 - **Partial refunds don't change order status.** `REFUNDED` means fully refunded; a partial refund (wrong size on one of four drinks) leaves the order in its current state with refund records attached. The Z-report sums refunds independently of order status.
+- **Every edge into `REFUNDED` is the same operation**, whatever the order was doing at the time: `POST /payments/:id/refunds`, MANAGER+, within the business day that took the money (§3.3.4). There is no path from `cancel` to `REFUNDED` and no automatic refund — a paid order is reversed by a manager taking cash out of the till and recording it, never by the gateway. §5.2 says why the cancel endpoint stops at `PENDING_PAYMENT`.
 
 ### 4.5 Business rules summary
 
@@ -476,6 +477,9 @@ Roles column: A=ADMIN, M=MANAGER, C=CASHIER, B=BARISTA, K=KIOSK device. §6.4 ha
 | `PUT /items/:id/option-groups` | Set attached groups + order (idempotent replace) | A, M | 200 | 422 `OPTION_GROUP_UNKNOWN` |
 | `POST /option-groups` · `PATCH /option-groups/:id` | Manage groups (min/max) | A, M | 201 / 200 | 422 `OPTION_GROUP_MINMAX_INVALID` |
 | `POST /option-groups/:id/options` · `PATCH /options/:id` | Manage options (price delta, availability) | A, M (availability: +C, B) | 201 / 200 | — |
+| `GET /categories` · `GET /items` · `GET /option-groups` | Unfiltered management reads (include inactive / unavailable rows) | A, M | 200 | — |
+
+The three management `GET`s are deliberate additions to this table, not oversights in it: the back office has to see the rows `/menu` hides, and giving them their own endpoints keeps exactly one cacheable public shape for `/menu` rather than growing it an `?include=inactive` variant that would fragment the ETag.
 
 **Orders**
 
@@ -486,8 +490,10 @@ Roles column: A=ADMIN, M=MANAGER, C=CASHIER, B=BARISTA, K=KIOSK device. §6.4 ha
 | `GET /orders/:id` | Full order detail | staff; K only its own | 200 | 404 (also for foreign-device access — no existence leak) |
 | `POST /orders/:id/checkout` | DRAFT → PENDING_PAYMENT (counter flow) | C, M, A | 200 | 409 `ORDER_INVALID_TRANSITION` |
 | `POST /orders/:id/status` | Guarded transition (`{"to": "IN_PREPARATION"}` etc.) | B, C, M, A (per matrix §6.4) | 200 | 409 `ORDER_INVALID_TRANSITION` |
-| `POST /orders/:id/cancel` | Cancel (pre-payment any staff/own kiosk; post-payment M+ → auto-refund) | K(own, pre-pay), C, M, A | 200 | 409 |
+| `POST /orders/:id/cancel` | Cancel a **pre-payment** order (DRAFT / PENDING_PAYMENT) | K(own), C, M, A | 200 | 409 `ORDER_INVALID_TRANSITION`, 409 `ORDER_ALREADY_PAID` |
 | `GET /orders/board` | Public status board: queue numbers in PREPARING/READY only | public | 200 | — |
+
+Cancelling *after* payment is not this endpoint. §4.4 routes a paid order to `REFUNDED`, never `CANCELLED`, so the operation that reverses a paid order is `POST /payments/:id/refunds` — it writes the refund record, settles from the till (§3.3.4), and moves the order to `REFUNDED` only when the last of the captured amount is taken. One terminal path for reversing money means one place the books can be wrong. `ORDER_ALREADY_PAID` covers the race where the customer confirms the QR while a cancel is in flight: the gateway wins, and the kiosk shows the order number rather than an error.
 
 **Payments**
 
@@ -495,7 +501,7 @@ Roles column: A=ADMIN, M=MANAGER, C=CASHIER, B=BARISTA, K=KIOSK device. §6.4 ha
 |---|---|---|---|---|
 | `POST /orders/:id/payments` | Create payment (`CARD`/`PROMPTPAY` → intent + client secret/QR; `CASH` → immediate capture, counter only) | K(own), C, M, A | 201 | 409 `PAYMENT_ALREADY_ACTIVE`, 409 `ORDER_NOT_PAYABLE` |
 | `GET /orders/:id/payments` | Payment attempts for an order | staff; K own | 200 | — |
-| `POST /payments/:id/refunds` | Full/partial refund | M, A | 201 | 422 `REFUND_EXCEEDS_REMAINING`, 409 `PAYMENT_NOT_REFUNDABLE` |
+| `POST /payments/:id/refunds` | Full/partial refund — bookkeeping only, settled from the till (§3.3.4) | M, A | 201 | 422 `REFUND_EXCEEDS_REMAINING`, 409 `PAYMENT_NOT_REFUNDABLE` |
 | `POST /webhooks/stripe` | Gateway events (raw body, signature-verified) | signature | 200 | 400 `WEBHOOK_SIGNATURE_INVALID` |
 
 **KDS & realtime**
@@ -582,19 +588,22 @@ Roles column: A=ADMIN, M=MANAGER, C=CASHIER, B=BARISTA, K=KIOSK device. §6.4 ha
 {
   "id": "0197f3b1-…",
   "status": "PENDING",
-  "method": "PROMPTPAY",
+  "method": null,
   "amountMinor": 17500,
   "currency": "THB",
   "provider": "STRIPE",
   "clientAction": {
-    "type": "DISPLAY_QR",
-    "qrPayload": "data:image/png;base64,…",
-    "expiresAt": "2026-06-11T07:42:10Z"
+    "type": "CONFIRM_WITH_CLIENT_SECRET",
+    "clientSecret": "pi_…_secret_…"
   }
 }
 ```
 
-For `"method": "CARD"`, `clientAction` is `{ "type": "CONFIRM_WITH_CLIENT_SECRET", "clientSecret": "pi_…_secret_…" }` and the kiosk completes entry with Stripe's hosted elements — card digits never touch this backend. The kiosk then *waits for the WebSocket `payment.succeeded` event* (or polls `GET /orders/:id` as fallback); it does not decide success itself.
+`method` comes back **null**, and that is not an omission. Stripe's guidance is emphatic that an integration must never pin `payment_method_types` — doing so opts out of dynamic payment methods and freezes the accepted rails into deployed code — so the intent is created without one, the Payment Element ranks and presents card, PromptPay and Apple Pay itself, and the customer picks *after* the intent exists. The rail is therefore unknown at creation, and `payments.method` stays null until the terminal webhook fills it (§7.2). Every gateway payment gets the same `CONFIRM_WITH_CLIENT_SECRET` action; there is no `DISPLAY_QR` branch, because rendering the QR became Stripe's job inside the Element. Card digits still never touch this backend.
+
+The kiosk *waits for the WebSocket `payment.succeeded` event* (or polls `GET /orders/:id` as fallback); it does not decide success itself — and for PromptPay it must **tear the QR down the instant that event lands**, because re-scanning a completed QR can debit the customer again and Stripe's remedy is to return the excess outside Stripe. That makes §12.3's realtime push load-bearing rather than a nicety.
+
+The `method` in the *request* survives for one reason: `CASH` never reaches Stripe at all (B6 — counter only), so the body must still distinguish a till payment from a gateway one. For `CARD` and `PROMPTPAY` the value is accepted and then ignored.
 
 **`POST /orders/:id/status`** (barista)
 
@@ -655,6 +664,7 @@ Order lookup (`q`) covers the real use cases: exact order number, customer-name 
 
 - Client generates a UUID `Idempotency-Key` per logical attempt (one per cart checkout, one per payment attempt).
 - Server stores `(key, request_body_hash, response)` — on replay with the same body, return the stored response (`200/201`, header `Idempotency-Replayed: true`); same key with a *different* body → `409 IDEMPOTENCY_CONFLICT`.
+- The key row is **inserted at the start of the request's transaction, before there is a response to store**, which is why the response columns are nullable (§7.2): NULL means "reserved, not yet answered." That reservation is what makes a concurrent retry *block* on the primary key rather than race the original into a second order — and it is only ever observed by a transaction that is itself blocked, since the row becomes visible to readers when the transaction that filled it commits. A refused request therefore stores nothing at all: the reservation dies with the rolled-back transaction, leaving the kiosk free to retry an order that failed only because an item was briefly sold out.
 - Keys expire after 24 h (table cleanup job, §7.5).
 - The same client key is forwarded as Stripe's idempotency key on intent creation, so the retry chain is idempotent end-to-end: kiosk → API → gateway.
 
@@ -711,10 +721,9 @@ The device token's blast radius is the point: it can read the menu, create order
 | Transition: PAID→IN_PREPARATION→READY | ✅ | ✅ | ✅ | ✅ | — |
 | Transition: READY→COMPLETED | ✅ | ✅ | ✅ | ✅ | — |
 | Cancel pre-payment | ✅ | ✅ | ✅ | — | ✅ (own) |
-| Cancel post-payment (auto-refund) | ✅ | ✅ | — | — | — |
 | Cash payment (`method: CASH`) | ✅ | ✅ | ✅ | — | — |
 | Card/QR payment intent | ✅ | ✅ | ✅ | — | ✅ (own order) |
-| Refunds | ✅ | ✅ | — | — | — |
+| Refunds (`POST /payments/:id/refunds`) — also the only way to reverse a paid order | ✅ | ✅ | — | — | — |
 | Reports & Z-report | ✅ | ✅ | — | — | — |
 | KDS snapshot + `kds` WS room | ✅ | ✅ | ✅ | ✅ | — |
 | Public board (`/orders/board`, `board` room) | public | public | public | public | public |
@@ -770,7 +779,9 @@ menu_item_option_groups (menu_item_id FK→menu_items, option_group_id FK→opti
                   sort_order INT, PRIMARY KEY (menu_item_id, option_group_id))
 
 -- Orders
-orders           (id PK, order_number TEXT, business_day DATE, channel TEXT CHECK (channel IN ('KIOSK','COUNTER')),
+orders           (id PK, order_number TEXT NULL,   -- assigned at checkout (B3); a DRAFT has none,
+                                                   -- and NULLs never collide in the UNIQUE below
+                  business_day DATE, channel TEXT CHECK (channel IN ('KIOSK','COUNTER')),
                   status TEXT CHECK (status IN ('DRAFT','PENDING_PAYMENT','PAID','IN_PREPARATION',
                                                 'READY','COMPLETED','CANCELLED','EXPIRED','REFUNDED')),
                   kiosk_device_id FK→kiosk_devices NULL, created_by_user_id FK→users NULL,
@@ -788,11 +799,16 @@ order_item_options (id PK, order_item_id FK→order_items ON DELETE CASCADE, opt
 
 order_status_history (id PK, order_id FK→orders, from_status TEXT, to_status TEXT,
                   actor_type TEXT CHECK (actor_type IN ('USER','DEVICE','SYSTEM')),
-                  actor_id UUID NULL, created_at TIMESTAMPTZ)   -- append-only, no updated_at
+                  actor_id UUID NULL, reason TEXT NULL,   -- §8's cancel/refund reason; it lives here
+                                                          -- rather than on orders because an order
+                                                          -- cancelled and then refunded has two
+                  created_at TIMESTAMPTZ)   -- append-only, no updated_at
 
 -- Money
 payments         (id PK, order_id FK→orders, provider TEXT CHECK (provider IN ('STRIPE','CASH')),
-                  provider_intent_id TEXT UNIQUE NULL, method TEXT CHECK (method IN ('CARD','PROMPTPAY','CASH')),
+                  provider_intent_id TEXT UNIQUE NULL,
+                  method TEXT NULL CHECK (method IN ('CARD','PROMPTPAY','CASH')),   -- null until the
+                      -- webhook names the rail (§5.3); CASH is written with it already set
                   status TEXT CHECK (status IN ('PENDING','PROCESSING','SUCCEEDED','FAILED','CANCELLED','EXPIRED')),
                   amount_minor INT CHECK (amount_minor > 0), currency CHAR(3),
                   idempotency_key TEXT UNIQUE NULL, cash_tendered_minor INT NULL)
@@ -806,8 +822,10 @@ payment_events   (id PK, provider_event_id TEXT UNIQUE, event_type TEXT,
                   payment_id FK→payments NULL, payload JSONB,
                   received_at TIMESTAMPTZ, processed_at TIMESTAMPTZ NULL)  -- append-only inbox
 
-idempotency_keys (key TEXT PRIMARY KEY, request_hash TEXT, response_status INT,
-                  response_body JSONB, expires_at TIMESTAMPTZ)
+idempotency_keys (key TEXT PRIMARY KEY, request_hash TEXT,
+                  response_status INT NULL, response_body JSONB NULL,   -- NULL = reserved,
+                                                                        -- not yet answered (§5.7)
+                  expires_at TIMESTAMPTZ)
 
 -- Reporting
 daily_sales_rollups (business_day DATE PRIMARY KEY, orders_completed INT, orders_refunded INT,
@@ -874,7 +892,7 @@ Per-endpoint rules (shape → business):
 | `POST /orders` | `channel` (enum matching principal type), `items[]` (1–30), each: `menuItemId` uuid, `quantity` 1–50, `optionIds[]` (0–15), `notes` ≤ 140; `customerName` ≤ 40; `expectedTotalMinor` int | Every item exists & available (E6); every option belongs to a group attached to that item, is available, and selections satisfy each group's min/max (B2); recomputed total == `expectedTotalMinor` else `409 PRICE_MISMATCH` (E7); kiosk principal ⇒ channel KIOSK and device ACTIVE (not PAUSED) |
 | `POST /orders/:id/checkout` | — | Order is DRAFT; caller is staff |
 | `POST /orders/:id/status` | `to` (enum) | Transition legal from current status (§4.4) **and** allowed for caller's role (§6.4); guarded UPDATE (E8) |
-| `POST /orders/:id/cancel` | optional `reason` ≤ 200 | Pre-payment: owner kiosk or staff. Post-payment: MANAGER+ and order ≤ READY ⇒ triggers refund flow |
+| `POST /orders/:id/cancel` | optional `reason` ≤ 200 | Pre-payment only (DRAFT / PENDING_PAYMENT): owner kiosk or staff. A paid order is reversed with `POST /payments/:id/refunds` instead (§5.2) |
 | `POST /orders/:id/payments` | `method` (enum) | Order PENDING_PAYMENT and unexpired; no live payment (B4); CASH ⇒ staff principal + `cashTenderedMinor ≥ total`; kiosk ⇒ own order only |
 | `POST /payments/:id/refunds` | `amountMinor` (int > 0), `reason` (1–200) | Payment SUCCEEDED; `amount ≤ captured − already refunded` (E9); same business day (policy §3.3) |
 | `POST /webhooks/stripe` | Raw body + `Stripe-Signature` header | Signature valid (else 400, no body parsing); event id unseen (else 200 no-op — dedupe E4); amount/currency in event matches our payment row before any transition |
@@ -930,7 +948,9 @@ Every non-2xx response from every endpoint has the same shape:
 | `PAYMENT_ALREADY_ACTIVE` | 409 | B4 |
 | `ORDER_NOT_PAYABLE` | 409 | Payment on non-PENDING_PAYMENT order |
 | `REFUND_EXCEEDS_REMAINING` | 422 | E9 |
-| `PAYMENT_NOT_REFUNDABLE` | 409 | Refund on non-SUCCEEDED payment |
+| `PAYMENT_NOT_REFUNDABLE` | 409 | Refund on non-SUCCEEDED payment, or outside its business day (§3.3.4) |
+| `CASH_TENDER_INSUFFICIENT` | 422 | Cash handed over is less than the order total (§8) |
+| `ORDER_ALREADY_PAID` | 409 | A cancel or the expiry sweep lost the race to a webhook-confirmed payment (E3) |
 | `IDEMPOTENCY_CONFLICT` | 409 | Same key, different body |
 | `WEBHOOK_SIGNATURE_INVALID` | 400 | Stripe signature fails |
 | `PAYLOAD_TOO_LARGE` | 413 | Request body over the configured limit (§10.3) |
@@ -997,6 +1017,10 @@ Validate shape strictly (§8), **encode on output, don't sanitize on input** —
 - Rotation: Stripe webhook secret and JWT secret rotatable with dual-accept window (verify against old+new for 24 h); device tokens/refresh tokens revocable per-row.
 - **PCI-DSS:** card data is entered exclusively into Stripe-hosted fields (Elements) on the kiosk; PromptPay never involves card data. The backend stores intent ids and amounts only → merchant scope ≈ **SAQ-A**. Any design that proxies card numbers through this API is rejected outright — it converts a student-sized project into a compliance program.
 - PDPA: §3.3.5 and §7.5 (name minimization + purge).
+
+### 10.6 Disputes and chargebacks
+
+PromptPay has no dispute mechanism — a completed transfer is final, which is part of why it is the preferred rail here. Cards do, and with refunds deliberately kept off the gateway (§3.3.4) a chargeback cannot be answered from inside this system at all: the owner handles it in the Stripe Dashboard, uploads evidence there, and the resulting balance movement arrives in reconciliation as an **unmatched gateway delta rather than a CafePOS refund** — which is the correct signal, since no till cash moved. Modelling disputes as a first-class entity was rejected for v1: at one cafe's card volume it is a table that would see a handful of rows a year, and the Dashboard already does the work that matters (evidence, deadlines, representment).
 
 ---
 
@@ -1073,7 +1097,7 @@ flowchart LR
     LB --> api
     api --> PG
     api --> RD
-    api -->|create intents, refunds| STRIPE
+    api -->|create & cancel intents| STRIPE
     STRIPE -->|signed webhooks| LB
     K1 -.->|hosted card fields /<br/>QR scan by customer phone| STRIPE
     K1 -.->|menu images| OBJ
@@ -1111,16 +1135,16 @@ sequenceDiagram
     API-->>Kiosk: 201 order A-042
     Kiosk->>API: POST /orders/:id/payments {method: PROMPTPAY}
     API->>Stripe: create PaymentIntent (idempotent)
-    API->>DB: payment row PENDING
-    API-->>Kiosk: 201 + QR payload
-    Kiosk-->>Cust: show QR
+    API->>DB: payment row PENDING (method null)
+    API-->>Kiosk: 201 + client secret
+    Kiosk-->>Cust: Payment Element — customer picks card or PromptPay
     Cust->>Stripe: scan & pay via banking app
     Stripe->>API: webhook payment_intent.succeeded (signed)
     API->>DB: store event (dedupe) → payment SUCCEEDED<br/>→ guarded order PENDING_PAYMENT→PAID + history (one tx)
     API-->>Stripe: 200
     API->>Kiosk: WS payment.succeeded (device room)
     API->>KDS: WS order.paid (kds room)
-    Kiosk-->>Cust: "Paid — your number is A-042"
+    Kiosk-->>Cust: tear down QR, "Paid — your number is A-042"
     Note over Kiosk,KDS: Kiosk crash after step 9? Steps 10–14 still run.<br/>Order reaches KDS; customer identified at counter (E1).
 ```
 
@@ -1130,8 +1154,8 @@ The load-bearing property: **steps 10–13 never depend on the kiosk being alive
 
 | Integration | Direction | Contract |
 |---|---|---|
-| **Stripe** (or Thai PSP) | Out: intents, refunds. In: signed webhooks | Behind a `PaymentProvider` TypeScript port: `createIntent`, `cancelIntent`, `refund`, `parseWebhook` → swapping to Omise/2C2P touches one adapter, not the order flow |
-| **Object storage/CDN** | Out: image upload | S3-compatible; presigned upload from back office |
+| **Stripe** (or Thai PSP) | Out: intents. In: signed webhooks | Behind a `PaymentProvider` TypeScript port: `createIntent`, `cancelIntent`, `clientSecretFor`, `parseWebhook`, `interpret`, `resolveMethod`, `capturedTotalFor` → swapping to Omise/2C2P touches one adapter, not the order flow. There is **no `refund` verb**: refunds never reach the gateway (§3.3.4) |
+| **Object storage/CDN** | Out: image upload | S3-compatible; **multipart through the API** (`POST /items/:id/image`), matching §5.1/§10 |
 | **Email (optional)** | Out | Daily Z-report to owner; any SMTP/API provider via job queue |
 | Receipt printers | none | Kiosk-local concern by design (see 12.1) |
 
@@ -1252,7 +1276,7 @@ Test pyramid with the money paths over-weighted on purpose:
 
 ## 17. Development Roadmap
 
-Phased so every phase ends runnable and demoable; later phases never force rework of earlier ones (the schema and module boundaries are fixed in Phase 0 by this document). Layered inside each phase: schema → backend → wiring.
+Phased so every phase ends runnable and demoable; later phases never force rework of earlier ones. Module boundaries are fixed in Phase 0 by this document; the schema is fixed there in *shape* and extended additively — migrations `0001`–`0005` have since added columns and relaxed nullability (§7.2) without a phase having to rework the one before it. Layered inside each phase: schema → backend → wiring.
 
 | Phase | Scope | Exit criterion |
 |---|---|---|
