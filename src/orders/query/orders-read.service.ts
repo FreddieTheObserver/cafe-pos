@@ -4,6 +4,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gte,
   inArray,
   lte,
@@ -13,8 +14,12 @@ import {
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
-import { orders } from '../../database/schema';
-import type { OrderChannel, OrderStatus } from '../../database/schema/enums';
+import { orders, payments } from '../../database/schema';
+import type {
+  OrderChannel,
+  OrderStatus,
+  PaymentMethod,
+} from '../../database/schema/enums';
 import type { Principal } from '../../identity/principal';
 import { decodeCursor, encodeCursor } from './cursor';
 import type { OrderSort } from './orders-query.dto';
@@ -45,6 +50,7 @@ export interface OrderPage {
 export interface OrdersQuery {
   status?: OrderStatus[];
   channel?: OrderChannel[];
+  method?: PaymentMethod[];
   from?: string;
   to?: string;
   businessDay?: string;
@@ -206,6 +212,46 @@ export class OrdersReadService {
     }
     if (query.channel !== undefined) {
       clauses.push(inArray(orders.channel, query.channel));
+    }
+    if (query.method !== undefined) {
+      /**
+       * "Paid by" means **a payment that succeeded**, not an attempt that
+       * carried the method.
+       *
+       * The distinction is the whole filter. An order is one row but its
+       * payments are many (B4 caps only the *live* ones), so a customer whose
+       * card was declined and who then handed over cash leaves two rows behind.
+       * Matching on any attempt would return that order under both `CARD` and
+       * `CASH`, and a cashier reconciling the till against `?method=CARD` would
+       * be counting money that never arrived. Only `SUCCEEDED` is money that
+       * moved, which is also what the Z-report's `byMethod` totals count
+       * (§5.3) — one definition of "paid by card" for the list and the report
+       * rather than two that quietly disagree at close.
+       *
+       * It follows that an in-flight gateway payment matches nothing at all:
+       * `payments.method` stays null until the terminal webhook names the rail,
+       * and `NULL IN (...)` is NULL, never true. That is the right answer —
+       * until the webhook lands, nobody can say how the order was paid.
+       *
+       * Correlated EXISTS rather than a join: a join would multiply the order
+       * row by its payments and need a DISTINCT that the cursor's row-value
+       * comparison would then have to survive. EXISTS stops at the first match
+       * and drives off `payments_order_id_idx` (§7.3).
+       */
+      clauses.push(
+        exists(
+          this.db
+            .select({ matched: sql`1` })
+            .from(payments)
+            .where(
+              and(
+                eq(payments.orderId, orders.id),
+                eq(payments.status, 'SUCCEEDED'),
+                inArray(payments.method, query.method),
+              ),
+            ),
+        ),
+      );
     }
     if (query.businessDay !== undefined) {
       clauses.push(eq(orders.businessDay, query.businessDay));

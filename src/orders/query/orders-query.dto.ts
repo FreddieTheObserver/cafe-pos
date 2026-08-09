@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { createZodDto } from '../../common/validation/zod-dto';
-import { orderChannels, orderStatuses } from '../../database/schema/enums';
+import {
+  orderChannels,
+  orderStatuses,
+  paymentMethods,
+} from '../../database/schema/enums';
 
 /**
  * §5.1's sort whitelist. Arbitrary column sorting is refused rather than
@@ -46,6 +50,13 @@ const OrdersQuerySchema = z
   .strictObject({
     status: commaSeparated(orderStatuses).optional(),
     channel: commaSeparated(orderChannels).optional(),
+    /**
+     * How the order was *paid* — the third of §5.1's comma-separated enums, and
+     * the only one that is not a column on `orders`. See `OrdersReadService`
+     * for what counts as paid by a method, which is a narrower question than it
+     * first looks.
+     */
+    method: commaSeparated(paymentMethods).optional(),
     /** ISO-8601 instants on `created_at` (§5.1). */
     from: z.iso.datetime().optional(),
     to: z.iso.datetime().optional(),

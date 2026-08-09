@@ -247,6 +247,35 @@ export class IdentityHarness {
     if (mine.length === 0) return;
 
     const orderIds = mine.map((row) => row.id);
+
+    /**
+     * Money first, and by hand.
+     *
+     * §7.4 makes the order/payment FKs `RESTRICT` on purpose — history must
+     * never dangle — so unlike `order_item_options`, nothing here cascades and
+     * a suite that writes a single payment row leaves this purge unable to
+     * delete its own orders. The failure surfaces in teardown, after every
+     * assertion has already passed, which makes it read as a harness bug rather
+     * than as the test's own leak.
+     */
+    const paid = await this.db
+      .select({ id: schema.payments.id })
+      .from(schema.payments)
+      .where(inArray(schema.payments.orderId, orderIds));
+
+    if (paid.length > 0) {
+      const paymentIds = paid.map((row) => row.id);
+      await this.db
+        .delete(schema.refunds)
+        .where(inArray(schema.refunds.paymentId, paymentIds));
+      await this.db
+        .delete(schema.paymentEvents)
+        .where(inArray(schema.paymentEvents.paymentId, paymentIds));
+      await this.db
+        .delete(schema.payments)
+        .where(inArray(schema.payments.id, paymentIds));
+    }
+
     await this.db
       .delete(schema.orderItems)
       .where(inArray(schema.orderItems.orderId, orderIds));

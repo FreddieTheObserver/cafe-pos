@@ -1007,6 +1007,108 @@ describe('Orders endpoint (e2e)', () => {
       expect(res.status).toBe(422);
     });
 
+    /**
+     * §5.1's `method` filter. It reads like the sibling of `status` and
+     * `channel` and is not one: those are columns on `orders`, while this is a
+     * question about the order's payments, of which there may be several.
+     */
+    describe('filtering by payment method', () => {
+      /** An order plus whatever payment rows the case needs. */
+      const orderPaidWith = async (
+        attempts: {
+          method: 'CARD' | 'PROMPTPAY' | 'CASH' | null;
+          status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
+        }[],
+      ): Promise<string> => {
+        const res = await postOrder(kioskToken, {
+          channel: 'KIOSK',
+          items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
+        });
+        expect(res.status).toBe(201);
+        const order = res.body as OrderBody;
+
+        for (const attempt of attempts) {
+          await harness.db.insert(schema.payments).values({
+            orderId: order.id,
+            provider: attempt.method === 'CASH' ? 'CASH' : 'STRIPE',
+            method: attempt.method,
+            status: attempt.status,
+            amountMinor: order.totalMinor,
+            currency: order.currency,
+          });
+        }
+
+        return order.id;
+      };
+
+      const idsFor = async (query: string): Promise<string[]> => {
+        const res = await listAs(cashierToken, query);
+        expect(res.status).toBe(200);
+        return pageOf(res).orders.map((order) => order.id);
+      };
+
+      it('finds an order by the method it was paid with', async () => {
+        const paidCash = await orderPaidWith([
+          { method: 'CASH', status: 'SUCCEEDED' },
+        ]);
+
+        expect(await idsFor('?method=CASH&limit=100')).toContain(paidCash);
+        expect(await idsFor('?method=CARD&limit=100')).not.toContain(paidCash);
+      });
+
+      it('accepts a comma-separated list of methods', async () => {
+        const paidByCard = await orderPaidWith([
+          { method: 'CARD', status: 'SUCCEEDED' },
+        ]);
+
+        expect(await idsFor('?method=CARD,PROMPTPAY&limit=100')).toContain(
+          paidByCard,
+        );
+      });
+
+      /**
+       * The case the filter exists to get right. A declined card followed by
+       * cash leaves two rows on one order; counting the declined one would put
+       * money in the card column that never arrived.
+       */
+      it('ignores an attempt that did not succeed', async () => {
+        const declinedThenCash = await orderPaidWith([
+          { method: 'CARD', status: 'FAILED' },
+          { method: 'CASH', status: 'SUCCEEDED' },
+        ]);
+
+        expect(await idsFor('?method=CASH&limit=100')).toContain(
+          declinedThenCash,
+        );
+        expect(await idsFor('?method=CARD&limit=100')).not.toContain(
+          declinedThenCash,
+        );
+      });
+
+      /**
+       * A gateway payment has no method until the webhook names the rail
+       * (§5.3), so an order mid-scan is not yet payable-by-anything. `NULL IN
+       * (...)` is NULL, which is the behaviour we want and worth pinning.
+       */
+      it('does not match a gateway payment still in flight', async () => {
+        const scanning = await orderPaidWith([
+          { method: null, status: 'PENDING' },
+        ]);
+
+        for (const method of ['CARD', 'PROMPTPAY', 'CASH']) {
+          expect(await idsFor(`?method=${method}&limit=100`)).not.toContain(
+            scanning,
+          );
+        }
+      });
+
+      it('refuses a method the enum does not have', async () => {
+        const res = await listAs(cashierToken, '?method=BARTER');
+
+        expect(res.status).toBe(422);
+      });
+    });
+
     it('finds an order by its queue number', async () => {
       // Non-null because these were checked out, not parked — a DRAFT has no
       // number to search for, which is B3's whole point.
