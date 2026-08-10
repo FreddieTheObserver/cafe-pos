@@ -398,5 +398,98 @@ describe('Daily sales rollup (e2e)', () => {
       expect(row).toBeDefined();
       expect(row.revenueMinor).toBe(40_000);
     });
+
+    it('rolls up a day the job missed while it was down', async () => {
+      pretendItIs('2031-03-02T20:00:00Z'); // 2031-03-03T03:00 Bangkok
+
+      const target = '2031-03-01';
+      const missed = '2031-02-27';
+      rolledDays.push(target, missed);
+
+      await givenOrder({
+        businessDay: target,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+      await givenOrder({
+        businessDay: missed,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 7, lineMinor: 70_000 }],
+      });
+
+      // The outage: `missed` has trade but no rollup row at all.
+      expect(await storedRow(missed)).toBeUndefined();
+
+      const summary = await rollup.rollUpYesterday();
+
+      expect(summary.failed).toBe(0);
+      expect(summary.rolled).toBeGreaterThanOrEqual(2);
+      expect((await storedRow(missed)).revenueMinor).toBe(70_000);
+      expect((await storedRow(target)).revenueMinor).toBe(10_000);
+    });
+
+    it('leaves days outside the catch-up window alone', async () => {
+      pretendItIs('2031-04-02T20:00:00Z'); // 2031-04-03T03:00 Bangkok
+
+      const target = '2031-04-01';
+      /**
+       * Deliberately in a different year from the `2031-01-XX` days the
+       * per-test counter hands out. Picking a January date here would collide
+       * with a day an earlier test already finalized, and this assertion would
+       * pass or fail for a reason that has nothing to do with the window.
+       */
+      const ancient = '2030-12-01';
+      rolledDays.push(target, ancient);
+
+      await givenOrder({
+        businessDay: ancient,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 5_000 }],
+      });
+
+      await rollup.rollUpYesterday();
+
+      // Bounded on purpose: the sweep must never become a full table scan.
+      expect(await storedRow(ancient)).toBeUndefined();
+    });
+
+    /**
+     * The mechanism the whole catch-up story rests on: a day that fails must
+     * leave no finalized row, because "no finalized row" is exactly what the
+     * sweep looks for. If a failure wrote a partial row instead, tomorrow would
+     * skip it and the bad numbers would be permanent.
+     */
+    it('keeps going after a day fails, and leaves that day unfinalized', async () => {
+      pretendItIs('2031-05-02T20:00:00Z'); // 2031-05-03T03:00 Bangkok
+
+      const target = '2031-05-01';
+      const doomed = '2031-04-20';
+      rolledDays.push(target, doomed);
+
+      await givenOrder({
+        businessDay: target,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+      await givenOrder({
+        businessDay: doomed,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+
+      // Captured before the spy replaces it, so the good day still really rolls.
+      // `strictBindCallApply` is off, so `.bind` alone types as `any`; the
+      // assertion restores the signature without changing what runs.
+      const realRollDay = rollup.rollDay.bind(rollup) as typeof rollup.rollDay;
+      jest
+        .spyOn(rollup, 'rollDay')
+        .mockImplementation((day: string) =>
+          day === doomed
+            ? Promise.reject(new Error('deadlock detected'))
+            : realRollDay(day),
+        );
+
+      const summary = await rollup.rollUpYesterday();
+
+      expect(summary.failed).toBe(1);
+      expect(summary.rolled).toBeGreaterThanOrEqual(1);
+      expect((await storedRow(target)).revenueMinor).toBe(10_000);
+      expect(await storedRow(doomed)).toBeUndefined();
+    });
   });
 });

@@ -36,6 +36,26 @@ export function businessDayOf(
   );
 }
 
+/**
+ * A business day label, N calendar days earlier.
+ *
+ * Calendar arithmetic through `Date.UTC`, for the same reason `businessDayOf`
+ * uses it: these are wall-clock date parts, not instants, so treating them as
+ * UTC makes the subtraction exact across a daylight-saving change. Month
+ * lengths and leap years come from the platform.
+ */
+export function minusDays(businessDay: string, days: number): string {
+  const [year, month, day] = businessDay.split('-').map(Number);
+  const shifted = new Date(
+    Date.UTC(year, month - 1, day) - days * MILLIS_PER_DAY,
+  );
+  return formatDate(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    shifted.getUTCDate(),
+  );
+}
+
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface WallClock {

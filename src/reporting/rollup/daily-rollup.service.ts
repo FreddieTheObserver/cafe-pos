@@ -1,7 +1,18 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, eq, exists, sql, sum } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  gte,
+  isNotNull,
+  lt,
+  notExists,
+  sql,
+  sum,
+} from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
@@ -13,7 +24,7 @@ import {
   payments,
   refunds,
 } from '../../database/schema';
-import { businessDayOf } from '../../orders/business-day';
+import { businessDayOf, minusDays } from '../../orders/business-day';
 import { buildRollupRow, type RollupRow } from './build-rollup-row';
 
 /** What one nightly run did. */
@@ -21,6 +32,16 @@ export interface RollupSummary {
   rolled: number;
   failed: number;
 }
+
+/**
+ * How far back a nightly run will look for days it never finalized.
+ *
+ * Bounded so the sweep cannot degrade into a full scan of `orders` — the exact
+ * failure §11.2 lists first. Thirty days comfortably covers any outage the
+ * on-call rota would survive; a longer hole is a manual backfill and a
+ * conversation, not a job quietly grinding through a year of history.
+ */
+const CATCH_UP_DAYS = 30;
 
 /**
  * The §11.2 nightly rollup: one finalized row per business day, so historical
@@ -216,7 +237,7 @@ export class DailyRollupService {
   })
   async rollUpYesterday(): Promise<RollupSummary> {
     const target = this.businessDayAt(Date.now() - 24 * 60 * 60 * 1000);
-    return this.rollDays([target]);
+    return this.rollDays([target, ...(await this.missedDays(target))]);
   }
 
   /**
@@ -241,6 +262,40 @@ export class DailyRollupService {
     }
 
     return { rolled, failed };
+  }
+
+  /**
+   * Business days inside the window that saw trade but carry no finalized
+   * rollup — either the job never ran for them, or it ran and failed.
+   *
+   * Selected from `orders` rather than from a calendar, so the sweep can only
+   * ever revisit days that actually happened. A calendar-driven version would
+   * manufacture zero rows for every date the cafe was shut.
+   */
+  private async missedDays(target: string): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({ businessDay: orders.businessDay })
+      .from(orders)
+      .where(
+        and(
+          gte(orders.businessDay, minusDays(target, CATCH_UP_DAYS)),
+          lt(orders.businessDay, target),
+          notExists(
+            this.db
+              .select({ one: sql`1` })
+              .from(dailySalesRollups)
+              .where(
+                and(
+                  eq(dailySalesRollups.businessDay, orders.businessDay),
+                  isNotNull(dailySalesRollups.finalizedAt),
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(asc(orders.businessDay));
+
+    return rows.map((row) => row.businessDay);
   }
 
   private businessDayAt(epochMs: number): string {
