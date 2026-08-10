@@ -21,6 +21,19 @@ describe('KDS gateway (e2e)', () => {
   let redis: Redis;
   let revocations: RevocationService;
 
+  /**
+   * Minted once and shared.
+   *
+   * `accessTokenFor` creates a staff account *and logs it in*, and §10.2's
+   * login limit is per source address — so a suite that mints a token per
+   * socket spends the whole run's shared budget from one IP and pushes some
+   * other suite's fixture login into a 429. Only the revocation cases below
+   * genuinely need their own account, and they say so.
+   */
+  let baristaToken: string;
+  let managerToken: string;
+  let cashierToken: string;
+
   const open = (options: Record<string, unknown> = {}): Socket =>
     io(`${harness.url()}${NAMESPACES.kds}`, {
       transports: ['websocket'],
@@ -64,6 +77,10 @@ describe('KDS gateway (e2e)', () => {
       redis,
       new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
     );
+
+    baristaToken = await harness.accessTokenFor('BARISTA');
+    managerToken = await harness.accessTokenFor('MANAGER');
+    cashierToken = await harness.accessTokenFor('CASHIER');
   });
 
   afterAll(async () => {
@@ -75,7 +92,7 @@ describe('KDS gateway (e2e)', () => {
   });
 
   it('lets a barista onto the board', async () => {
-    const socket = await connected(await harness.accessTokenFor('BARISTA'));
+    const socket = await connected(baristaToken);
     socket.disconnect();
   });
 
@@ -103,9 +120,8 @@ describe('KDS gateway (e2e)', () => {
   });
 
   it('accepts the token in an Authorization header too', async () => {
-    const token = await harness.accessTokenFor('MANAGER');
     const socket = open({
-      extraHeaders: { Authorization: `Bearer ${token}` },
+      extraHeaders: { Authorization: `Bearer ${managerToken}` },
     });
 
     await expect(connects(socket)).resolves.toBe(true);
@@ -127,7 +143,7 @@ describe('KDS gateway (e2e)', () => {
 
     // A token for a *different* user must still get in, or this would pass
     // because the gateway refuses everyone.
-    const other = await connected(await harness.accessTokenFor('BARISTA'));
+    const other = await connected(baristaToken);
     other.disconnect();
   });
 
@@ -158,7 +174,6 @@ describe('KDS gateway (e2e)', () => {
    */
   describe('receiving events', () => {
     let croissantId: string;
-    let baristaToken: string;
 
     /** Resolves with the payload of the next `name` event, or rejects. */
     const nextEvent = (
@@ -189,11 +204,7 @@ describe('KDS gateway (e2e)', () => {
       return (res.body as { id: string }).id;
     };
 
-    let managerToken: string;
-
     beforeAll(async () => {
-      managerToken = await harness.accessTokenFor('MANAGER');
-      baristaToken = await harness.accessTokenFor('BARISTA');
       const categoryId = await asManager('/api/v1/categories', {
         name: `WS pastries ${Date.now()}`,
         sortOrder: 0,
@@ -206,8 +217,8 @@ describe('KDS gateway (e2e)', () => {
       });
     });
 
-    /** A PAID order — §4.4 leaves no endpoint that reaches PAID directly. */
-    const paidOrder = async (): Promise<string> => {
+    /** A kiosk order, left where `POST /orders` puts it: PENDING_PAYMENT. */
+    const pendingOrder = async (): Promise<string> => {
       const device = await harness.createDevice('ACTIVE');
       const res = await harness
         .http()
@@ -219,7 +230,12 @@ describe('KDS gateway (e2e)', () => {
           items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
         });
       expect(res.status).toBe(201);
-      const id = (res.body as { id: string }).id;
+      return (res.body as { id: string }).id;
+    };
+
+    /** A PAID order — §4.4 leaves no endpoint that reaches PAID directly. */
+    const paidOrder = async (): Promise<string> => {
+      const id = await pendingOrder();
 
       await harness.db
         .update(schema.orders)
@@ -272,13 +288,37 @@ describe('KDS gateway (e2e)', () => {
     });
 
     /**
+     * A ticket has to come *off* the board as reliably as it goes on. Without
+     * this event a counter screen keeps showing an order the customer called
+     * off, until somebody reloads.
+     */
+    it('announces an order that was called off', async () => {
+      const socket = await connected(baristaToken);
+      const orderId = await pendingOrder();
+
+      const arrived = nextEvent(socket, 'order.updated');
+      const res = await harness
+        .http()
+        .post(`/api/v1/orders/${orderId}/cancel`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send({ reason: 'customer changed their mind' });
+      expect(res.status).toBe(200);
+
+      expect(await arrived).toMatchObject({
+        id: orderId,
+        status: 'CANCELLED',
+      });
+      socket.disconnect();
+    });
+
+    /**
      * §17's exit criterion in miniature: two screens, one event, both see it.
      * This is what the Redis adapter exists for — with one instance it would
      * pass regardless, which is why the harness installs the real adapter.
      */
     it('reaches every connected screen', async () => {
       const bar = await connected(baristaToken);
-      const counter = await connected(await harness.accessTokenFor('CASHIER'));
+      const counter = await connected(cashierToken);
       const orderId = await paidOrder();
 
       const both = Promise.all([

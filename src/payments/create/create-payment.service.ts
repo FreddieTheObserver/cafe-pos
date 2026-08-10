@@ -18,6 +18,10 @@ import {
 import { hashRequest } from '../../orders/idempotency/request-hash';
 import { transitionOrder } from '../../orders/state/transition-order';
 import {
+  AfterCommit,
+  type Emit,
+} from '../../realtime/events/after-commit.service';
+import {
   CashPaymentNotAllowedError,
   CashTenderInsufficientError,
   OrderExpiredError,
@@ -85,6 +89,7 @@ export class CreatePaymentService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly afterCommit: AfterCommit,
   ) {}
 
   async create(
@@ -205,7 +210,7 @@ export class CreatePaymentService {
       throw new CashTenderInsufficientError(tendered ?? 0, order.totalMinor);
     }
 
-    return this.write(idempotencyKey, requestHash, async (tx) => {
+    return this.write(idempotencyKey, requestHash, async (tx, emit) => {
       const paymentId = await this.insertPayment(tx, order.id, {
         orderId: order.id,
         provider: 'CASH',
@@ -217,11 +222,22 @@ export class CreatePaymentService {
         idempotencyKey: idempotencyKey ?? null,
       });
 
-      await transitionOrder(tx, {
+      const updated = await transitionOrder(tx, {
         orderId: order.id,
         from: 'PENDING_PAYMENT',
         to: 'PAID',
         actor: { actorType: 'USER', actorId: principal.userId },
+      });
+
+      /**
+       * The same event the webhook raises, because the KDS cannot tell the
+       * difference and should not have to: a paid order is a ticket to make,
+       * whether the money arrived through Stripe or across the counter.
+       */
+      emit({
+        kind: 'order.paid',
+        orderId: order.id,
+        deviceId: updated.kioskDeviceId,
       });
 
       return {
@@ -260,6 +276,8 @@ export class CreatePaymentService {
       metadata: { orderId: order.id },
     });
 
+    // Emits nothing: the order is still PENDING_PAYMENT and reaches nobody's
+    // board until the webhook says the money actually arrived.
     return this.write(idempotencyKey, requestHash, async (tx) => {
       const paymentId = await this.insertPayment(tx, order.id, {
         orderId: order.id,
@@ -336,15 +354,23 @@ export class CreatePaymentService {
     requestHash: string | null,
     work: (
       tx: Parameters<Parameters<Database['transaction']>[0]>[0],
+      emit: Emit,
     ) => Promise<PaymentView>,
   ): Promise<{ payment: PaymentView; replayed: boolean }> {
     try {
-      const payment = await this.db.transaction(async (tx) => {
+      /**
+       * The idempotent write and the announcement share one seam, so a cash
+       * payment that reserves a key, moves the order and then fails to store
+       * its response tells nobody it happened. Announcing from inside the
+       * transaction would have the KDS holding a paid order the rollback
+       * erased.
+       */
+      const payment = await this.afterCommit.run(async (tx, emit) => {
         if (idempotencyKey !== undefined && requestHash !== null) {
           await reserveKey(tx, idempotencyKey, requestHash, this.keyExpiry());
         }
 
-        const view = await work(tx);
+        const view = await work(tx, emit);
 
         if (idempotencyKey !== undefined) {
           /**
