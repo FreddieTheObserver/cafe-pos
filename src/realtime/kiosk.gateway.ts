@@ -1,4 +1,5 @@
 import { Logger, type OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -6,6 +7,7 @@ import {
   type OnGatewayInit,
 } from '@nestjs/websockets';
 import type { Namespace, Socket } from 'socket.io';
+import { describeError } from '../common/errors/describe-error';
 import { DeviceTokenService } from '../identity/devices/device-token.service';
 import type { DevicePrincipal } from '../identity/principal';
 import { deviceRoom, NAMESPACES } from './realtime.constants';
@@ -80,6 +82,42 @@ export class KioskGateway
         .in(deviceRoom(revocation.deviceId))
         .disconnectSockets(true);
     });
+  }
+
+  /**
+   * The heartbeat §5.5 asks for, on the cadence `last_seen_at` already uses.
+   *
+   * Every instance reports the sockets *it* holds, and the union across them is
+   * the truth — which is why this reads the local registry rather than asking
+   * the adapter to poll the cluster: a device connected to instance B is B's to
+   * report, and asking A about it would be a round trip to learn something A
+   * cannot know better.
+   *
+   * Best-effort. A failed write leaves the device list a minute stale, which is
+   * the same staleness a tablet that simply has not called yet produces, and it
+   * is not worth an error a human is asked to look at.
+   */
+  @Cron(CronExpression.EVERY_MINUTE, { name: 'kiosk-presence' })
+  async recordPresence(): Promise<void> {
+    // Undefined until a gateway has been initialised — a cron tick can land
+    // during boot, before Socket.IO has handed the namespace over.
+    if (!this.server) return;
+
+    const connected = [...this.server.sockets.values()]
+      .map((socket) => (socket as KioskSocket).data.principal?.deviceId)
+      .filter((deviceId): deviceId is string => deviceId !== undefined);
+
+    // Two tabs on one tablet is one device; the set keeps the update honest.
+    const deviceIds = [...new Set(connected)];
+    if (deviceIds.length === 0) return;
+
+    try {
+      await this.deviceTokens.markSeen(deviceIds);
+    } catch (error) {
+      this.logger.warn(
+        `Could not record presence for ${deviceIds.length} connected kiosk(s); the device list will read stale. ${describeError(error)}`,
+      );
+    }
   }
 
   /**

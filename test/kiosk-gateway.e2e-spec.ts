@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import { io, type Socket } from 'socket.io-client';
 import * as schema from '../src/database/schema';
 import { RevocationService } from '../src/identity/revocation/revocation.service';
+import { KioskGateway } from '../src/realtime/kiosk.gateway';
 import { NAMESPACES } from '../src/realtime/realtime.constants';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -217,6 +218,57 @@ describe('Kiosk gateway (e2e)', () => {
 
     expect(await quiet).toBe(true);
     socket.disconnect();
+  });
+
+  /**
+   * §5.5's heartbeat. Driven directly rather than waited for: the cron runs on
+   * the minute, and a test that slept for it would be a minute of nothing.
+   */
+  describe('presence', () => {
+    const lastSeenOf = async (deviceId: string): Promise<Date | null> => {
+      const row = await harness.db.query.kioskDevices.findFirst({
+        where: eq(schema.kioskDevices.id, deviceId),
+        columns: { lastSeenAt: true },
+      });
+      return row?.lastSeenAt ?? null;
+    };
+
+    const stale = new Date(Date.now() - 60 * 60 * 1000);
+
+    const goStale = (deviceId: string) =>
+      harness.db
+        .update(schema.kioskDevices)
+        .set({ lastSeenAt: stale })
+        .where(eq(schema.kioskDevices.id, deviceId));
+
+    /**
+     * A connected tablet is the healthiest a device can be and the quietest —
+     * after the handshake it may make no request for hours, so without this the
+     * device list would show it drifting toward "last seen at opening time".
+     */
+    it('keeps a silently connected tablet marked alive', async () => {
+      const device = await harness.createDevice('ACTIVE');
+      const socket = await connected(device.token);
+      await goStale(device.id);
+
+      await harness.app.get(KioskGateway).recordPresence();
+
+      const seen = await lastSeenOf(device.id);
+      expect(seen).not.toBeNull();
+      expect((seen as Date).getTime()).toBeGreaterThan(stale.getTime());
+
+      socket.disconnect();
+    });
+
+    /** Presence means connected, not merely paired. */
+    it('leaves a device that is not connected alone', async () => {
+      const device = await harness.createDevice('ACTIVE');
+      await goStale(device.id);
+
+      await harness.app.get(KioskGateway).recordPresence();
+
+      expect((await lastSeenOf(device.id))?.getTime()).toBe(stale.getTime());
+    });
   });
 
   /**

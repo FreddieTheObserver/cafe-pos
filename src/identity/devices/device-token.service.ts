@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { kioskDevices } from '../../database/schema';
@@ -48,6 +48,30 @@ export class DeviceTokenService {
     await this.touchLastSeen(device.id, device.lastSeenAt);
 
     return { type: 'device', deviceId: device.id, role: 'KIOSK' };
+  }
+
+  /**
+   * Records that these tablets are alive right now.
+   *
+   * `resolve` covers a device that keeps making requests; this covers the one
+   * that does not. A kiosk holding an open socket is the healthiest a tablet
+   * can be and the *quietest* — after the handshake it may make no request for
+   * hours — so without this the device list in §5.2 would show every connected
+   * kiosk drifting toward "last seen at opening time" and an operator would
+   * learn nothing from it.
+   *
+   * §5.5 calls the heartbeat and `last_seen_at` the same thing, and this is
+   * where they meet. Unconditional, unlike `touchLastSeen`: the caller already
+   * runs on the refresh cadence, so a freshness check would be a second read
+   * to avoid a write it was going to make anyway.
+   */
+  async markSeen(deviceIds: string[]): Promise<void> {
+    if (deviceIds.length === 0) return;
+
+    await this.db
+      .update(kioskDevices)
+      .set({ lastSeenAt: new Date() })
+      .where(inArray(kioskDevices.id, deviceIds));
   }
 
   private async touchLastSeen(
