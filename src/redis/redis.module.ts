@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { Env } from '../config/env.validation';
+import { closeRedis } from './close-redis';
 import { REDIS } from './redis.constants';
 import { attachRedisDiagnostics } from './redis.diagnostics';
 
@@ -40,15 +41,13 @@ export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS) private readonly redis: Redis) {}
 
   async onApplicationShutdown(): Promise<void> {
-    try {
-      await this.redis.quit();
-    } catch {
-      // `quit()` drains in-flight replies, which is why it is the right call
-      // normally — but a client that has already given up on an unreachable
-      // server rejects it outright, and a shutdown hook that throws turns an
-      // ordinary rollout into an error the orchestrator has to clean up after.
-      // There is nothing left to drain in that state; close the socket.
-      this.redis.disconnect();
-    }
+    /**
+     * The `catch`-and-disconnect this used to do covered a client that had
+     * *given up*, but not one still *reconnecting* — the default policy when
+     * Redis is merely down. That one queues the QUIT and waits for a connection
+     * that may never arrive, so a rollout during an outage would hang here.
+     * `closeRedis` checks `status` first, which distinguishes the two.
+     */
+    await closeRedis(this.redis);
   }
 }

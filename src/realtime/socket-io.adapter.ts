@@ -4,6 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import type Redis from 'ioredis';
 import type { Server, ServerOptions } from 'socket.io';
 import { describeError } from '../common/errors/describe-error';
+import { closeRedis } from '../redis/close-redis';
 import { REDIS } from '../redis/redis.constants';
 import { attachRedisDiagnostics } from '../redis/redis.diagnostics';
 
@@ -146,28 +147,7 @@ const unattended = (client: Redis): Redis =>
     },
   });
 
-/**
- * `quit` drains in flight replies and is the right call normally; a client that
- * never reached a server rejects it outright, so fall back to closing the
- * socket. Same reasoning, and same shape, as `RedisModule`'s shutdown hook.
- */
 const stop = async (client?: Redis): Promise<void> => {
   if (!client) return;
-
-  /**
-   * A client that never reached a server has nothing to drain, and `quit` on it
-   * queues a QUIT behind a connection that is still being retried — so shutdown
-   * would wait on exactly the outage the retry policy exists to survive. Close
-   * the socket instead.
-   */
-  if (client.status !== 'ready') {
-    client.disconnect();
-    return;
-  }
-
-  try {
-    await client.quit();
-  } catch {
-    client.disconnect();
-  }
+  await closeRedis(client);
 };

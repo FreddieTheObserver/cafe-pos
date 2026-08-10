@@ -111,8 +111,20 @@ export const parseRevocation = (raw: string): Revocation | null => {
   if (typeof parsed !== 'object' || parsed === null) return null;
 
   const { userId, jti } = parsed as Record<string, unknown>;
-  if (typeof userId === 'string' && userId.length > 0) return { userId };
-  if (typeof jti === 'string' && jti.length > 0) return { jti };
+  const namesUser = typeof userId === 'string' && userId.length > 0;
+  const namesToken = typeof jti === 'string' && jti.length > 0;
 
-  return null;
+  /**
+   * Exactly one, enforced rather than merely documented.
+   *
+   * Reading whichever field came first would make a message naming both
+   * resolve silently to the user-level revocation — the broader of the two —
+   * so a sender that got the shape wrong would cut every session a person has
+   * and look like it worked. Nothing this service publishes can produce that,
+   * but the reason this parser is defensive at all is that the channel is a
+   * shared Redis instance rather than a typed call.
+   */
+  if (namesUser === namesToken) return null;
+
+  return namesUser ? { userId: userId } : { jti: jti as string };
 };

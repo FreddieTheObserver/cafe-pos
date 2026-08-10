@@ -19,6 +19,7 @@ import {
   parseRevocation,
   RevocationService,
 } from '../identity/revocation/revocation.service';
+import { closeRedis } from '../redis/close-redis';
 import { REDIS } from '../redis/redis.constants';
 import { attachRedisDiagnostics } from '../redis/redis.diagnostics';
 import { NAMESPACES, REVOCATION_CHANNEL } from './realtime.constants';
@@ -225,13 +226,9 @@ export class KdsGateway
 
   async onModuleDestroy(): Promise<void> {
     if (!this.subscriber) return;
-    try {
-      await this.subscriber.quit();
-    } catch {
-      // Already gone; a shutdown hook that throws turns a rollout into an
-      // incident. Same reasoning as RedisModule's.
-      this.subscriber.disconnect();
-    }
+    // Not a bare `quit()`: a subscriber still reconnecting would queue it and
+    // block shutdown on the outage. `closeRedis` is where that reasoning lives.
+    await closeRedis(this.subscriber);
   }
 }
 

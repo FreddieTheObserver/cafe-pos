@@ -158,4 +158,13 @@ describe('parseRevocation', () => {
   ])('refuses %s without throwing', (raw) => {
     expect(parseRevocation(raw)).toBeNull();
   });
+
+  /**
+   * A message naming both is ambiguous, and resolving it to `userId` would
+   * quietly pick the *broader* revocation — cutting every session a person has
+   * because a sender got the shape wrong.
+   */
+  it('refuses a message that names both a user and a token', () => {
+    expect(parseRevocation('{"userId":"u1","jti":"j1"}')).toBeNull();
+  });
 });
