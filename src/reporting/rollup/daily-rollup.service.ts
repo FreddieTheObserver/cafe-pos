@@ -143,11 +143,15 @@ export class DailyRollupService {
         });
       },
       /**
-       * One snapshot for all five queries. The day is closed, so they could not
-       * disagree in practice — this costs nothing and removes the need to
-       * reason about that claim every time someone reads the code.
+       * One snapshot for all five queries. `accessMode: 'read only'` alone
+       * would not buy this — Postgres's default READ COMMITTED takes a fresh
+       * snapshot per *statement*, so the five queries could each see
+       * different data. `isolationLevel: 'repeatable read'` is what actually
+       * pins them to one snapshot; `read only` on top of it is what lets
+       * Postgres skip the write-conflict bookkeeping repeatable read would
+       * otherwise pay for.
        */
-      { accessMode: 'read only' },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
 
     const values = {
