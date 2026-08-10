@@ -1,8 +1,10 @@
+import type { Server } from 'node:net';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray, or } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import request from 'supertest';
+import { RedisIoAdapter } from '../../src/realtime/socket-io.adapter';
 import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
@@ -72,6 +74,13 @@ export class IdentityHarness {
       rawBody: true,
     });
     configureApp(app, { corsOrigins: [] });
+    /**
+     * The same adapter `main.ts` installs. Without it Nest falls back to a
+     * plain `IoAdapter`, and every gateway suite would pass against a
+     * single-instance Socket.IO that production never runs — the exact class of
+     * "green for a reason unrelated to the code" this harness exists to avoid.
+     */
+    app.useWebSocketAdapter(new RedisIoAdapter(app, []));
 
     // `listen(0)`, not `init()`. Handed a server that is not listening,
     // supertest calls `app.listen(0)` itself — and the request that did so
@@ -87,6 +96,20 @@ export class IdentityHarness {
 
   http() {
     return request(this.app.getHttpServer());
+  }
+
+  /**
+   * The origin the app is actually listening on.
+   *
+   * supertest resolves the ephemeral port for itself; a Socket.IO client cannot,
+   * so it needs the address `listen(0)` settled on.
+   */
+  url(): string {
+    const address = (this.app.getHttpServer() as Server).address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('harness is not listening on a TCP port');
+    }
+    return `http://127.0.0.1:${address.port}`;
   }
 
   /** Creates a staff account with a known password and returns its identity. */
@@ -111,13 +134,25 @@ export class IdentityHarness {
   /** Logs in over HTTP so the token is minted by the same code path clients use. */
   async accessTokenFor(role: UserRole): Promise<string> {
     const { email } = await this.createStaff(role);
+    return this.accessTokenForEmail(email);
+  }
+
+  /**
+   * A token for an account that already exists.
+   *
+   * Separate from `accessTokenFor`, which mints a fresh account every call —
+   * anything reasoning about *one* user holding *several* sessions (a till and
+   * a wall screen, say) needs the account held fixed while the tokens differ.
+   * Each login issues a new `jti`, which is exactly what makes them distinct.
+   */
+  async accessTokenForEmail(email: string): Promise<string> {
     const res = await this.http()
       .post('/api/v1/auth/login')
       .send({ email, password: FIXTURE_PASSWORD });
 
     if (res.status !== 200) {
       throw new Error(
-        `fixture login for ${role} failed with ${res.status}: ${JSON.stringify(res.body)}`,
+        `fixture login for ${email} failed with ${res.status}: ${JSON.stringify(res.body)}`,
       );
     }
     return (res.body as { accessToken: string }).accessToken;

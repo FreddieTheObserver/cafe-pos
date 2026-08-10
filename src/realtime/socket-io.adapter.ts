@@ -47,8 +47,8 @@ export class RedisIoAdapter extends IoAdapter {
      * the cache and the rate limiter the moment it subscribes.
      */
     const base = this.context.get<Redis>(REDIS);
-    this.pub = base.duplicate();
-    this.sub = base.duplicate();
+    this.pub = base.duplicate(PUBSUB_OPTIONS);
+    this.sub = base.duplicate(PUBSUB_OPTIONS);
     attachRedisDiagnostics(this.pub, new Logger('RealtimeRedisPub'));
     attachRedisDiagnostics(this.sub, new Logger('RealtimeRedisSub'));
 
@@ -62,6 +62,52 @@ export class RedisIoAdapter extends IoAdapter {
     await super.close(server);
     // Own what this class created, and nothing else - the base client belongs
     // to RedisModule's shutdown hook.
-    await Promise.allSettled([this.pub?.quit(), this.sub?.quit()]);
+    await Promise.allSettled([stop(this.pub), stop(this.sub)]);
   }
 }
+
+/**
+ * The pub/sub pair keeps retrying, whatever the app client is configured to do.
+ *
+ * `createAdapter` subscribes internally, and there is no hook to catch that
+ * promise. Against a client that has given up — `retryStrategy` returning null,
+ * or a permanently bad `REDIS_URL` — the subscribe rejects with nobody
+ * listening, and an unhandled rejection takes the whole process down. An API
+ * that refuses to boot because Redis is unreachable is precisely the failure
+ * every other consumer here is careful to avoid: the cafe should still be
+ * taking orders.
+ *
+ * Queuing is also the semantically right answer for a broadcast. A KDS event
+ * that waits for the connection to come back is useful; one that throws is not.
+ */
+const PUBSUB_OPTIONS = {
+  retryStrategy: (attempt: number) => Math.min(attempt * 200, 5000),
+  // Never reject a queued command for having waited too long — see above.
+  maxRetriesPerRequest: null,
+} as const;
+
+/**
+ * `quit` drains in flight replies and is the right call normally; a client that
+ * never reached a server rejects it outright, so fall back to closing the
+ * socket. Same reasoning, and same shape, as `RedisModule`'s shutdown hook.
+ */
+const stop = async (client?: Redis): Promise<void> => {
+  if (!client) return;
+
+  /**
+   * A client that never reached a server has nothing to drain, and asking it to
+   * `quit` would *queue* the QUIT — `maxRetriesPerRequest: null` above means
+   * that queued command waits forever, so shutdown would hang on exactly the
+   * outage the retry policy exists to survive. Close the socket instead.
+   */
+  if (client.status !== 'ready') {
+    client.disconnect();
+    return;
+  }
+
+  try {
+    await client.quit();
+  } catch {
+    client.disconnect();
+  }
+};

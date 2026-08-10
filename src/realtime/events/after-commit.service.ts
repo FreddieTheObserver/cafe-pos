@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { describeError } from '../../common/errors/describe-error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import type { Transaction } from '../../orders/idempotency/idempotency.store';
@@ -64,13 +65,8 @@ export class AfterCommit {
       await this.publisher.publish(events);
     } catch (error) {
       this.logger.warn(
-        `Committed but could not announce ${events.length} event(s); screens will resync from the snapshot. ${describe(error)}`,
+        `Committed but could not announce ${events.length} event(s); screens will resync from the snapshot. ${describeError(error)}`,
       );
     }
   }
 }
-
-const describe = (error: unknown): string =>
-  error instanceof Error && error.message.length > 0
-    ? error.message
-    : String(error);
