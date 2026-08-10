@@ -63,7 +63,7 @@ describe('Public board (e2e)', () => {
 
   beforeAll(async () => {
     harness = await IdentityHarness.boot();
-    managerToken = await harness.accessTokenFor('MANAGER');
+    managerToken = await harness.tokenFor('MANAGER');
 
     const categoryId = await post('/api/v1/categories', {
       name: `Board pastries ${Date.now()}`,

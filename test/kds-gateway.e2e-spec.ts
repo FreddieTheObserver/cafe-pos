@@ -24,11 +24,11 @@ describe('KDS gateway (e2e)', () => {
   /**
    * Minted once and shared.
    *
-   * `accessTokenFor` creates a staff account *and logs it in*, and §10.2's
-   * login limit is per source address — so a suite that mints a token per
-   * socket spends the whole run's shared budget from one IP and pushes some
-   * other suite's fixture login into a 429. Only the revocation cases below
-   * genuinely need their own account, and they say so.
+   * `tokenFor` rather than `accessTokenFor`, and once rather than per socket.
+   * The HTTP variant spends a login, §10.2 caps those at 20 per fifteen minutes
+   * per source address, and every suite in the run shares one — so a fixture
+   * that logs in freely does not fail itself, it fails whichever suite logs in
+   * last. Nothing here is testing authentication; `auth-http` does that.
    */
   let baristaToken: string;
   let managerToken: string;
@@ -78,9 +78,9 @@ describe('KDS gateway (e2e)', () => {
       new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
     );
 
-    baristaToken = await harness.accessTokenFor('BARISTA');
-    managerToken = await harness.accessTokenFor('MANAGER');
-    cashierToken = await harness.accessTokenFor('CASHIER');
+    baristaToken = await harness.tokenFor('BARISTA');
+    managerToken = await harness.tokenFor('MANAGER');
+    cashierToken = await harness.tokenFor('CASHIER');
   });
 
   afterAll(async () => {
@@ -134,7 +134,7 @@ describe('KDS gateway (e2e)', () => {
    */
   it('refuses a connection from a user who has been revoked', async () => {
     const staff = await harness.createStaff('BARISTA');
-    const revokedToken = await harness.accessTokenForEmail(staff.email);
+    const revokedToken = await harness.tokenForUserId(staff.id, staff.role);
     await revocations.revokeUser(staff.id);
 
     await expect(
@@ -154,7 +154,7 @@ describe('KDS gateway (e2e)', () => {
    */
   it('cuts a live socket when its user is revoked', async () => {
     const staff = await harness.createStaff('BARISTA');
-    const token = await harness.accessTokenForEmail(staff.email);
+    const token = await harness.tokenForUserId(staff.id, staff.role);
     const socket = await connected(token);
 
     const dropped = droppedWithin(socket, 4000);
@@ -338,8 +338,8 @@ describe('KDS gateway (e2e)', () => {
 
   it('cuts only the named token when a single session is revoked', async () => {
     const staff = await harness.createStaff('CASHIER');
-    const till = await harness.accessTokenForEmail(staff.email);
-    const wall = await harness.accessTokenForEmail(staff.email);
+    const till = await harness.tokenForUserId(staff.id, staff.role);
+    const wall = await harness.tokenForUserId(staff.id, staff.role);
 
     const tillSocket = await connected(till);
     const wallSocket = await connected(wall);

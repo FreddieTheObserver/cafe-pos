@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray, or } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import request from 'supertest';
+import { AccessTokenService } from '../../src/identity/auth/access-token.service';
 import { RedisIoAdapter } from '../../src/realtime/socket-io.adapter';
 import {
   PAYMENT_PROVIDER,
@@ -118,7 +119,7 @@ export class IdentityHarness {
   async createStaff(
     role: UserRole,
     { isActive = true } = {},
-  ): Promise<{ id: string; email: string }> {
+  ): Promise<{ id: string; email: string; role: UserRole }> {
     const id = uuidv7();
     const email = `fixture-${role.toLowerCase()}-${id}@cafepos.test`;
     await this.db.insert(schema.users).values({
@@ -130,7 +131,36 @@ export class IdentityHarness {
       isActive,
     });
     this.userIds.push(id);
-    return { id, email };
+    return { id, email, role };
+  }
+
+  /**
+   * A token minted directly, without spending a login.
+   *
+   * `accessTokenFor` goes through `POST /auth/login` on purpose, and for a
+   * suite testing authentication that is the point. For a suite testing
+   * websockets or the board it is an accident with a cost: §10.2 limits logins
+   * to 20 per fifteen minutes **per source address**, every suite in the run
+   * shares one, and the counters outlive the process. A handful of fixtures
+   * doing it politely still adds up to some *other* suite failing on a 429 —
+   * which reads as a bug in that suite, nowhere near the fixture that spent the
+   * budget.
+   *
+   * The token is identical either way: `AccessTokenService` is what login calls
+   * once it has checked the password, so nothing about the credential under
+   * test changes. What is skipped is the part `auth-http` already covers.
+   */
+  async tokenFor(role: UserRole): Promise<string> {
+    const { id } = await this.createStaff(role);
+    return this.tokenForUserId(id, role);
+  }
+
+  /** A second, distinct token for an existing account — each has its own `jti`. */
+  async tokenForUserId(userId: string, role: UserRole): Promise<string> {
+    const { accessToken } = await this.app
+      .get(AccessTokenService)
+      .issue({ id: userId, role });
+    return accessToken;
   }
 
   /** Logs in over HTTP so the token is minted by the same code path clients use. */

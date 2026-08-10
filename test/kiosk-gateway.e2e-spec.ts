@@ -124,7 +124,7 @@ describe('Kiosk gateway (e2e)', () => {
       new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
     );
 
-    managerToken = await harness.accessTokenFor('MANAGER');
+    managerToken = await harness.tokenFor('MANAGER');
     const post = async (path: string, body: Record<string, unknown>) => {
       const res = await harness
         .http()
