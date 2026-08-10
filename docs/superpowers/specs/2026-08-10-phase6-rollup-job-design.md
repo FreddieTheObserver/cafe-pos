@@ -162,7 +162,7 @@ EXISTS (SELECT 1 FROM payments p
          WHERE p.order_id = o.id AND p.status = 'SUCCEEDED')
 ```
 
-Five queries, in one `READ ONLY` transaction so they see one snapshot:
+Five queries, in one `REPEATABLE READ` transaction so they see one snapshot:
 
 | Query | Source | Produces |
 |---|---|---|

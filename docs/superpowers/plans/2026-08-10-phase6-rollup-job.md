@@ -19,6 +19,7 @@
 - `pnpm format` rewrites the whole repo's line endings on Windows. Use `npx prettier --write <specific paths>` instead.
 - Local Postgres is on host port **5433**; CI uses 5432. Take it from `.env`, do not hardcode.
 - The e2e suites share a per-IP login budget that persists in Redis for 15 minutes across runs. Use `harness.tokenFor(...)` rather than logging in, and expect stray 429s if you run the full e2e suite repeatedly.
+- **Do not use `pnpm test:e2e -- daily-rollup -t <name>`** — the double `--` shifts Jest's argument parsing so `-t` becomes a path pattern instead of a name filter, running unrelated suites and spending the login budget. Use `npx jest --config ./test/jest-e2e.json daily-rollup -t "<name>"` instead. The plain form `pnpm test:e2e -- daily-rollup` (without `-t`) works correctly.
 - No new dependencies. Everything needed is already installed.
 
 ---
@@ -974,7 +975,7 @@ Add to `test/daily-rollup.e2e-spec.ts`, inside the top-level `describe`:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm test:e2e -- daily-rollup -t "closed 22 hours ago"`
+Run: `npx jest --config ./test/jest-e2e.json daily-rollup -t "closed 22 hours ago"`
 Expected: FAIL — `rollup.rollUpYesterday is not a function`.
 
 - [ ] **Step 3: Add the schedule**
@@ -1280,7 +1281,7 @@ Add inside the `describe('the nightly run', ...)` block in `test/daily-rollup.e2
 
 - [ ] **Step 6: Run it to verify it fails**
 
-Run: `pnpm test:e2e -- daily-rollup -t "missed"`
+Run: `npx jest --config ./test/jest-e2e.json daily-rollup -t "missed"`
 Expected: FAIL — `expect(received).toBe(70000)` against `undefined`, because nothing sweeps.
 
 - [ ] **Step 7: Implement the sweep**
@@ -1361,7 +1362,7 @@ This repo has already been bitten by a test that passed without the code it was 
 
 Temporarily change `rollUpYesterday` back to `return this.rollDays([target]);`, then run:
 
-Run: `pnpm test:e2e -- daily-rollup -t "missed"`
+Run: `npx jest --config ./test/jest-e2e.json daily-rollup -t "missed"`
 Expected: **FAIL.** If it still passes, the test is not exercising the sweep — fix the test before restoring the code.
 
 Then restore the `[target, ...(await this.missedDays(target))]` version and re-run to confirm green again.
