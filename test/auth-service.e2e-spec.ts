@@ -138,8 +138,16 @@ describe('AuthService (integration)', () => {
     it('rejects an unknown email with the same error a wrong password gets', async () => {
       const user = await createUser();
 
+      /**
+       * A *different* unknown address every run. `login-failures:` is keyed by
+       * email and outlives the suite, so a fixed one accumulates across runs
+       * until §10.2's lockout trips and this fails with `RateLimitedError` —
+       * which looks like an enumeration bug rather than the shared counter it
+       * actually is. Unknown is the only property the test needs; being the
+       * *same* unknown is what made it a landmine.
+       */
       const unknown = await service
-        .login('nobody@cafepos.test', PASSWORD)
+        .login(`nobody-${uuidv7()}@cafepos.test`, PASSWORD)
         .catch((error: unknown) => error);
       const wrongPassword = await service
         .login(user.email, 'not-the-password')

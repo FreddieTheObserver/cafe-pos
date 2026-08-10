@@ -35,6 +35,7 @@ export class IdentityHarness {
   private constructor(
     readonly app: NestExpressApplication,
     readonly db: Database,
+    private readonly wsAdapter: RedisIoAdapter,
     private readonly userIds: string[] = [],
     private readonly deviceIds: string[] = [],
   ) {}
@@ -80,7 +81,8 @@ export class IdentityHarness {
      * single-instance Socket.IO that production never runs — the exact class of
      * "green for a reason unrelated to the code" this harness exists to avoid.
      */
-    app.useWebSocketAdapter(new RedisIoAdapter(app, []));
+    const wsAdapter = new RedisIoAdapter(app, []);
+    app.useWebSocketAdapter(wsAdapter);
 
     // `listen(0)`, not `init()`. Handed a server that is not listening,
     // supertest calls `app.listen(0)` itself — and the request that did so
@@ -91,7 +93,7 @@ export class IdentityHarness {
     // supertest only ever borrows the address.
     await app.listen(0);
 
-    return new IdentityHarness(app, app.get<Database>(DRIZZLE));
+    return new IdentityHarness(app, app.get<Database>(DRIZZLE), wsAdapter);
   }
 
   http() {
@@ -240,7 +242,18 @@ export class IdentityHarness {
           .where(inArray(schema.users.id, this.userIds));
       }
     } finally {
-      await this.app.close();
+      try {
+        await this.app.close();
+      } finally {
+        /**
+         * Explicit, because Nest never calls the WebSocket adapter's `close`
+         * — measured, not assumed. Left to `app.close()`, every booted harness
+         * would leak a retrying pub/sub pair, and by the end of a full run the
+         * accumulated churn starves the suites that come last: they fail on
+         * timing, in the parallel run only, nowhere near the cause.
+         */
+        await this.wsAdapter.dispose();
+      }
     }
   }
 
