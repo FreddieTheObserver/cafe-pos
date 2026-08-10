@@ -509,9 +509,11 @@ Cancelling *after* payment is not this endpoint. §4.4 routes a paid order to `R
 | Channel | Purpose | Roles |
 |---|---|---|
 | `GET /kds/orders` | Snapshot of active orders (PAID/IN_PREPARATION/READY), oldest first | B, C, M, A |
-| `WS /ws` namespace `kds` | Events: `order.paid`, `order.updated`, `order.ready` (full order payload) | B, C, M, A (JWT on connect) |
-| `WS /ws` namespace `kiosk` | Events to the *owning device only*: `payment.succeeded`, `payment.failed`, `order.ready` | K (device token on connect) |
-| `WS /ws` namespace `board` | Events: queue-number lists for the public board | public (read-only, PII-free) |
+| `WS` namespace `/kds` | Events: `order.paid`, `order.updated`, `order.ready` (full order payload) | B, C, M, A (JWT on connect) |
+| `WS` namespace `/kiosk` | Events to the *owning device only*, via its `device:<id>` room: `payment.succeeded`, `payment.failed`, `order.ready` | K (device token on connect) |
+| `WS` namespace `/board` | `board.updated` — the whole queue-number list, not a delta | public (read-only, PII-free) |
+
+These were written as `WS /ws`; the transport path is Socket.IO's default (`/socket.io`) and the three names are namespaces on it. Overriding the path to `/ws` was rejected as a cosmetic change that every client library would then have to be told about, for no behaviour anyone can observe.
 
 **Reporting**
 
@@ -650,11 +652,11 @@ Crash-recovery note for E1 (paid, kiosk died): the customer's payment is webhook
 
 ### 5.5 Realtime contract (WebSocket)
 
-- Transport: Socket.IO (NestJS gateway) — auto-reconnect and rooms for free; raw `ws` rejected as reinventing both.
-- Auth on connect (token in handshake); connection dropped on token revocation.
-- Rooms: `kds` (all staff screens), `device:<id>` (each kiosk), `board` (public).
-- Events carry **full snapshots** (whole order), not diffs — clients can always render from the latest event; missed-event recovery is "call the snapshot endpoint," not a resync protocol.
-- Heartbeat doubles as `kiosk_devices.last_seen_at` for the device health view.
+- Transport: Socket.IO (NestJS gateway) — auto-reconnect and rooms for free; raw `ws` rejected as reinventing both. Clustered across instances by the Redis adapter (§11.3): with two instances, the one holding a screen's socket is usually not the one that served the request that moved the order.
+- **Namespaces for the three audiences, rooms only within them**: `/kds` (all staff screens), `/kiosk` (each tablet in its own `device:<id>` room), `/board` (public). This paragraph originally called all three rooms, which conflated two things. The audiences authenticate *differently* — staff JWT, opaque device token, nothing at all — and a namespace carries its own connection middleware, so each is a separate gate rather than a branch in one handler that could fall through and hand the public board a staff feed. Rooms then do the job rooms are actually for: `device:<id>` scopes a kiosk to the order it placed (§6.4), and the staff namespace keeps a room per user and per token purely so a revocation is one emit rather than a scan of every socket.
+- Auth on connect (token in handshake), and **that is the only time it is checked** — which is what turns revocation from a formality into a live concern, since a connection authenticated once may then hold for hours. Staff are refused through a short-lived Redis denylist keyed by user *and* by token (§10.4), because a JWT verifies offline and nothing else would refuse it. A **device needs no denylist**: its token is opaque and resolved against `kiosk_devices` on every use (§6.2), so the database already refuses a revoked tablet at the handshake. What both need is the cut mid-connection, and that travels on a Redis pub/sub kill channel every instance subscribes to.
+- Events carry **full snapshots** (whole order), not diffs — clients can always render from the latest event; missed-event recovery is "call the snapshot endpoint," not a resync protocol. That is also what lets delivery be best-effort: events publish only *after* the transaction commits, and a push lost to a Redis blip costs a screen one refresh rather than leaving it holding a state the database never had.
+- Heartbeat doubles as `kiosk_devices.last_seen_at` for the device health view. Each instance stamps the devices *it* holds once a minute, matching the cadence a polling kiosk already refreshes at — a connected tablet is the healthiest a device can be and also the quietest, so without this the device list would show every live kiosk drifting toward "last seen at opening time".
 
 ### 5.6 Search
 
@@ -725,8 +727,8 @@ The device token's blast radius is the point: it can read the menu, create order
 | Card/QR payment intent | ✅ | ✅ | ✅ | — | ✅ (own order) |
 | Refunds (`POST /payments/:id/refunds`) — also the only way to reverse a paid order | ✅ | ✅ | — | — | — |
 | Reports & Z-report | ✅ | ✅ | — | — | — |
-| KDS snapshot + `kds` WS room | ✅ | ✅ | ✅ | ✅ | — |
-| Public board (`/orders/board`, `board` room) | public | public | public | public | public |
+| KDS snapshot + `/kds` WS namespace | ✅ | ✅ | ✅ | ✅ | — |
+| Public board (`/orders/board`, `/board` namespace) | public | public | public | public | public |
 
 Two deliberate calls worth defending: **baristas can 86 items** (they're the first to know the oat milk ran out — making them ask a manager guarantees stale kiosk menus), and **cashiers cannot refund** (refunds move real money back; one approval tier is the standard fraud control in hospitality POS).
 
@@ -1007,7 +1009,7 @@ Validate shape strictly (§8), **encode on output, don't sanitize on input** —
 
 ### 10.4 Authentication & authorization risks (self-critique)
 
-- **JWT revocation gap (15 min)**: a fired employee's access token works until expiry. Accepted for v1; mitigation if needed: `jti` denylist in Redis checked only on sensitive endpoints (refunds, user management) — partial statefulness where it counts.
+- **JWT revocation gap (15 min)**: a fired employee's access token works until expiry. Still accepted on REST for v1 — the window is short and every request re-reads the role from the token anyway. **Not** accepted on a WebSocket, where the same token is checked once at connect and would then hold until the tab closed, quietly turning fifteen minutes into a shift. Phase 5 therefore built the denylist this bullet used to offer as hypothetical: Redis, keyed by **user** as well as by `jti` — nobody deactivating an account knows which token is sitting in that person's browser — expiring with the token it denies, so the set only ever holds principals revoked within the last token lifetime. It is checked at every handshake and fails **closed**, alone among this system's Redis consumers: failing open on an authorization check would make an outage a window in which a revoked principal reconnects. It is deliberately *not* consulted on REST routes; extending it there is a v2 decision with a per-request Redis read attached.
 - **Pairing code interception**: code transits the manager's screen → kiosk keyboard. 10-min TTL + single-use + ACTIVE-state transition makes the window tiny; the device list makes a rogue activation visible.
 - **Role creep**: matrix (§6.4) is the contract; guards are declarative per-route (`@Roles(...)`) and the E2E suite asserts the matrix (§14) — drift between doc and code fails CI.
 
@@ -1143,7 +1145,7 @@ sequenceDiagram
     API->>DB: store event (dedupe) → payment SUCCEEDED<br/>→ guarded order PENDING_PAYMENT→PAID + history (one tx)
     API-->>Stripe: 200
     API->>Kiosk: WS payment.succeeded (device room)
-    API->>KDS: WS order.paid (kds room)
+    API->>KDS: WS order.paid (/kds namespace)
     Kiosk-->>Cust: tear down QR, "Paid — your number is A-042"
     Note over Kiosk,KDS: Kiosk crash after step 9? Steps 10–14 still run.<br/>Order reaches KDS; customer identified at counter (E1).
 ```
@@ -1285,7 +1287,7 @@ Phased so every phase ends runnable and demoable; later phases never force rewor
 | **2. Catalog** (week 2–3) | Categories/items/groups/options CRUD, availability toggles, composite `GET /menu` + ETag + Redis cache, image upload | Kiosk-shaped client can render a menu from one call |
 | **3. Orders** (week 3–4) | Order creation with server pricing + snapshots, queue numbers, state machine + history, idempotency keys, list/search/cursor pagination, expiry job | Golden path minus payment: order → manual cash-paid → transitions to COMPLETED |
 | **4. Payments** (week 4–6) | `PaymentProvider` port + Stripe adapter, intents (card + PromptPay), webhook inbox + processing, cash tender, refunds, reconciliation job | E2E with stripe-mock: webhook-driven PAID; crash-recovery test green. *The riskiest phase — given the most time* |
-| **5. Realtime/KDS** (week 6–7) | Socket.IO gateway + Redis adapter, rooms (kds/device/board), KDS snapshot endpoint, public board | Two browser KDS tabs + fake kiosk see events < 2 s |
+| **5. Realtime/KDS** (week 6–7) | Socket.IO gateway + Redis adapter, namespaces (`/kds`, `/kiosk`, `/board`) with a `device:<id>` room per tablet, KDS snapshot endpoint, public board | Two browser KDS tabs + fake kiosk see events < 2 s |
 | **6. Reporting** (week 7–8) | Sales/top-items endpoints, rollup job, Z-report | Z-report matches hand-computed totals over seeded data |
 | **7. Hardening** (week 8–9) | Observability stack, alerts, load test, retention jobs, runbook, checklist §16 | Production readiness checklist fully ticked |
 
