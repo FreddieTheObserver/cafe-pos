@@ -25,6 +25,17 @@ const userKey = (userId: string): string => `ws:revoked:user:${userId}`;
 const tokenKey = (jti: string): string => `ws:revoked:jti:${jti}`;
 
 /**
+ * Backoff between revocation attempts, and therefore the worst case a caller
+ * waits before being told it failed: ~350 ms on top of a request whose real
+ * work is already committed. Long enough to ride out an ioredis reconnect,
+ * short enough that a manager deactivating an account does not notice.
+ */
+const RETRY_DELAYS_MS = [50, 100, 200];
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * The §10.4 denylist, finally built — and built for sockets first.
  *
  * §10.4 accepts a 15-minute revocation gap on REST, reasoning that a fired
@@ -73,10 +84,12 @@ export class RevocationService {
    * open.
    */
   async revokeDevice(deviceId: string): Promise<void> {
-    await this.redis.publish(
-      REVOCATION_CHANNEL,
-      JSON.stringify({ deviceId } satisfies Revocation),
-    );
+    await this.withRetry(async () => {
+      await this.redis.publish(
+        REVOCATION_CHANNEL,
+        JSON.stringify({ deviceId } satisfies Revocation),
+      );
+    });
   }
 
   /**
@@ -105,14 +118,48 @@ export class RevocationService {
   }
 
   private async announce(key: string, message: Revocation): Promise<void> {
-    /**
-     * Written before it is announced. A subscriber that acted on the message
-     * and then let the principal straight back in would be worse than useless,
-     * and that is exactly the race if the publish wins — the reconnect arrives
-     * before the key exists and `isRevoked` says no.
-     */
-    await this.redis.set(key, '1', 'EX', this.ttlSeconds);
-    await this.redis.publish(REVOCATION_CHANNEL, JSON.stringify(message));
+    await this.withRetry(async () => {
+      /**
+       * Written before it is announced. A subscriber that acted on the message
+       * and then let the principal straight back in would be worse than
+       * useless, and that is exactly the race if the publish wins — the
+       * reconnect arrives before the key exists and `isRevoked` says no.
+       */
+      await this.redis.set(key, '1', 'EX', this.ttlSeconds);
+      await this.redis.publish(REVOCATION_CHANNEL, JSON.stringify(message));
+    });
+  }
+
+  /**
+   * Retries a revocation before giving up on it.
+   *
+   * Every caller reaches here having *already committed* the durable half — the
+   * account is deactivated, the tablet is revoked — so the only thing left to
+   * lose is the announcement, and the failure it is most likely to hit is a
+   * reconnect lasting milliseconds. Spending a few hundred of those to save a
+   * live socket from surviving a deactivation is a trade worth making, and
+   * making here rather than in each caller, so no future one forgets.
+   *
+   * Safe to repeat: both halves are idempotent. `SET` overwrites itself with
+   * the same value and a fresh TTL, and a duplicate kill message asks the
+   * gateways to disconnect sockets that are, by then, already gone.
+   *
+   * Bounded deliberately. If Redis is *down* rather than blipping, no number of
+   * retries helps and each one delays a response to work that already
+   * succeeded — so this gives up quickly and lets the caller log for a human.
+   * Surviving a real outage would need the message on disk, which is an outbox
+   * and a v2 decision.
+   */
+  private async withRetry(attempt: () => Promise<void>): Promise<void> {
+    for (let remaining = RETRY_DELAYS_MS.length; ; remaining--) {
+      try {
+        await attempt();
+        return;
+      } catch (error) {
+        if (remaining === 0) throw error;
+        await delay(RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - remaining]);
+      }
+    }
   }
 }
 

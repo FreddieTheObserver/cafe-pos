@@ -120,6 +120,70 @@ describe('RevocationService', () => {
   });
 
   /**
+   * The caller has already committed the durable half, so the failure most
+   * worth surviving is a reconnect lasting milliseconds.
+   */
+  it('retries an announcement that fails, and succeeds on a later attempt', async () => {
+    let attempts = 0;
+    const redis = {
+      set: () => {
+        attempts += 1;
+        return attempts < 3
+          ? Promise.reject(new Error('Connection is closed.'))
+          : Promise.resolve('OK');
+      },
+      publish: () => Promise.resolve(1),
+      mget: () => Promise.resolve([]),
+    };
+
+    await expect(build(redis).revokeUser('user-1')).resolves.toBeUndefined();
+    expect(attempts).toBe(3);
+  });
+
+  /**
+   * Bounded on purpose. If Redis is down rather than blipping, no number of
+   * attempts helps and each one delays a response to work that already
+   * succeeded — so it gives up and lets the caller log for a human.
+   */
+  it('gives up rather than retrying forever', async () => {
+    let attempts = 0;
+    const redis = {
+      set: () => {
+        attempts += 1;
+        return Promise.reject(new Error('Connection is closed.'));
+      },
+      publish: () => Promise.resolve(1),
+      mget: () => Promise.resolve([]),
+    };
+
+    await expect(build(redis).revokeUser('user-1')).rejects.toThrow(
+      'Connection is closed.',
+    );
+    // One attempt, then one per configured backoff step.
+    expect(attempts).toBe(4);
+  });
+
+  /** A retry re-runs both halves, so both have to tolerate being repeated. */
+  it('is safe to repeat — the key is rewritten and the message resent', async () => {
+    const { redis, sets, published } = redisWith();
+    const flaky = {
+      ...redis,
+      publish: (channel: string, message: string) => {
+        const result = redis.publish(channel, message);
+        return published.length < 2
+          ? Promise.reject(new Error('Connection is closed.'))
+          : result;
+      },
+    };
+
+    await build(flaky).revokeUser('user-1');
+
+    expect(sets.length).toBe(2);
+    expect(sets[0]).toEqual(sets[1]);
+    expect(published[0]).toEqual(published[1]);
+  });
+
+  /**
    * Fails closed. Every other Redis dependency in this codebase fails open;
    * an authorization check must not, or an outage becomes a window in which a
    * revoked principal reconnects.

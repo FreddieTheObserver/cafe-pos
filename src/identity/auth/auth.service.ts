@@ -1,8 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import type { Env } from '../../config/env.validation';
+import { describeError } from '../../common/errors/describe-error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { kioskDevices, refreshTokens, users } from '../../database/schema';
@@ -59,6 +60,8 @@ const ABSENT_USER_HASH =
 /** Staff authentication: login, rotation, and family revocation (§6.1). */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly accessTokens: AccessTokenService,
@@ -178,8 +181,23 @@ export class AuthService {
      *
      * By token rather than by user, precisely so signing out at the till does
      * not also drop the KDS screen on the wall.
+     *
+     * Retried inside `revokeToken`, then logged rather than thrown — the same
+     * shape `UsersService` and `DevicesService` use, and for the same reason:
+     * the durable half is already committed. The family is revoked, so the
+     * session cannot be renewed whatever happens here, and failing the request
+     * would report a failed logout for a logout that mostly worked. What is
+     * left when this loses is the gap §10.4 already accepts on REST, plus a
+     * socket that outlives it — which is what the log is for.
      */
-    await this.revocations.revokeToken(principal.tokenId);
+    try {
+      await this.revocations.revokeToken(principal.tokenId);
+    } catch (error) {
+      this.logger.error(
+        `Session for ${principal.userId} was ended but its access token could not be denied; ` +
+          `an open socket on that token survives until it reconnects. ${describeError(error)}`,
+      );
+    }
   }
 
   /**
