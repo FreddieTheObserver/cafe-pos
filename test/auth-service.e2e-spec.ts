@@ -19,6 +19,7 @@ import {
   TokenInvalidError,
 } from '../src/identity/errors/identity.errors';
 import type { StaffPrincipal } from '../src/identity/principal';
+import { RevocationService } from '../src/identity/revocation/revocation.service';
 import type { UserRole } from '../src/database/schema/enums';
 
 const JWT_SECRET = 'integration-secret-at-least-32-characters';
@@ -90,6 +91,13 @@ describe('AuthService (integration)', () => {
       hasher,
       new ConfigService({ REFRESH_TOKEN_TTL_SECONDS: REFRESH_TTL_SECONDS }),
       new LoginAttemptLimiter(redis),
+      // Real, against the same Redis: logout now denies the access token by
+      // `jti`, and a stub here would prove the call compiles rather than that
+      // the key lands where the gateway looks for it.
+      new RevocationService(
+        redis,
+        new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
+      ),
     );
   });
 

@@ -16,6 +16,7 @@ import {
   TokenInvalidError,
 } from '../errors/identity.errors';
 import type { Principal, StaffPrincipal } from '../principal';
+import { RevocationService } from '../revocation/revocation.service';
 import { LoginAttemptLimiter } from '../rate-limit/login-attempt.limiter';
 import { AccessTokenService } from './access-token.service';
 
@@ -64,6 +65,7 @@ export class AuthService {
     private readonly passwords: PasswordHasher,
     private readonly config: ConfigService<Env, true>,
     private readonly loginAttempts: LoginAttemptLimiter,
+    private readonly revocations: RevocationService,
   ) {}
 
   async login(
@@ -166,6 +168,18 @@ export class AuthService {
     }
 
     await this.revokeFamily(row.familyId);
+
+    /**
+     * The refresh family dying stops the session being *renewed*; it does
+     * nothing to the access token already issued, which stays valid for up to
+     * its full lifetime. That was an accepted gap while every consumer was a
+     * REST call (§10.4) — a WebSocket authenticated once at connect turns it
+     * into "until they close the tab", so the token is denied by `jti` here.
+     *
+     * By token rather than by user, precisely so signing out at the till does
+     * not also drop the KDS screen on the wall.
+     */
+    await this.revocations.revokeToken(principal.tokenId);
   }
 
   /**
