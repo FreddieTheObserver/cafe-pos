@@ -1,28 +1,17 @@
-import {
-  Inject,
-  Logger,
-  type OnModuleDestroy,
-  type OnModuleInit,
-} from '@nestjs/common';
+import { Logger, type OnModuleInit } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
   type OnGatewayConnection,
   type OnGatewayInit,
 } from '@nestjs/websockets';
-import type Redis from 'ioredis';
 import type { Namespace, Socket } from 'socket.io';
 import { describeError } from '../common/errors/describe-error';
 import { AccessTokenService } from '../identity/auth/access-token.service';
 import type { StaffPrincipal } from '../identity/principal';
-import {
-  parseRevocation,
-  RevocationService,
-} from '../identity/revocation/revocation.service';
-import { closeRedis } from '../redis/close-redis';
-import { REDIS } from '../redis/redis.constants';
-import { attachRedisDiagnostics } from '../redis/redis.diagnostics';
-import { NAMESPACES, REVOCATION_CHANNEL } from './realtime.constants';
+import { RevocationService } from '../identity/revocation/revocation.service';
+import { NAMESPACES } from './realtime.constants';
+import { RevocationSubscriber } from './revocation-subscriber.service';
 
 /** Rooms used purely as an index, so a kill is a room broadcast, not a scan. */
 const userRoom = (userId: string): string => `user:${userId}`;
@@ -53,17 +42,16 @@ interface KdsSocket extends Socket {
  */
 @WebSocketGateway({ namespace: NAMESPACES.kds })
 export class KdsGateway
-  implements OnGatewayInit, OnGatewayConnection, OnModuleInit, OnModuleDestroy
+  implements OnGatewayInit, OnGatewayConnection, OnModuleInit
 {
   private readonly logger = new Logger('KdsGateway');
-  private subscriber?: Redis;
 
   @WebSocketServer() private readonly server!: Namespace;
 
   constructor(
     private readonly accessTokens: AccessTokenService,
     private readonly revocations: RevocationService,
-    @Inject(REDIS) private readonly redis: Redis,
+    private readonly revocationFeed: RevocationSubscriber,
   ) {}
 
   /**
@@ -168,22 +156,16 @@ export class KdsGateway
   }
 
   /**
-   * Subscribes to the kill channel (§10.4).
+   * Cuts the sockets a revocation names (§10.4).
    *
-   * Its own connection because a client in subscriber mode cannot run ordinary
-   * commands — sharing the app's client would break the cache and the rate
-   * limiter the moment this subscribes.
+   * A staff revocation names a user or a token; `deviceId` belongs to the
+   * kiosk namespace and is ignored here rather than mapped to nothing, because
+   * "no room matches" and "not my audience" are different states and only one
+   * of them is worth a log line if it ever changes.
    */
   onModuleInit(): void {
-    this.subscriber = this.redis.duplicate();
-    attachRedisDiagnostics(this.subscriber, new Logger('RevocationSubscriber'));
-
-    this.subscriber.on('message', (_channel, raw: string) => {
-      const revocation = parseRevocation(raw);
-      if (revocation === null) {
-        this.logger.warn('Ignoring an unreadable message on the kill channel.');
-        return;
-      }
+    this.revocationFeed.onRevocation((revocation) => {
+      if ('deviceId' in revocation) return;
 
       const room =
         'userId' in revocation
@@ -198,37 +180,6 @@ export class KdsGateway
        */
       this.server.local.in(room).disconnectSockets(true);
     });
-
-    /**
-     * Subscribed on `ready`, never awaited here.
-     *
-     * Awaiting it made a Redis outage at boot fatal: the subscribe rejects,
-     * `onModuleInit` rejects with it, and the whole API refuses to start — over
-     * a dependency every other consumer in this codebase is careful to degrade
-     * around. A cafe whose Redis is down should still be taking orders.
-     *
-     * `ready` fires on the first connection and on every reconnection after,
-     * so the subscription also re-establishes itself when Redis comes back
-     * rather than staying silently dead for the life of the process. That
-     * matters more here than elsewhere: an instance that misses the kill
-     * channel does not fail loudly, it just stops honouring revocations.
-     */
-    this.subscriber.on('ready', () => {
-      this.subscriber
-        ?.subscribe(REVOCATION_CHANNEL)
-        .catch((error: unknown) =>
-          this.logger.error(
-            `Could not subscribe to the kill channel; revocations will not reach this instance until Redis recovers. ${describeError(error)}`,
-          ),
-        );
-    });
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    if (!this.subscriber) return;
-    // Not a bare `quit()`: a subscriber still reconnecting would queue it and
-    // block shutdown on the outage. `closeRedis` is where that reasoning lives.
-    await closeRedis(this.subscriber);
   }
 }
 

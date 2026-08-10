@@ -5,6 +5,8 @@ import { REALTIME_PUBLISHER } from './realtime.constants';
 import { AfterCommit } from './events/after-commit.service';
 import { SocketRealtimePublisher } from './events/socket-realtime.publisher';
 import { KdsGateway } from './kds.gateway';
+import { KioskGateway } from './kiosk.gateway';
+import { RevocationSubscriber } from './revocation-subscriber.service';
 
 /**
  * Global because `AfterCommit` is infrastructure every write path reaches for,
@@ -29,7 +31,9 @@ import { KdsGateway } from './kds.gateway';
   providers: [
     { provide: REALTIME_PUBLISHER, useClass: SocketRealtimePublisher },
     AfterCommit,
+    RevocationSubscriber,
     KdsGateway,
+    KioskGateway,
   ],
   exports: [AfterCommit, REALTIME_PUBLISHER],
 })

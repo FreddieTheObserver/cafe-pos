@@ -7,15 +7,19 @@ import { REVOCATION_CHANNEL } from '../../realtime/realtime.constants';
 import type { StaffPrincipal } from '../principal';
 
 /**
- * What a revocation names. Exactly one of the two, never both.
+ * What a revocation names. Exactly one of the three, never more.
  *
  * `userId` is the one that matters operationally: a fired employee is
  * deactivated, and nobody deactivating them knows the `jti` of the tokens
  * already in their browser. `jti` exists for the case that *does* know its own
  * token — a staff member signing out of one screen, who should not be signed
  * out of the till at the same time.
+ *
+ * `deviceId` is the stolen tablet (§10.1), and it behaves differently from the
+ * other two — see `revokeDevice`.
  */
-export type Revocation = { userId: string } | { jti: string };
+export type Revocation =
+  { userId: string } | { jti: string } | { deviceId: string };
 
 const userKey = (userId: string): string => `ws:revoked:user:${userId}`;
 const tokenKey = (jti: string): string => `ws:revoked:jti:${jti}`;
@@ -53,6 +57,26 @@ export class RevocationService {
   /** Kills one specific token — the signing-out-of-one-screen case. */
   async revokeToken(jti: string): Promise<void> {
     await this.announce(tokenKey(jti), { jti });
+  }
+
+  /**
+   * Cuts a kiosk's live sockets. **Writes no denylist entry, deliberately.**
+   *
+   * A device token is opaque and resolved against `kiosk_devices` on every
+   * use, so a revoked tablet already fails to authenticate — §6.2 calls that
+   * DB lookup the thing JWTs trade away, precisely so revocation is instant.
+   * There is nothing to deny that the database does not already refuse.
+   *
+   * A socket is the one place that is not enough, because it authenticates
+   * once and then holds. So this publishes and does not store: the connect
+   * path consults the source of truth, and the channel handles what is already
+   * open.
+   */
+  async revokeDevice(deviceId: string): Promise<void> {
+    await this.redis.publish(
+      REVOCATION_CHANNEL,
+      JSON.stringify({ deviceId } satisfies Revocation),
+    );
   }
 
   /**
@@ -110,21 +134,26 @@ export const parseRevocation = (raw: string): Revocation | null => {
 
   if (typeof parsed !== 'object' || parsed === null) return null;
 
-  const { userId, jti } = parsed as Record<string, unknown>;
-  const namesUser = typeof userId === 'string' && userId.length > 0;
-  const namesToken = typeof jti === 'string' && jti.length > 0;
+  const named = (['userId', 'jti', 'deviceId'] as const).filter((field) => {
+    const value = (parsed as Record<string, unknown>)[field];
+    return typeof value === 'string' && value.length > 0;
+  });
 
   /**
    * Exactly one, enforced rather than merely documented.
    *
-   * Reading whichever field came first would make a message naming both
-   * resolve silently to the user-level revocation — the broader of the two —
-   * so a sender that got the shape wrong would cut every session a person has
-   * and look like it worked. Nothing this service publishes can produce that,
-   * but the reason this parser is defensive at all is that the channel is a
-   * shared Redis instance rather than a typed call.
+   * Reading whichever field came first would make a message naming several
+   * resolve silently to whichever branch happened to be tested earliest — and
+   * that was `userId`, the broadest of the three, so a sender that got the
+   * shape wrong would cut every session a person has and look like it worked.
+   * Nothing this service publishes can produce that, but the reason this
+   * parser is defensive at all is that the channel is a shared Redis instance
+   * rather than a typed call.
    */
-  if (namesUser === namesToken) return null;
+  if (named.length !== 1) return null;
 
-  return namesUser ? { userId: userId } : { jti: jti as string };
+  const field = named[0];
+  return {
+    [field]: (parsed as Record<string, string>)[field],
+  } as Revocation;
 };

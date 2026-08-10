@@ -143,7 +143,7 @@ export class PaymentEventProcessor {
         return false;
 
       case 'MARK_PAYMENT':
-        await this.db.transaction(async (tx) => {
+        await this.afterCommit.run(async (tx, emit) => {
           /**
            * Guarded on the status, not just the id — the same shape
            * `transitionOrder` uses on `orders.status`, and for the same reason.
@@ -158,7 +158,7 @@ export class PaymentEventProcessor {
            * unguarded write lets the failure land after the success — leaving
            * `order = PAID, payment = FAILED` and a reconciliation delta at 3am.
            */
-          await tx
+          const [settled] = await tx
             .update(payments)
             .set({ status: decision.status })
             .where(
@@ -166,8 +166,34 @@ export class PaymentEventProcessor {
                 eq(payments.id, decision.paymentId),
                 notInArray(payments.status, [...SETTLED_STATUSES]),
               ),
-            );
+            )
+            .returning({ orderId: payments.orderId });
           await this.markProcessed(eventId, decision.paymentId, tx);
+
+          /**
+           * Told to the kiosk, and only on a write that actually landed — the
+           * guard above is what stops a late failure event contradicting a
+           * success, and announcing regardless would put that same lie on the
+           * tablet's screen instead of in the database.
+           *
+           * The customer is standing there watching a QR code, so a declined
+           * card has to reach them; §5.2 sends this to the owning device
+           * rather than to staff.
+           */
+          if (settled !== undefined && decision.status === 'FAILED') {
+            const order = await tx.query.orders.findFirst({
+              where: eq(orders.id, settled.orderId),
+              columns: { id: true, kioskDeviceId: true },
+            });
+            if (order) {
+              emit({
+                kind: 'payment.failed',
+                orderId: order.id,
+                deviceId: order.kioskDeviceId,
+                paymentId: decision.paymentId,
+              });
+            }
+          }
         });
         return true;
 
@@ -217,6 +243,20 @@ export class PaymentEventProcessor {
         kind: 'order.paid',
         orderId: decision.orderId,
         deviceId: updated.kioskDeviceId,
+      });
+
+      /**
+       * The same fact, told to the customer rather than to the kitchen — and
+       * the one §12.3 makes load-bearing. A completed PromptPay QR that stays
+       * on screen can be scanned again and debit the customer a second time,
+       * with Stripe's remedy being to return the excess outside Stripe, so the
+       * kiosk tears the code down the instant this lands.
+       */
+      emit({
+        kind: 'payment.succeeded',
+        orderId: decision.orderId,
+        deviceId: updated.kioskDeviceId,
+        paymentId: decision.paymentId,
       });
     });
 

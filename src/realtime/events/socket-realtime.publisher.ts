@@ -1,17 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { KdsService } from '../../kds/kds.service';
 import { KdsGateway } from '../kds.gateway';
+import { KioskGateway } from '../kiosk.gateway';
 import type { DomainEvent } from './domain-event';
 import type { RealtimePublisher } from './realtime-publisher';
 
 /**
- * Which audience each event belongs to.
+ * Which audience hears what (§5.2).
  *
- * `payment.succeeded` and `payment.failed` are absent on purpose: §5.2 sends
- * them to the *owning kiosk*, not to the bar, and that namespace does not exist
- * yet. They are dropped here rather than broadcast to staff, because a payment
- * event on the KDS is noise at best and, since it names another customer's
- * order, exactly the kind of leak the namespace split exists to prevent.
+ * `order.ready` is in both, and that is the point rather than an oversight: the
+ * bar marks a drink ready, and the customer waiting at the kiosk that ordered
+ * it should be told at the same moment. Payment events are kiosk-only — a
+ * payment on the bar screen is noise, and it names a customer's order.
  */
 const KDS_EVENTS = new Set<DomainEvent['kind']>([
   'order.paid',
@@ -19,15 +19,21 @@ const KDS_EVENTS = new Set<DomainEvent['kind']>([
   'order.ready',
 ]);
 
+const KIOSK_EVENTS = new Set<DomainEvent['kind']>([
+  'payment.succeeded',
+  'payment.failed',
+  'order.ready',
+]);
+
 /**
  * Turns committed domain events into the pushes §5.2 promises.
  *
- * Replaces `LoggingRealtimePublisher` now that there is somewhere to publish.
- * The shape of the payload is the KDS ticket rather than a bespoke event body:
- * §5.5 requires full snapshots, and a screen that reconnects and calls
- * `GET /kds/orders` must not get a different shape than the one it has been
- * receiving live — otherwise the two render differently and the bug only shows
- * up after a network blip.
+ * The payload is the KDS ticket for every audience rather than a shape per
+ * namespace. §5.5 requires full snapshots, and a screen that reconnects and
+ * calls `GET /kds/orders` must not get a different shape than the one it has
+ * been receiving live — otherwise the two render differently and the bug only
+ * shows up after a network blip. A kiosk reads fewer fields of the same
+ * object; it is not sent a different object.
  */
 @Injectable()
 export class SocketRealtimePublisher implements RealtimePublisher {
@@ -35,18 +41,25 @@ export class SocketRealtimePublisher implements RealtimePublisher {
 
   constructor(
     private readonly kds: KdsService,
-    private readonly gateway: KdsGateway,
+    private readonly kdsGateway: KdsGateway,
+    private readonly kioskGateway: KioskGateway,
   ) {}
 
   async publish(events: DomainEvent[]): Promise<void> {
     for (const event of events) {
-      if (!KDS_EVENTS.has(event.kind)) continue;
+      const forKds = KDS_EVENTS.has(event.kind);
+      /**
+       * A counter order has no device to tell. Skipping rather than
+       * broadcasting is what keeps the kiosk namespace scoped: a tablet must
+       * only ever hear about the order it placed (§6.4).
+       */
+      const forKiosk = KIOSK_EVENTS.has(event.kind) && event.deviceId !== null;
+      if (!forKds && !forKiosk) continue;
 
       /**
-       * Hydrated per event, after the commit. An order that vanished between
-       * commit and publish is not an error worth failing over — it cannot
-       * happen for an order that was just written, and if it somehow did, the
-       * honest response is to say nothing rather than to push a half-empty
+       * Hydrated once per event, after the commit. An order that vanished
+       * between commit and publish cannot happen for one just written, and if
+       * it somehow did the honest response is silence rather than a half-empty
        * ticket a board would render as a blank row.
        */
       const ticket = await this.kds.ticketFor(event.orderId);
@@ -57,7 +70,10 @@ export class SocketRealtimePublisher implements RealtimePublisher {
         continue;
       }
 
-      this.gateway.broadcast(event.kind, ticket);
+      if (forKds) this.kdsGateway.broadcast(event.kind, ticket);
+      if (forKiosk && event.deviceId !== null) {
+        this.kioskGateway.emitToDevice(event.deviceId, event.kind, ticket);
+      }
     }
   }
 }
