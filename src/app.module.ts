@@ -15,6 +15,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
 import { RealtimeModule } from './realtime/realtime.module';
 import { KdsModule } from './kds/kds.module';
+import { BoardModule } from './board/board.module';
 
 @Module({
   imports: [
@@ -40,6 +41,14 @@ import { KdsModule } from './kds/kds.module';
     HealthModule,
     IdentityModule,
     CatalogModule,
+    /**
+     * **Before `OrdersModule`, and the order is load-bearing.** Express matches
+     * routes in registration order, and `OrdersModule` declares
+     * `GET /orders/:id` — which matches `/orders/board` perfectly well and
+     * answers 422, because "board" is not a UUID. Registering the specific path
+     * first is what lets it win; `board-http.e2e-spec.ts` pins it.
+     */
+    BoardModule,
     OrdersModule,
     /**
      * Carries the webhook route, and — because Nest instantiates providers

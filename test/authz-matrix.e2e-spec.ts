@@ -286,6 +286,20 @@ const MATRIX: MatrixRow[] = [
   },
   {
     /**
+     * The public board (§5.2) — the one route in the system with no credential
+     * at all, because a screen above the counter is read by whoever is standing
+     * in the shop. What makes that safe is not the guard but the projection:
+     * `BoardService` selects a queue number and a state and never touches
+     * `customer_name`, which `board-http` asserts against the whole serialised
+     * body rather than against named fields.
+     */
+    method: 'get',
+    route: '/api/v1/orders/board',
+    path: '/api/v1/orders/board',
+    allow: PUBLIC,
+  },
+  {
+    /**
      * The bar screen (§5.2). BARISTA is the whole point of the route; cashiers
      * and above are included because the counter shows the same board, and
      * someone has to answer "is number 42 ready?" when the customer asks at the

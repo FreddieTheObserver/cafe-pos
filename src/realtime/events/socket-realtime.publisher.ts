@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { BoardService } from '../../board/board.service';
 import { KdsService } from '../../kds/kds.service';
+import { BoardGateway } from '../board.gateway';
 import { KdsGateway } from '../kds.gateway';
 import { KioskGateway } from '../kiosk.gateway';
 import type { DomainEvent } from './domain-event';
@@ -26,6 +28,18 @@ const KIOSK_EVENTS = new Set<DomainEvent['kind']>([
 ]);
 
 /**
+ * What changes the public board.
+ *
+ * `order.paid` is absent: the board shows preparing and ready (§5.2), and a
+ * paid order has reached neither. Every other order event either puts a queue
+ * number on the board or takes one off.
+ */
+const BOARD_EVENTS = new Set<DomainEvent['kind']>([
+  'order.updated',
+  'order.ready',
+]);
+
+/**
  * Turns committed domain events into the pushes §5.2 promises.
  *
  * The payload is the KDS ticket for every audience rather than a shape per
@@ -41,12 +55,17 @@ export class SocketRealtimePublisher implements RealtimePublisher {
 
   constructor(
     private readonly kds: KdsService,
+    private readonly board: BoardService,
     private readonly kdsGateway: KdsGateway,
     private readonly kioskGateway: KioskGateway,
+    private readonly boardGateway: BoardGateway,
   ) {}
 
   async publish(events: DomainEvent[]): Promise<void> {
+    let boardChanged = false;
+
     for (const event of events) {
+      if (BOARD_EVENTS.has(event.kind)) boardChanged = true;
       const forKds = KDS_EVENTS.has(event.kind);
       /**
        * A counter order has no device to tell. Skipping rather than
@@ -74,6 +93,15 @@ export class SocketRealtimePublisher implements RealtimePublisher {
       if (forKiosk && event.deviceId !== null) {
         this.kioskGateway.emitToDevice(event.deviceId, event.kind, ticket);
       }
+    }
+
+    /**
+     * Once per batch, not once per event. The board is a *list*, so two
+     * transitions committed together produce one correct picture rather than
+     * two queries and a flicker between them.
+     */
+    if (boardChanged) {
+      this.boardGateway.broadcast(await this.board.snapshot());
     }
   }
 }

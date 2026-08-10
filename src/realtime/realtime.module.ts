@@ -1,6 +1,8 @@
 import { Global, Module } from '@nestjs/common';
+import { BoardModule } from '../board/board.module';
 import { IdentityModule } from '../identity/identity.module';
 import { KdsModule } from '../kds/kds.module';
+import { BoardGateway } from './board.gateway';
 import { REALTIME_PUBLISHER } from './realtime.constants';
 import { AfterCommit } from './events/after-commit.service';
 import { SocketRealtimePublisher } from './events/socket-realtime.publisher';
@@ -27,13 +29,14 @@ import { RevocationSubscriber } from './revocation-subscriber.service';
  */
 @Global()
 @Module({
-  imports: [IdentityModule, KdsModule],
+  imports: [IdentityModule, KdsModule, BoardModule],
   providers: [
     { provide: REALTIME_PUBLISHER, useClass: SocketRealtimePublisher },
     AfterCommit,
     RevocationSubscriber,
     KdsGateway,
     KioskGateway,
+    BoardGateway,
   ],
   exports: [AfterCommit, REALTIME_PUBLISHER],
 })
