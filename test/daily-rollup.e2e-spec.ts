@@ -353,4 +353,50 @@ describe('Daily sales rollup (e2e)', () => {
       finalizedAt: null,
     });
   });
+
+  describe('the nightly run', () => {
+    /**
+     * `Date.now` only, rather than `jest.useFakeTimers()`.
+     *
+     * The service reads the clock in exactly one place — `businessDayAt` — so
+     * that is all this needs to control. Replacing the whole timer subsystem
+     * would also fake `queueMicrotask` and `hrtime`, which the Postgres driver
+     * runs on, and would turn a clock test into a driver test.
+     */
+    function pretendItIs(iso: string): void {
+      jest.spyOn(Date, 'now').mockReturnValue(Date.parse(iso));
+    }
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    /**
+     * At 03:00 the current business day is still yesterday's — the boundary is
+     * 05:00 — so `now - 24h` names a day that closed 22 hours earlier. Asserted
+     * rather than assumed, because an off-by-one here would roll up a day that
+     * is still taking money.
+     */
+    it('targets the business day that closed 22 hours ago', async () => {
+      // 2031-02-03T03:00 in Asia/Bangkok (UTC+7) is 2031-02-02T20:00Z.
+      pretendItIs('2031-02-02T20:00:00Z');
+
+      const target = '2031-02-01';
+      rolledDays.push(target);
+
+      await givenOrder({
+        businessDay: target,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 4, lineMinor: 40_000 }],
+      });
+
+      const summary = await rollup.rollUpYesterday();
+
+      expect(summary.rolled).toBeGreaterThanOrEqual(1);
+      expect(summary.failed).toBe(0);
+
+      const row = await storedRow(target);
+      expect(row).toBeDefined();
+      expect(row.revenueMinor).toBe(40_000);
+    });
+  });
 });

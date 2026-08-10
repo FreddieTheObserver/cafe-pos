@@ -1,5 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { and, eq, exists, sql, sum } from 'drizzle-orm';
+import { describeError } from '../../common/errors/describe-error';
+import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import {
@@ -9,7 +13,14 @@ import {
   payments,
   refunds,
 } from '../../database/schema';
+import { businessDayOf } from '../../orders/business-day';
 import { buildRollupRow, type RollupRow } from './build-rollup-row';
+
+/** What one nightly run did. */
+export interface RollupSummary {
+  rolled: number;
+  failed: number;
+}
 
 /**
  * The §11.2 nightly rollup: one finalized row per business day, so historical
@@ -19,7 +30,10 @@ import { buildRollupRow, type RollupRow } from './build-rollup-row';
 export class DailyRollupService {
   private readonly logger = new Logger(DailyRollupService.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
   /**
    * Recomputes one business day from live tables and upserts its row.
@@ -178,5 +192,62 @@ export class DailyRollupService {
     );
 
     return row;
+  }
+
+  /**
+   * 03:00 local, the same slot reconciliation uses and for the same reason:
+   * §3.3's business day starts at 05:00, so by three in the morning the day
+   * being rolled has been closed for 22 hours and the current one has not
+   * begun.
+   *
+   * Two instances (§11.3) both run this and neither coordinates with the other.
+   * The day is closed and §3.3 froze its refunds, so both compute identical
+   * numbers and the upsert converges — §9.3's "jobs are idempotent" holding
+   * without a distributed lock, exactly as the expiry sweep does. A double run
+   * costs one duplicated aggregation inside the dead zone.
+   *
+   * The literal timezone duplicates the configurable `BUSINESS_TIMEZONE` (same
+   * default) because a decorator is evaluated at class-definition time and
+   * cannot read `ConfigService`. Reconciliation has the same shape.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_3AM, {
+    name: 'roll-up-yesterday',
+    timeZone: 'Asia/Bangkok',
+  })
+  async rollUpYesterday(): Promise<RollupSummary> {
+    const target = this.businessDayAt(Date.now() - 24 * 60 * 60 * 1000);
+    return this.rollDays([target]);
+  }
+
+  /**
+   * Rolls each day independently. One bad day must not cost the others theirs:
+   * a failure here leaves that day without `finalized_at`, which is exactly the
+   * condition the catch-up sweep looks for, so the retry is automatic.
+   */
+  private async rollDays(days: readonly string[]): Promise<RollupSummary> {
+    let rolled = 0;
+    let failed = 0;
+
+    for (const day of days) {
+      try {
+        await this.rollDay(day);
+        rolled += 1;
+      } catch (error) {
+        failed += 1;
+        this.logger.error(
+          `Could not roll up ${day}; it keeps no finalized row and will be retried. ${describeError(error)}`,
+        );
+      }
+    }
+
+    return { rolled, failed };
+  }
+
+  private businessDayAt(epochMs: number): string {
+    return businessDayOf(
+      new Date(epochMs),
+      this.config.get('BUSINESS_TIMEZONE', { infer: true }),
+      this.config.get('BUSINESS_DAY_START_HOUR', { infer: true }),
+    );
   }
 }
