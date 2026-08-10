@@ -8,6 +8,7 @@ import { orders, paymentEvents, payments } from '../../database/schema';
 import type { PaymentMethod, PaymentStatus } from '../../database/schema/enums';
 import type { Transaction } from '../../orders/idempotency/idempotency.store';
 import { transitionOrder } from '../../orders/state/transition-order';
+import { AfterCommit } from '../../realtime/events/after-commit.service';
 import {
   PAYMENT_PROVIDER,
   type GatewayOutcome,
@@ -54,6 +55,7 @@ export class PaymentEventProcessor {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly afterCommit: AfterCommit,
   ) {}
 
   /**
@@ -188,8 +190,8 @@ export class PaymentEventProcessor {
      */
     const method = await this.resolveMethod(decision);
 
-    await this.db.transaction(async (tx) => {
-      await transitionOrder(tx, {
+    await this.afterCommit.run(async (tx, emit) => {
+      const updated = await transitionOrder(tx, {
         orderId: decision.orderId,
         from: 'PENDING_PAYMENT',
         to: 'PAID',
@@ -203,6 +205,19 @@ export class PaymentEventProcessor {
         .where(eq(payments.id, decision.paymentId));
 
       await this.markProcessed(eventId, decision.paymentId, tx);
+
+      /**
+       * §12.3's step 15, and the reason the whole after-commit seam exists.
+       * This transaction can still fail after the transition — `markProcessed`
+       * writes to the inbox — and a KDS told about a paid order that then
+       * rolled back would be holding a ticket the database has no record of.
+       * Announcing only on commit is what makes the board trustworthy.
+       */
+      emit({
+        kind: 'order.paid',
+        orderId: decision.orderId,
+        deviceId: updated.kioskDeviceId,
+      });
     });
 
     return true;

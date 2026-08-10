@@ -151,6 +151,22 @@ export class KdsGateway
   }
 
   /**
+   * Pushes an event to every connected staff screen.
+   *
+   * Namespace-wide rather than per-room: §5.2 gives the whole `kds` audience
+   * the same three events, because at a cafe this size every screen shows the
+   * same board. The rooms this gateway does maintain exist for revocation, not
+   * for routing.
+   *
+   * Not awaited by callers and deliberately synchronous — Socket.IO hands the
+   * payload to the adapter and returns. A publish is best-effort by design
+   * (`AfterCommit` explains why the money must not depend on it).
+   */
+  broadcast(event: string, payload: unknown): void {
+    this.server.emit(event, payload);
+  }
+
+  /**
    * Subscribes to the kill channel (§10.4).
    *
    * Its own connection because a client in subscriber mode cannot run ordinary

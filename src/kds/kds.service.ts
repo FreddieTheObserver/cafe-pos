@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, inArray } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import type { Database } from '../database/database.module';
 import { DRIZZLE } from '../database/drizzle.constants';
 import { orders } from '../database/schema';
@@ -70,5 +70,30 @@ export class KdsService {
       ...toOrderSummary(row),
       items: toOrderLines(row.items),
     }));
+  }
+
+  /**
+   * One order in the board's shape, whatever status it is in.
+   *
+   * Deliberately *not* filtered to `KDS_STATUSES`, unlike the snapshot. §5.5
+   * has events carry full snapshots so a client can always render from the
+   * latest one, and that has to include the event that takes a ticket *off*
+   * the board: a cancelled order the KDS never hears about stays on the screen
+   * until someone reloads, which is how a barista makes a drink nobody is
+   * waiting for. The client decides what to show; the server just says what the
+   * order now is.
+   *
+   * Read after the commit that caused the event, so the snapshot is what the
+   * database actually holds rather than what the caller believed it wrote.
+   */
+  async ticketFor(orderId: string): Promise<KdsTicket | null> {
+    const row = await this.db.query.orders.findFirst({
+      where: eq(orders.id, orderId),
+      with: { items: { with: { options: true } } },
+    });
+
+    if (!row) return null;
+
+    return { ...toOrderSummary(row), items: toOrderLines(row.items) };
   }
 }

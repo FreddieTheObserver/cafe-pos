@@ -1,8 +1,9 @@
 import { Global, Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { KdsModule } from '../kds/kds.module';
 import { REALTIME_PUBLISHER } from './realtime.constants';
 import { AfterCommit } from './events/after-commit.service';
-import { LoggingRealtimePublisher } from './events/realtime-publisher';
+import { SocketRealtimePublisher } from './events/socket-realtime.publisher';
 import { KdsGateway } from './kds.gateway';
 
 /**
@@ -17,14 +18,16 @@ import { KdsGateway } from './kds.gateway';
  * guard's job rather than an oversight — the two protocols genuinely differ,
  * and §5.5's "connection dropped on token revocation" has no HTTP counterpart.
  *
- * The publisher is still a logging no-op: this slice connects screens and
- * authenticates them, and the next one gives them something to receive.
+ * `KdsModule` supplies the snapshot shape the publisher pushes. The dependency
+ * runs this way round on purpose — the board knows nothing about sockets, so
+ * `GET /kds/orders` stays testable without one and the two surfaces cannot
+ * drift into describing a ticket differently.
  */
 @Global()
 @Module({
-  imports: [IdentityModule],
+  imports: [IdentityModule, KdsModule],
   providers: [
-    { provide: REALTIME_PUBLISHER, useClass: LoggingRealtimePublisher },
+    { provide: REALTIME_PUBLISHER, useClass: SocketRealtimePublisher },
     AfterCommit,
     KdsGateway,
   ],
