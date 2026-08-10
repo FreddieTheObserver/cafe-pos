@@ -1,8 +1,11 @@
+import type { Server } from 'node:net';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { inArray, or } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import request from 'supertest';
+import { AccessTokenService } from '../../src/identity/auth/access-token.service';
+import { RedisIoAdapter } from '../../src/realtime/socket-io.adapter';
 import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
@@ -33,6 +36,7 @@ export class IdentityHarness {
   private constructor(
     readonly app: NestExpressApplication,
     readonly db: Database,
+    private readonly wsAdapter: RedisIoAdapter,
     private readonly userIds: string[] = [],
     private readonly deviceIds: string[] = [],
   ) {}
@@ -72,6 +76,14 @@ export class IdentityHarness {
       rawBody: true,
     });
     configureApp(app, { corsOrigins: [] });
+    /**
+     * The same adapter `main.ts` installs. Without it Nest falls back to a
+     * plain `IoAdapter`, and every gateway suite would pass against a
+     * single-instance Socket.IO that production never runs — the exact class of
+     * "green for a reason unrelated to the code" this harness exists to avoid.
+     */
+    const wsAdapter = new RedisIoAdapter(app, []);
+    app.useWebSocketAdapter(wsAdapter);
 
     // `listen(0)`, not `init()`. Handed a server that is not listening,
     // supertest calls `app.listen(0)` itself — and the request that did so
@@ -82,18 +94,32 @@ export class IdentityHarness {
     // supertest only ever borrows the address.
     await app.listen(0);
 
-    return new IdentityHarness(app, app.get<Database>(DRIZZLE));
+    return new IdentityHarness(app, app.get<Database>(DRIZZLE), wsAdapter);
   }
 
   http() {
     return request(this.app.getHttpServer());
   }
 
+  /**
+   * The origin the app is actually listening on.
+   *
+   * supertest resolves the ephemeral port for itself; a Socket.IO client cannot,
+   * so it needs the address `listen(0)` settled on.
+   */
+  url(): string {
+    const address = (this.app.getHttpServer() as Server).address();
+    if (address === null || typeof address === 'string') {
+      throw new Error('harness is not listening on a TCP port');
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
   /** Creates a staff account with a known password and returns its identity. */
   async createStaff(
     role: UserRole,
     { isActive = true } = {},
-  ): Promise<{ id: string; email: string }> {
+  ): Promise<{ id: string; email: string; role: UserRole }> {
     const id = uuidv7();
     const email = `fixture-${role.toLowerCase()}-${id}@cafepos.test`;
     await this.db.insert(schema.users).values({
@@ -105,19 +131,60 @@ export class IdentityHarness {
       isActive,
     });
     this.userIds.push(id);
-    return { id, email };
+    return { id, email, role };
+  }
+
+  /**
+   * A token minted directly, without spending a login.
+   *
+   * `accessTokenFor` goes through `POST /auth/login` on purpose, and for a
+   * suite testing authentication that is the point. For a suite testing
+   * websockets or the board it is an accident with a cost: §10.2 limits logins
+   * to 20 per fifteen minutes **per source address**, every suite in the run
+   * shares one, and the counters outlive the process. A handful of fixtures
+   * doing it politely still adds up to some *other* suite failing on a 429 —
+   * which reads as a bug in that suite, nowhere near the fixture that spent the
+   * budget.
+   *
+   * The token is identical either way: `AccessTokenService` is what login calls
+   * once it has checked the password, so nothing about the credential under
+   * test changes. What is skipped is the part `auth-http` already covers.
+   */
+  async tokenFor(role: UserRole): Promise<string> {
+    const { id } = await this.createStaff(role);
+    return this.tokenForUserId(id, role);
+  }
+
+  /** A second, distinct token for an existing account — each has its own `jti`. */
+  async tokenForUserId(userId: string, role: UserRole): Promise<string> {
+    const { accessToken } = await this.app
+      .get(AccessTokenService)
+      .issue({ id: userId, role });
+    return accessToken;
   }
 
   /** Logs in over HTTP so the token is minted by the same code path clients use. */
   async accessTokenFor(role: UserRole): Promise<string> {
     const { email } = await this.createStaff(role);
+    return this.accessTokenForEmail(email);
+  }
+
+  /**
+   * A token for an account that already exists.
+   *
+   * Separate from `accessTokenFor`, which mints a fresh account every call —
+   * anything reasoning about *one* user holding *several* sessions (a till and
+   * a wall screen, say) needs the account held fixed while the tokens differ.
+   * Each login issues a new `jti`, which is exactly what makes them distinct.
+   */
+  async accessTokenForEmail(email: string): Promise<string> {
     const res = await this.http()
       .post('/api/v1/auth/login')
       .send({ email, password: FIXTURE_PASSWORD });
 
     if (res.status !== 200) {
       throw new Error(
-        `fixture login for ${role} failed with ${res.status}: ${JSON.stringify(res.body)}`,
+        `fixture login for ${email} failed with ${res.status}: ${JSON.stringify(res.body)}`,
       );
     }
     return (res.body as { accessToken: string }).accessToken;
@@ -205,7 +272,18 @@ export class IdentityHarness {
           .where(inArray(schema.users.id, this.userIds));
       }
     } finally {
-      await this.app.close();
+      try {
+        await this.app.close();
+      } finally {
+        /**
+         * Explicit, because Nest never calls the WebSocket adapter's `close`
+         * — measured, not assumed. Left to `app.close()`, every booted harness
+         * would leak a retrying pub/sub pair, and by the end of a full run the
+         * accumulated churn starves the suites that come last: they fail on
+         * timing, in the parallel run only, nowhere near the cause.
+         */
+        await this.wsAdapter.dispose();
+      }
     }
   }
 

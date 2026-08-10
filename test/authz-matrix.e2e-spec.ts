@@ -286,6 +286,36 @@ const MATRIX: MatrixRow[] = [
   },
   {
     /**
+     * The public board (§5.2) — the one route in the system with no credential
+     * at all, because a screen above the counter is read by whoever is standing
+     * in the shop. What makes that safe is not the guard but the projection:
+     * `BoardService` selects a queue number and a state and never touches
+     * `customer_name`, which `board-http` asserts against the whole serialised
+     * body rather than against named fields.
+     */
+    method: 'get',
+    route: '/api/v1/orders/board',
+    path: '/api/v1/orders/board',
+    allow: PUBLIC,
+  },
+  {
+    /**
+     * The bar screen (§5.2). BARISTA is the whole point of the route; cashiers
+     * and above are included because the counter shows the same board, and
+     * someone has to answer "is number 42 ready?" when the customer asks at the
+     * till rather than at the bar.
+     *
+     * No device: §6.4 gives a kiosk its own order and nothing else, and a
+     * tablet in a public space holding a live list of everything the cafe is
+     * making is exactly the disclosure the scoping exists to prevent.
+     */
+    method: 'get',
+    route: '/api/v1/kds/orders',
+    path: '/api/v1/kds/orders',
+    allow: [A, M, C, B],
+  },
+  {
+    /**
      * Every staff role, no device. §6.4 gives all four the same three KDS
      * moves — at a small cafe whoever is free hands the drink over — and gives
      * a kiosk none of them.

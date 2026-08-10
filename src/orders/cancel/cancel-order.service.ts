@@ -18,6 +18,7 @@ import { OrderInvalidTransitionError } from '../errors/orders.errors';
 import type { OrderSummary } from '../query/orders-read.service';
 import { toOrderSummary } from '../query/orders-read.service';
 import { transitionOrder } from '../state/transition-order';
+import { AfterCommit } from '../../realtime/events/after-commit.service';
 
 /**
  * The states a cancellation may start from **in this phase**.
@@ -52,6 +53,7 @@ export class CancelOrderService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly afterCommit: AfterCommit,
   ) {}
 
   async cancel(
@@ -140,7 +142,7 @@ export class CancelOrderService {
       if (outcome === 'ALREADY_SUCCEEDED') throw new OrderAlreadyPaidError();
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.afterCommit.run(async (tx, emit) => {
       const updated = await transitionOrder(tx, {
         orderId,
         from: current.status,
@@ -172,6 +174,19 @@ export class CancelOrderService {
             ),
           );
       }
+
+      /**
+       * A cancelled order has to reach the board too. Only a PAID-or-later
+       * order was ever *on* it, and this endpoint stops at PENDING_PAYMENT —
+       * but the counter screen shows the same feed, and a till that keeps
+       * showing an order the customer called off is the same stale-screen bug
+       * pointed at a different person.
+       */
+      emit({
+        kind: 'order.updated',
+        orderId,
+        deviceId: updated.kioskDeviceId,
+      });
 
       return toOrderSummary(updated);
     });

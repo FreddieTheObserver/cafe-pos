@@ -10,6 +10,7 @@ import type { RefundStatus } from '../../database/schema/enums';
 import type { StaffPrincipal } from '../../identity/principal';
 import { businessDayOf } from '../../orders/business-day';
 import { transitionOrder } from '../../orders/state/transition-order';
+import { AfterCommit } from '../../realtime/events/after-commit.service';
 import {
   PaymentNotRefundableError,
   RefundExceedsRemainingError,
@@ -50,6 +51,7 @@ export class CreateRefundService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly config: ConfigService<Env, true>,
+    private readonly afterCommit: AfterCommit,
   ) {}
 
   async refund(
@@ -96,7 +98,7 @@ export class CreateRefundService {
       );
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.afterCommit.run(async (tx, emit) => {
       /**
        * The payment row is locked, and the sum is read behind that lock.
        *
@@ -146,12 +148,23 @@ export class CreateRefundService {
        */
       const fullyRefunded = already + input.amountMinor === payment.amountMinor;
       if (fullyRefunded) {
-        await transitionOrder(tx, {
+        const updated = await transitionOrder(tx, {
           orderId: order.id,
           from: order.status,
           to: 'REFUNDED',
           actor: { actorType: 'USER', actorId: principal.userId },
           reason: input.reason,
+        });
+
+        /**
+         * Only on the transition, never on a partial refund. §4.4 leaves a
+         * partially refunded order exactly where it was, so its ticket has not
+         * changed and announcing it would make screens repaint over nothing.
+         */
+        emit({
+          kind: 'order.updated',
+          orderId: order.id,
+          deviceId: updated.kioskDeviceId,
         });
       }
 

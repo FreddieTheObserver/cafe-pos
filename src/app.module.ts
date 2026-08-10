@@ -13,6 +13,9 @@ import { CatalogModule } from './catalog/catalog.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { buildLoggerOptions } from './common/logging/pino-options';
+import { RealtimeModule } from './realtime/realtime.module';
+import { KdsModule } from './kds/kds.module';
+import { BoardModule } from './board/board.module';
 
 @Module({
   imports: [
@@ -33,10 +36,19 @@ import { buildLoggerOptions } from './common/logging/pino-options';
     DatabaseModule,
     RedisModule,
     StorageModule,
+    RealtimeModule,
     CommonModule,
     HealthModule,
     IdentityModule,
     CatalogModule,
+    /**
+     * **Before `OrdersModule`, and the order is load-bearing.** Express matches
+     * routes in registration order, and `OrdersModule` declares
+     * `GET /orders/:id` — which matches `/orders/board` perfectly well and
+     * answers 422, because "board" is not a UUID. Registering the specific path
+     * first is what lets it win; `board-http.e2e-spec.ts` pins it.
+     */
+    BoardModule,
     OrdersModule,
     /**
      * Carries the webhook route, and — because Nest instantiates providers
@@ -45,6 +57,7 @@ import { buildLoggerOptions } from './common/logging/pino-options';
      * customer taps Pay.
      */
     PaymentsModule,
+    KdsModule,
   ],
 })
 export class AppModule {}

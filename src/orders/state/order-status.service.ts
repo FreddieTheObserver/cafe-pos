@@ -1,9 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
-import type { Database } from '../../database/database.module';
-import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders } from '../../database/schema';
+import { AfterCommit } from '../../realtime/events/after-commit.service';
 import type { OrderStatus } from '../../database/schema/enums';
 import type { Principal } from '../../identity/principal';
 import { OrderInvalidTransitionError } from '../errors/orders.errors';
@@ -25,14 +24,14 @@ import { transitionOrder } from './transition-order';
  */
 @Injectable()
 export class OrderStatusService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(private readonly afterCommit: AfterCommit) {}
 
   async transition(
     principal: Principal,
     orderId: string,
     to: OrderStatus,
   ): Promise<OrderSummary> {
-    return this.db.transaction(async (tx) => {
+    return this.afterCommit.run(async (tx, emit) => {
       const current = await tx.query.orders.findFirst({
         where: eq(orders.id, orderId),
         columns: { status: true },
@@ -56,6 +55,18 @@ export class OrderStatusService {
         from: current.status,
         to,
         actor: actorOf(principal),
+      });
+
+      /**
+       * §5.2 names `order.ready` separately from `order.updated`, and it earns
+       * the distinction: every other move is one screen catching up with
+       * another, while READY is the moment a customer can be called. A client
+       * that wants to chime does not want to chime four times per order.
+       */
+      emit({
+        kind: to === 'READY' ? 'order.ready' : 'order.updated',
+        orderId,
+        deviceId: updated.kioskDeviceId,
       });
 
       return toOrderSummary(updated);

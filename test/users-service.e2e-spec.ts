@@ -1,5 +1,7 @@
+import { ConfigService } from '@nestjs/config';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, inArray } from 'drizzle-orm';
+import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
@@ -8,6 +10,7 @@ import {
   LastAdminError,
   UserEmailExistsError,
 } from '../src/identity/errors/identity.errors';
+import { RevocationService } from '../src/identity/revocation/revocation.service';
 import { UsersService } from '../src/identity/users/users.service';
 import { ResourceNotFoundError } from '../src/common/errors/resource-not-found.error';
 import type { UserRole } from '../src/database/schema/enums';
@@ -23,6 +26,7 @@ const PASSWORD = 'a-perfectly-fine-password';
 describe('UsersService (integration)', () => {
   let pool: Pool;
   let db: NodePgDatabase<typeof schema>;
+  let redis: Redis;
   let service: UsersService;
   const hasher = new PasswordHasher();
 
@@ -94,7 +98,17 @@ describe('UsersService (integration)', () => {
   beforeAll(async () => {
     pool = new Pool({ connectionString: process.env.DATABASE_URL });
     db = drizzle(pool, { schema });
-    service = new UsersService(db, hasher);
+    redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+    // Real rather than stubbed: a demotion now has to actually deny the user's
+    // live sessions, and a stub would prove only that the call type-checks.
+    service = new UsersService(
+      db,
+      hasher,
+      new RevocationService(
+        redis,
+        new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
+      ),
+    );
     await parkExistingAdmins();
   });
 
@@ -115,7 +129,11 @@ describe('UsersService (integration)', () => {
         await restoreParkedAdmins();
       }
     } finally {
-      await pool.end();
+      try {
+        await pool.end();
+      } finally {
+        redis.disconnect();
+      }
     }
   });
 

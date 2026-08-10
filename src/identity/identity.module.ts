@@ -17,6 +17,7 @@ import { DevicesController } from './devices/devices.controller';
 import { DevicesService } from './devices/devices.service';
 import { AuthenticationGuard } from './guards/authentication.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { RevocationService } from './revocation/revocation.service';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
 
@@ -57,6 +58,7 @@ import { UsersService } from './users/users.service';
     PasswordHasher,
     UsersService,
     LoginAttemptLimiter,
+    RevocationService,
     { provide: ThrottlerStorage, useClass: RedisThrottlerStorage },
     // Order matters and is the whole design: authenticate (so staff can be
     // counted per user), then rate-limit (so a caller cannot hammer an
@@ -65,6 +67,11 @@ import { UsersService } from './users/users.service';
     { provide: APP_GUARD, useClass: IdentityThrottlerGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
-  exports: [AccessTokenService, DeviceTokenService, PasswordHasher],
+  exports: [
+    AccessTokenService,
+    DeviceTokenService,
+    PasswordHasher,
+    RevocationService,
+  ],
 })
 export class IdentityModule {}

@@ -5,6 +5,7 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { configureApp } from './bootstrap';
 import { Env } from './config/env.validation';
+import { RedisIoAdapter } from './realtime/socket-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -24,9 +25,16 @@ async function bootstrap() {
   app.useLogger(app.get(Logger));
 
   const config: ConfigService<Env, true> = app.get(ConfigService);
-  configureApp(app, {
-    corsOrigins: config.get('CORS_ORIGINS', { infer: true }),
-  });
+  /**
+   * Read once and typed by hand. `{ infer: true }` degrades to `any` for
+   * array-valued keys — ConfigService's `PathValue` walks into the property
+   * type — so the annotation is what keeps this honest, not the inference.
+   */
+  const corsOrigins: string[] = config.get('CORS_ORIGINS', { infer: true });
+
+  configureApp(app, { corsOrigins });
+  // Before listen: the adapter has to exist when gateways bind to the server;
+  app.useWebSocketAdapter(new RedisIoAdapter(app, corsOrigins));
 
   await app.listen(config.get('PORT', { infer: true }));
 }

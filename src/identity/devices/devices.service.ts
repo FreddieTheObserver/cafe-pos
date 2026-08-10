@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { and, eq, gt, sql } from 'drizzle-orm';
+import { describeError } from '../../common/errors/describe-error';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
@@ -17,6 +18,7 @@ import {
   PairingCodeExpiredError,
   PairingCodeInvalidError,
 } from '../errors/identity.errors';
+import { RevocationService } from '../revocation/revocation.service';
 
 /** A device as the back office sees it — no credential material, ever. */
 export interface DeviceSummary {
@@ -56,9 +58,12 @@ const SUMMARY_COLUMNS = {
 /** Kiosk device lifecycle: pairing, activation, pause, revocation (§6.2, §5.2). */
 @Injectable()
 export class DevicesService {
+  private readonly logger = new Logger(DevicesService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly config: ConfigService<Env, true>,
+    private readonly revocations: RevocationService,
   ) {}
 
   /**
@@ -175,6 +180,26 @@ export class DevicesService {
       .returning({ id: kioskDevices.id });
 
     if (!revoked) throw new ResourceNotFoundError('device', id);
+
+    /**
+     * §10.1's stolen tablet. The status change alone stops the *next* request,
+     * because a device token is resolved against this table every time — but a
+     * kiosk holding an open socket authenticated once, at connect, and would
+     * keep receiving its own orders' payment events until someone closed the
+     * lid. Announcing cuts it now.
+     *
+     * Best-effort, and after the write, for the same reason `UsersService`
+     * treats it that way: the revocation is already durable, and a Redis blip
+     * must not tell a manager their stolen tablet is still paired.
+     */
+    try {
+      await this.revocations.revokeDevice(id);
+    } catch (error) {
+      this.logger.error(
+        `Device ${id} was revoked but its live sockets could not be cut; ` +
+          `an open kiosk connection survives until it reconnects. ${describeError(error)}`,
+      );
+    }
   }
 
   /**

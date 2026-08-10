@@ -69,15 +69,18 @@ export interface OrderStatusChange {
   createdAt: string;
 }
 
+/** One line of an order, with the option snapshots that priced it. */
+export interface OrderLine {
+  nameSnapshot: string;
+  unitPriceMinor: number;
+  quantity: number;
+  lineTotalMinor: number;
+  notes: string | null;
+  options: { group: string; name: string; priceDeltaMinor: number }[];
+}
+
 export interface OrderDetail extends OrderSummary {
-  items: {
-    nameSnapshot: string;
-    unitPriceMinor: number;
-    quantity: number;
-    lineTotalMinor: number;
-    notes: string | null;
-    options: { group: string; name: string; priceDeltaMinor: number }[];
-  }[];
+  items: OrderLine[];
   statusHistory: OrderStatusChange[];
 }
 
@@ -179,18 +182,7 @@ export class OrdersReadService {
 
     return {
       ...toOrderSummary(row),
-      items: row.items.map((line) => ({
-        nameSnapshot: line.nameSnapshot,
-        unitPriceMinor: line.unitPriceMinorSnapshot,
-        quantity: line.quantity,
-        lineTotalMinor: line.lineTotalMinor,
-        notes: line.notes,
-        options: line.options.map((option) => ({
-          group: option.groupNameSnapshot,
-          name: option.optionNameSnapshot,
-          priceDeltaMinor: option.priceDeltaMinorSnapshot,
-        })),
-      })),
+      items: toOrderLines(row.items),
       // Oldest first: the history reads as the story of the order.
       statusHistory: [...row.statusHistory]
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
@@ -335,6 +327,43 @@ function cursorPredicate(
     ? sql`(${column}, ${orders.id}) < (${typed}, ${id}::uuid)`
     : sql`(${column}, ${orders.id}) > (${typed}, ${id}::uuid)`;
 }
+
+/**
+ * The line projection, shared by order detail and the KDS snapshot.
+ *
+ * Extracted for the same reason `toOrderSummary` exists: a barista's ticket and
+ * a manager's order screen must not describe the same drink differently, and
+ * two copies of this mapping is how that starts. §5.5 makes it load-bearing —
+ * WS events carry full snapshots, so the event payload and the snapshot
+ * endpoint have to agree column for column or a reconnecting screen would
+ * repaint differently than it rendered.
+ */
+export const toOrderLines = (
+  lines: {
+    nameSnapshot: string;
+    unitPriceMinorSnapshot: number;
+    quantity: number;
+    lineTotalMinor: number;
+    notes: string | null;
+    options: {
+      groupNameSnapshot: string;
+      optionNameSnapshot: string;
+      priceDeltaMinorSnapshot: number;
+    }[];
+  }[],
+): OrderLine[] =>
+  lines.map((line) => ({
+    nameSnapshot: line.nameSnapshot,
+    unitPriceMinor: line.unitPriceMinorSnapshot,
+    quantity: line.quantity,
+    lineTotalMinor: line.lineTotalMinor,
+    notes: line.notes,
+    options: line.options.map((option) => ({
+      group: option.groupNameSnapshot,
+      name: option.optionNameSnapshot,
+      priceDeltaMinor: option.priceDeltaMinorSnapshot,
+    })),
+  }));
 
 /**
  * The summary projection, shared by every route that hands back an order

@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, inArray } from 'drizzle-orm';
+import Redis from 'ioredis';
 import { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
@@ -8,6 +9,7 @@ import { ResourceNotFoundError } from '../src/common/errors/resource-not-found.e
 import { hashSecret } from '../src/identity/crypto/secret-token';
 import { DeviceTokenService } from '../src/identity/devices/device-token.service';
 import { DevicesService } from '../src/identity/devices/devices.service';
+import { RevocationService } from '../src/identity/revocation/revocation.service';
 import {
   DeviceNotPairedError,
   DeviceRevokedError,
@@ -27,6 +29,7 @@ const PAIRING_TTL_SECONDS = 10 * 60;
 describe('DevicesService (integration)', () => {
   let pool: Pool;
   let db: NodePgDatabase<typeof schema>;
+  let redis: Redis;
   let service: DevicesService;
   let deviceTokens: DeviceTokenService;
 
@@ -54,9 +57,16 @@ describe('DevicesService (integration)', () => {
   beforeAll(async () => {
     pool = new Pool({ connectionString: process.env.DATABASE_URL });
     db = drizzle(pool, { schema });
+    redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
     service = new DevicesService(
       db,
       new ConfigService({ PAIRING_CODE_TTL_SECONDS: PAIRING_TTL_SECONDS }),
+      // Real, against the same Redis: revoking a device now has to reach the
+      // kill channel, and a stub would prove only that the call type-checks.
+      new RevocationService(
+        redis,
+        new ConfigService({ ACCESS_TOKEN_TTL_SECONDS: 900 }),
+      ),
     );
     deviceTokens = new DeviceTokenService(db);
 
@@ -77,7 +87,11 @@ describe('DevicesService (integration)', () => {
         .where(inArray(schema.kioskDevices.id, createdDeviceIds));
     }
     await db.delete(schema.users).where(eq(schema.users.id, registrarId));
-    await pool.end();
+    try {
+      await pool.end();
+    } finally {
+      redis.disconnect();
+    }
   });
 
   describe('create', () => {

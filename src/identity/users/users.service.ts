@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { isUniqueViolation } from '../../common/database/postgres-errors';
+import { describeError } from '../../common/errors/describe-error';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
@@ -11,6 +12,7 @@ import {
   LastAdminError,
   UserEmailExistsError,
 } from '../errors/identity.errors';
+import { RevocationService } from '../revocation/revocation.service';
 
 /** A staff account as the API returns it — the password hash never appears. */
 export interface StaffAccount {
@@ -50,9 +52,12 @@ const PUBLIC_COLUMNS = {
 /** Staff account management (§5.2). */
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly passwords: PasswordHasher,
+    private readonly revocations: RevocationService,
   ) {}
 
   async create(input: CreateUserInput): Promise<StaffAccount> {
@@ -109,7 +114,7 @@ export class UsersService {
       return renamed;
     }
 
-    return this.db.transaction(async (tx) => {
+    const updated = await this.db.transaction(async (tx) => {
       // Locked in a deterministic order so two concurrent demotions queue
       // rather than deadlock. Whichever waits re-evaluates the predicate after
       // the lock is released and sees the other's demotion.
@@ -136,6 +141,43 @@ export class UsersService {
 
       return updated;
     });
+
+    /**
+     * After the commit, and only on the guarded path — a rename cannot change
+     * what anyone is allowed to do.
+     *
+     * Deactivating or demoting somebody has never invalidated the access token
+     * already in their browser; §10.4 accepted that, reasoning it dies within
+     * the token lifetime. A WebSocket is authenticated once at connect and then
+     * never again, so on that path the gap is unbounded — this is what closes
+     * it, by user id because nobody clicking "deactivate" knows which `jti` is
+     * in flight.
+     */
+    await this.revokePrivileges(id);
+
+    return updated;
+  }
+
+  /**
+   * Best-effort, and logged at `error` when it is not.
+   *
+   * The account change is already committed, so throwing here would report a
+   * failure for work that succeeded and send an admin round a retry loop
+   * against a database that already agrees with them. The residual risk is
+   * stated plainly instead: if this fails, live sockets for that user are not
+   * cut, and §13 reserves `error` for exactly this — something a human has to
+   * look at. Closing it properly means the gateway re-checking periodically
+   * rather than only at connect, which this slice does not do.
+   */
+  private async revokePrivileges(userId: string): Promise<void> {
+    try {
+      await this.revocations.revokeUser(userId);
+    } catch (error) {
+      this.logger.error(
+        `Account for ${userId} was changed but its live sessions could not be revoked; ` +
+          `any open socket for this user survives until it reconnects. ${describeError(error)}`,
+      );
+    }
   }
 
   /**
