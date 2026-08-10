@@ -4,7 +4,7 @@
 
 **Goal:** Populate `daily_sales_rollups` nightly so historical reports become O(days) instead of scanning live order tables.
 
-**Architecture:** A Nest service runs at 03:00 Asia/Bangkok, targets the business day that closed 22 hours earlier, and also sweeps back 30 days for any day that has orders but no finalized rollup. Per day it runs five aggregate queries inside one `READ ONLY` transaction, hands the parts to a pure assembly function, and upserts one row. No distributed lock: the day is closed and the recompute is deterministic, so two instances converge.
+**Architecture:** A Nest service runs at 03:00 Asia/Bangkok, targets the business day that closed 22 hours earlier, and also sweeps back 30 days for any day that has orders but no finalized rollup. Per day it runs five aggregate queries inside one `REPEATABLE READ` transaction, hands the parts to a pure assembly function, and upserts one row. No distributed lock: the day is closed and the recompute is deterministic, so two instances converge.
 
 **Tech Stack:** NestJS 11, `@nestjs/schedule` (`@Cron`), Drizzle ORM 0.45.2 over node-postgres, Jest (unit + e2e).
 
@@ -811,11 +811,13 @@ export class DailyRollupService {
         });
       },
       /**
-       * One snapshot for all five queries. The day is closed, so they could not
-       * disagree in practice — this costs nothing and removes the need to
-       * reason about that claim every time someone reads the code.
+       * REPEATABLE READ isolation pins all five queries to one snapshot. Postgres
+       * defaults to READ COMMITTED, which re-snapshots per statement, so READ ONLY
+       * alone guarantees nothing. The day is closed, so they could not disagree in
+       * practice — the isolation level costs nothing and removes the need to reason
+       * about snapshot consistency every time someone reads the code.
        */
-      { accessMode: 'read only' },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
 
     const values = {
