@@ -123,6 +123,33 @@ describe('Reports day resolution (e2e)', () => {
     expect(live.get(day)!.vatMinor).toBe(1_308);
   });
 
+  it('recomputes a day whose rollup row was never finalized', async () => {
+    await givenPaidOrder(day, 9_000);
+
+    /**
+     * A row the nightly job started and never finished: present in the table,
+     * `finalized_at` null, and carrying numbers that do not match the orders.
+     * Trusting it would serve a half-computed day as final.
+     */
+    await harness.db.insert(schema.dailySalesRollups).values({
+      businessDay: day,
+      ordersCompleted: 99,
+      ordersSettled: 99,
+      revenueMinor: 123_456,
+      revenueByMethod: { CARD: 123_456 },
+      refundsMinor: 0,
+      vatMinor: 0,
+      topItems: [],
+      finalizedAt: null,
+    });
+
+    const totals = await reports.dayTotals([day]);
+
+    // Recomputed from the orders, not read from the unfinished row.
+    expect(totals.get(day)!.revenueMinor).toBe(9_000);
+    expect(totals.get(day)!.ordersSettled).toBe(1);
+  });
+
   it('mixes stored and live days in one range', async () => {
     const rolled = day;
     const unrolled = `2021-04-${String(dayCounter).padStart(2, '0')}`;
