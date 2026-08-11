@@ -1,14 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, gte, isNotNull, lte } from 'drizzle-orm';
+import { and, eq, exists, gte, isNotNull, lte, sql } from 'drizzle-orm';
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
-import { dailySalesRollups } from '../../database/schema';
-import { businessDayOf } from '../../orders/business-day';
+import { dailySalesRollups, orders, payments } from '../../database/schema';
+import { businessDayOf, eachBusinessDay } from '../../orders/business-day';
 import { aggregateDay } from '../rollup/aggregate-day';
 import { buildRollupRow, type RollupRow } from '../rollup/build-rollup-row';
+import { UnprocessableRangeError } from '../errors/reporting.errors';
+import { avgTicketMinor, salesBucket, type SalesBucket } from './shape-reports';
 
 /**
  * How many days in one request may be aggregated live.
@@ -24,6 +26,16 @@ import { buildRollupRow, type RollupRow } from '../rollup/build-rollup-row';
  * reject the largest valid request.
  */
 export const MAX_LIVE_DAYS = 31;
+
+/** The `GET /reports/sales` body (§5.2). */
+export interface SalesReport {
+  from: string;
+  to: string;
+  groupBy: 'day' | 'hour';
+  /** True exactly when the range includes the business day still taking money. */
+  provisional: boolean;
+  buckets: SalesBucket[];
+}
 
 @Injectable()
 export class ReportsService {
@@ -108,5 +120,102 @@ export class ReportsService {
     }
 
     return totals;
+  }
+
+  async salesReport(query: {
+    from: string;
+    to: string;
+    groupBy: 'day' | 'hour';
+  }): Promise<SalesReport> {
+    const current = this.currentBusinessDay();
+
+    /**
+     * A range ending after today is a client bug. Refusing beats aggregating
+     * days that have not happened to return guaranteed-zero buckets, which
+     * would read as data.
+     */
+    if (query.to > current) {
+      throw new UnprocessableRangeError(
+        `to must not be after the current business day (${current})`,
+      );
+    }
+
+    const days = eachBusinessDay(query.from, query.to);
+
+    if (query.groupBy === 'hour') {
+      return {
+        from: query.from,
+        to: query.to,
+        groupBy: 'hour',
+        provisional: days.includes(current),
+        buckets: await this.hourlyBuckets(query.from, query.to),
+      };
+    }
+
+    const totals = await this.dayTotals(days);
+
+    return {
+      from: query.from,
+      to: query.to,
+      groupBy: 'day',
+      provisional: days.includes(current),
+      buckets: days.map((day) => salesBucket(day, totals.get(day)!)),
+    };
+  }
+
+  /**
+   * Hourly buckets, always live.
+   *
+   * Bucketed in the business timezone rather than UTC: an hour label is a
+   * wall-clock fact, and a cafe's 09:00 rush is 09:00 on both sides of a
+   * daylight-saving change. Only orders that took money are counted, matching
+   * the daily path's `settled` predicate.
+   *
+   * Deliberately not routed through `dayTotals` — the missing-rollup cap there
+   * bounds how much of a *stitched* range may be absent, which has no meaning
+   * for a path that is live by definition.
+   */
+  private async hourlyBuckets(
+    from: string,
+    to: string,
+  ): Promise<SalesBucket[]> {
+    const zone = this.config.get('BUSINESS_TIMEZONE', { infer: true });
+
+    const rows = await this.db
+      .select({
+        bucket: sql<string>`to_char(date_trunc('hour', ${orders.createdAt} AT TIME ZONE ${zone}), 'YYYY-MM-DD"T"HH24')`,
+        revenueMinor: sql<number>`coalesce(sum(${orders.totalMinor}), 0)::bigint`,
+        ordersSettled: sql<number>`count(*)::int`,
+      })
+      .from(orders)
+      .where(
+        and(
+          gte(orders.businessDay, from),
+          lte(orders.businessDay, to),
+          exists(
+            this.db
+              .select({ one: sql`1` })
+              .from(payments)
+              .where(
+                and(
+                  eq(payments.orderId, orders.id),
+                  eq(payments.status, 'SUCCEEDED'),
+                ),
+              ),
+          ),
+        ),
+      )
+      .groupBy(sql`1`)
+      .orderBy(sql`1`);
+
+    return rows.map((row) => ({
+      bucket: row.bucket,
+      revenueMinor: Number(row.revenueMinor),
+      ordersSettled: row.ordersSettled,
+      avgTicketMinor: avgTicketMinor(
+        Number(row.revenueMinor),
+        row.ordersSettled,
+      ),
+    }));
   }
 }

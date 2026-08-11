@@ -396,6 +396,12 @@ const MATRIX: MatrixRow[] = [
     allow: PUBLIC,
     body: EMPTY_BODY,
   },
+  {
+    method: 'get',
+    route: '/api/v1/reports/sales',
+    path: '/api/v1/reports/sales?from=2021-01-01&to=2021-01-02',
+    allow: [A, M],
+  },
 ];
 
 /** The codes the guards refuse with — the only 401/403 this sweep accepts. */
