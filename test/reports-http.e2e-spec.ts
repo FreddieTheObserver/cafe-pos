@@ -12,6 +12,7 @@ describe('Reports HTTP (e2e)', () => {
   let cashierId: string;
   let categoryId: string;
   let latteId: string;
+  let croissantId: string;
   let currentDay: string;
 
   const touchedDays: string[] = [];
@@ -21,6 +22,8 @@ describe('Reports HTTP (e2e)', () => {
     businessDay: string,
     lineMinor: number,
     qty = 1,
+    itemId: string = latteId,
+    nameSnapshot = 'Latte',
   ): Promise<void> {
     const orderId = uuidv7();
     await harness.db.insert(schema.orders).values({
@@ -37,8 +40,8 @@ describe('Reports HTTP (e2e)', () => {
     await harness.db.insert(schema.orderItems).values({
       id: uuidv7(),
       orderId,
-      menuItemId: latteId,
-      nameSnapshot: 'Latte',
+      menuItemId: itemId,
+      nameSnapshot,
       unitPriceMinorSnapshot: Math.round(lineMinor / qty),
       quantity: qty,
       lineTotalMinor: lineMinor,
@@ -72,6 +75,7 @@ describe('Reports HTTP (e2e)', () => {
 
     categoryId = uuidv7();
     latteId = uuidv7();
+    croissantId = uuidv7();
     await harness.db
       .insert(schema.categories)
       .values({ id: categoryId, name: `Reports HTTP ${categoryId}` });
@@ -80,6 +84,12 @@ describe('Reports HTTP (e2e)', () => {
       categoryId,
       name: 'Latte',
       basePriceMinor: 10_000,
+    });
+    await harness.db.insert(schema.menuItems).values({
+      id: croissantId,
+      categoryId,
+      name: 'Croissant',
+      basePriceMinor: 5_000,
     });
 
     touchedDays.push(DAY);
@@ -97,6 +107,9 @@ describe('Reports HTTP (e2e)', () => {
     await harness.db
       .delete(schema.menuItems)
       .where(eq(schema.menuItems.id, latteId));
+    await harness.db
+      .delete(schema.menuItems)
+      .where(eq(schema.menuItems.id, croissantId));
     await harness.db
       .delete(schema.categories)
       .where(eq(schema.categories.id, categoryId));
@@ -259,6 +272,43 @@ describe('Reports HTTP (e2e)', () => {
 
         expect(res.status).toBe(422);
       }
+    });
+
+    it('drops lower-ranked items when the limit bites', async () => {
+      const day = '2021-09-20';
+
+      // Croissant outsells Latte on this day, so a working limit keeps the
+      // Croissant and drops the Latte. With one item seeded, as the sibling
+      // test has, any limit >= 1 would look correct.
+      await givenPaidOrder(day, 3_000, 3, croissantId, 'Croissant');
+      await givenPaidOrder(day, 1_000, 1);
+
+      touchedDays.push(day);
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/top-items?from=${day}&to=${day}&limit=1`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.items).toEqual([
+        {
+          menuItemId: croissantId,
+          name: 'Croissant',
+          quantity: 3,
+          revenueMinor: 3_000,
+        },
+      ]);
+    });
+
+    it('flags a range that includes the day still taking money', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/top-items?from=${currentDay}&to=${currentDay}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.provisional).toBe(true);
     });
   });
 });
