@@ -26,6 +26,16 @@ export const dailySalesRollups = pgTable('daily_sales_rollups', {
   ordersRefunded: integer('orders_refunded').notNull().default(0),
   ordersCancelled: integer('orders_cancelled').notNull().default(0),
   ordersExpired: integer('orders_expired').notNull().default(0),
+  /**
+   * Orders that took money — at least one SUCCEEDED payment.
+   *
+   * The denominator for avg ticket (§5.2), and deliberately not any of the
+   * status counts above: a paid order still sitting in READY at roll time is a
+   * sale, and a refunded order was a sale. Counted with the same `settled`
+   * predicate revenue and VAT use, so the average cannot be revenue divided by
+   * a different set of orders than produced it.
+   */
+  ordersSettled: integer('orders_settled').notNull().default(0),
   revenueMinor: bigint('revenue_minor', { mode: 'number' })
     .notNull()
     .default(0),

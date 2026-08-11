@@ -1,0 +1,1 @@
+ALTER TABLE "daily_sales_rollups" ADD COLUMN "orders_settled" integer DEFAULT 0 NOT NULL;

@@ -9,6 +9,7 @@ const EMPTY: RollupParts = {
   revenueByMethod: [],
   refundsMinor: 0,
   vatMinor: 0,
+  ordersSettled: 0,
   items: [],
 };
 
@@ -131,12 +132,25 @@ describe('buildRollupRow', () => {
       ordersRefunded: 0,
       ordersCancelled: 0,
       ordersExpired: 0,
+      ordersSettled: 0,
       revenueMinor: 0,
       revenueByMethod: {},
       refundsMinor: 0,
       vatMinor: 0,
       topItems: [],
     });
+  });
+
+  it('carries the settled-order count through', () => {
+    const row = buildRollupRow('2026-06-11', parts({ ordersSettled: 84 }));
+
+    expect(row.ordersSettled).toBe(84);
+  });
+
+  it('reports zero settled orders for a day that took no money', () => {
+    const row = buildRollupRow('2026-06-11', parts());
+
+    expect(row.ordersSettled).toBe(0);
   });
 
   it('carries an aggregate past int32, which is why the columns are bigint', () => {

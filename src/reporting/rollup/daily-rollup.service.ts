@@ -1,31 +1,15 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import {
-  and,
-  asc,
-  eq,
-  exists,
-  gte,
-  isNotNull,
-  lt,
-  notExists,
-  sql,
-  sum,
-} from 'drizzle-orm';
+import { and, asc, eq, gte, isNotNull, lt, notExists, sql } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import { BusinessDayNotClosedError } from '../errors/reporting.errors';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
-import {
-  dailySalesRollups,
-  orderItems,
-  orders,
-  payments,
-  refunds,
-} from '../../database/schema';
+import { dailySalesRollups, orders } from '../../database/schema';
 import { businessDayOf, minusDays } from '../../orders/business-day';
+import { aggregateDay } from './aggregate-day';
 import { buildRollupRow, type RollupRow } from './build-rollup-row';
 
 /** What one nightly run did. */
@@ -86,131 +70,9 @@ export class DailyRollupService {
       throw new BusinessDayNotClosedError(businessDay, currentBusinessDay);
     }
 
-    const row = await this.db.transaction(
-      async (tx) => {
-        /**
-         * "This order took money." Revenue, VAT and top-items all key off this
-         * one predicate, which is what keeps the Z-report internally
-         * consistent: a VAT figure computed over a different set of orders than
-         * the revenue figure would be indefensible at the counter.
-         */
-        const settled = exists(
-          tx
-            .select({ one: sql`1` })
-            .from(payments)
-            .where(
-              and(
-                eq(payments.orderId, orders.id),
-                eq(payments.status, 'SUCCEEDED'),
-              ),
-            ),
-        );
-
-        // q1 — status counts. Deliberately not filtered by `settled`: a
-        // cancelled order never paid, and still has to be counted as cancelled.
-        const statusCounts = await tx
-          .select({
-            status: orders.status,
-            count: sql<number>`count(*)::int`,
-          })
-          .from(orders)
-          .where(eq(orders.businessDay, businessDay))
-          .groupBy(orders.status);
-
-        // q2 — revenue by method. Cash is a payment row like any other, so it
-        // lands in the total here and is excluded only from the *gateway*
-        // comparison reconciliation makes.
-        //
-        // `settled` is an order-level predicate; this query needs row-level
-        // filtering on individual payments. Reusing `settled` would sum FAILED
-        // payment rows that belong to an otherwise-settled order.
-        const revenueByMethod = await tx
-          .select({
-            method: payments.method,
-            total: sum(payments.amountMinor),
-          })
-          .from(payments)
-          .innerJoin(orders, eq(payments.orderId, orders.id))
-          .where(
-            and(
-              eq(orders.businessDay, businessDay),
-              eq(payments.status, 'SUCCEEDED'),
-            ),
-          )
-          .groupBy(payments.method);
-
-        // q3 — refunds actually settled from the till. A FAILED refund is not
-        // money that left the drawer.
-        const [{ refunded }] = await tx
-          .select({ refunded: sum(refunds.amountMinor) })
-          .from(refunds)
-          .innerJoin(payments, eq(refunds.paymentId, payments.id))
-          .innerJoin(orders, eq(payments.orderId, orders.id))
-          .where(
-            and(
-              eq(orders.businessDay, businessDay),
-              eq(refunds.status, 'SUCCEEDED'),
-            ),
-          );
-
-        // q4 — every item sold, not a truncated leaderboard: a range query
-        // sums complete per-day lists, and truncated ones cannot be summed
-        // into an exact answer.
-        const items = await tx
-          .select({
-            menuItemId: orderItems.menuItemId,
-            name: orderItems.nameSnapshot,
-            quantity: sql<number>`sum(${orderItems.quantity})::int`,
-            revenue: sum(orderItems.lineTotalMinor),
-          })
-          .from(orderItems)
-          .innerJoin(orders, eq(orderItems.orderId, orders.id))
-          .where(and(eq(orders.businessDay, businessDay), settled))
-          .groupBy(orderItems.menuItemId, orderItems.nameSnapshot);
-
-        /**
-         * q5 — VAT, over distinct orders and with **no join to items**.
-         *
-         * Merging this into q4 looks like an obvious saving and is wrong: across
-         * the `order_items` join each order's VAT would be added once per line
-         * on the ticket, so a three-item order would contribute triple. VAT is
-         * a per-order figure. Leave these two queries apart.
-         */
-        const [{ vat }] = await tx
-          .select({ vat: sum(orders.vatMinor) })
-          .from(orders)
-          .where(and(eq(orders.businessDay, businessDay), settled));
-
-        /**
-         * `sum()` is typed `string | null` because node-postgres returns
-         * numeric and bigint aggregates as text — `'1000' + 500` would be
-         * `'1000500'`. Converting at this boundary is what lets everything
-         * downstream be plain arithmetic.
-         */
-        return buildRollupRow(businessDay, {
-          statusCounts,
-          revenueByMethod: revenueByMethod.map(({ method, total }) => ({
-            method,
-            totalMinor: Number(total ?? 0),
-          })),
-          refundsMinor: Number(refunded ?? 0),
-          vatMinor: Number(vat ?? 0),
-          items: items.map(({ menuItemId, name, quantity, revenue }) => ({
-            menuItemId,
-            name,
-            quantity,
-            revenueMinor: Number(revenue ?? 0),
-          })),
-        });
-      },
-      /**
-       * REPEATABLE READ isolation pins all five queries to one snapshot. Postgres
-       * defaults to READ COMMITTED, which re-snapshots per statement, so READ ONLY
-       * alone guarantees nothing. The day is closed, so they could not disagree in
-       * practice — the isolation level costs nothing and removes the need to reason
-       * about snapshot consistency every time someone reads the code.
-       */
-      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    const row = buildRollupRow(
+      businessDay,
+      await aggregateDay(this.db, businessDay),
     );
 
     const values = {
@@ -219,6 +81,7 @@ export class DailyRollupService {
       ordersRefunded: row.ordersRefunded,
       ordersCancelled: row.ordersCancelled,
       ordersExpired: row.ordersExpired,
+      ordersSettled: row.ordersSettled,
       revenueMinor: row.revenueMinor,
       revenueByMethod: row.revenueByMethod,
       refundsMinor: row.refundsMinor,

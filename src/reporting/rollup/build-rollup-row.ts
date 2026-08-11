@@ -29,6 +29,8 @@ export interface RollupParts {
   }[];
   refundsMinor: number;
   vatMinor: number;
+  /** Orders that took money — the avg-ticket denominator (§5.2). */
+  ordersSettled: number;
   items: readonly RollupItem[];
 }
 
@@ -39,6 +41,7 @@ export interface RollupRow {
   ordersRefunded: number;
   ordersCancelled: number;
   ordersExpired: number;
+  ordersSettled: number;
   revenueMinor: number;
   revenueByMethod: Record<string, number>;
   refundsMinor: number;
@@ -94,6 +97,7 @@ export function buildRollupRow(
     ordersRefunded: counts.get('REFUNDED') ?? 0,
     ordersCancelled: counts.get('CANCELLED') ?? 0,
     ordersExpired: counts.get('EXPIRED') ?? 0,
+    ordersSettled: parts.ordersSettled,
     revenueMinor,
     revenueByMethod,
     refundsMinor: parts.refundsMinor,
