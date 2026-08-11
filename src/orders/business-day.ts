@@ -56,6 +56,36 @@ export function minusDays(businessDay: string, days: number): string {
   );
 }
 
+/**
+ * Every business day label from `from` to `to`, inclusive.
+ *
+ * Calendar arithmetic through `Date.UTC` for the same reason its siblings use
+ * it: these are date labels, not instants, so a daylight-saving transition must
+ * not shorten or duplicate a day. Returns empty rather than throwing when the
+ * range is inverted — callers validate `from <= to` and reject it as a 422, and
+ * a helper that also threw would give two error paths for one mistake.
+ */
+export function eachBusinessDay(from: string, to: string): string[] {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+
+  const end = Date.UTC(ty, tm - 1, td);
+  const days: string[] = [];
+
+  for (
+    let cursor = Date.UTC(fy, fm - 1, fd);
+    cursor <= end;
+    cursor += MILLIS_PER_DAY
+  ) {
+    const day = new Date(cursor);
+    days.push(
+      formatDate(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate()),
+    );
+  }
+
+  return days;
+}
+
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface WallClock {

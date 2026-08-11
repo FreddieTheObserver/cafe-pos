@@ -340,6 +340,37 @@ describe('Daily sales rollup (e2e)', () => {
     expect(row.ordersCancelled).toBe(1);
   });
 
+  it('counts orders that took money, not orders that completed', async () => {
+    // Completed and paid — a sale by any definition.
+    await givenOrder({
+      status: 'COMPLETED',
+      lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+    });
+    // Paid, refunded at the till. Still a sale that took money.
+    await givenOrder({
+      status: 'REFUNDED',
+      lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+    });
+    // Paid but never marked completed — the barista forgot. Still a sale.
+    await givenOrder({
+      status: 'READY',
+      lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+    });
+    // Never paid. Not a sale.
+    await givenOrder({
+      status: 'CANCELLED',
+      paid: false,
+      lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+    });
+
+    await roll();
+    const row = await storedRow();
+
+    // Three took money; ordersCompleted alone would say one.
+    expect(row.ordersSettled).toBe(3);
+    expect(row.ordersCompleted).toBe(1);
+  });
+
   it('writes a zero row for a day the cafe never opened', async () => {
     await roll();
     const row = await storedRow();

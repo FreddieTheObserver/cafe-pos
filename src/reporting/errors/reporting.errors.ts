@@ -1,3 +1,6 @@
+import { AppException } from '../../common/errors/app.exception';
+import { ErrorCode } from '../../common/errors/error-codes';
+
 /**
  * Deliberately a plain `Error` rather than an `AppException`.
  *
@@ -21,5 +24,23 @@ export class BusinessDayNotClosedError extends Error {
       `Refusing to roll up ${businessDay}: the current business day is ${currentBusinessDay}, so ${businessDay} is either still trading or has not started. A rollup row is treated as final by the catch-up sweep, and finalizing a partial day would freeze it permanently.`,
     );
     this.name = 'BusinessDayNotClosedError';
+  }
+}
+
+/**
+ * A range the caller may not ask for (§5.4's 422).
+ *
+ * Unlike `BusinessDayNotClosedError`, this one *is* a client error with a code
+ * the caller can act on — they asked for something outside the allowed window
+ * and can narrow it and retry.
+ */
+export class UnprocessableRangeError extends AppException {
+  constructor(detail: string) {
+    super({
+      code: ErrorCode.VALIDATION_FAILED,
+      status: 422,
+      title: 'Unprocessable range',
+      detail,
+    });
   }
 }

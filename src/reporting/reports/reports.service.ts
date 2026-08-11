@@ -1,0 +1,471 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import {
+  and,
+  eq,
+  exists,
+  gte,
+  inArray,
+  isNotNull,
+  lte,
+  sql,
+} from 'drizzle-orm';
+import { describeError } from '../../common/errors/describe-error';
+import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
+import type { Env } from '../../config/env.validation';
+import type { Database } from '../../database/database.module';
+import { DRIZZLE } from '../../database/drizzle.constants';
+import {
+  dailySalesRollups,
+  orders,
+  paymentEvents,
+  payments,
+} from '../../database/schema';
+import { businessDayOf, eachBusinessDay } from '../../orders/business-day';
+import {
+  ReconciliationService,
+  type ReconciliationReport,
+} from '../../payments/reconciliation/reconciliation.service';
+import { aggregateDay } from '../rollup/aggregate-day';
+import { buildRollupRow, type RollupRow } from '../rollup/build-rollup-row';
+import { UnprocessableRangeError } from '../errors/reporting.errors';
+import {
+  avgTicketMinor,
+  mergeTopItems,
+  salesBucket,
+  type SalesBucket,
+  type TopItem,
+} from './shape-reports';
+
+/**
+ * How many days in one request may be aggregated live.
+ *
+ * A range normally has at most one — today, or a day closed too recently for
+ * the 03:00 run. Needing thirty means the nightly job has been failing for a
+ * month, and serving that request slowly would hide an operational fault behind
+ * a spinner. Past this, the request is refused with a 503 that names the count.
+ *
+ * This bounds the `groupBy=day` stitching path only. It must NOT be applied to
+ * `groupBy=hour`, which is live across its whole range by definition — a 31-day
+ * hourly query is at its own legitimate maximum, and checking it here would
+ * reject the largest valid request.
+ */
+export const MAX_LIVE_DAYS = 31;
+
+/**
+ * How long the Z-report will wait for the gateway before giving up on it.
+ *
+ * `reconcile` retrieves one payment intent per gateway payment, serially, so
+ * its worst case grows with the day's volume — and this endpoint is opened at
+ * the end of the busiest day, with `no-store`, so every refresh pays it again.
+ * The report is worth more than the delta: past this deadline it is served
+ * without a reconciliation block rather than not served at all.
+ */
+const RECONCILIATION_DEADLINE_MS = 5_000;
+
+/** The `GET /reports/sales` body (§5.2). */
+export interface SalesReport {
+  from: string;
+  to: string;
+  groupBy: 'day' | 'hour';
+  /** True exactly when the range includes the business day still taking money. */
+  provisional: boolean;
+  buckets: SalesBucket[];
+}
+
+/** The `GET /reports/top-items` body (§5.2). */
+export interface TopItemsReport {
+  from: string;
+  to: string;
+  provisional: boolean;
+  items: TopItem[];
+}
+
+/** Why a Z-report carries no gateway comparison. */
+export type ReconciliationUnavailable =
+  'DAY_STILL_TRADING' | 'GATEWAY_UNREACHABLE';
+
+/** The `GET /reports/z-report` body (§5.3). */
+export interface ZReport {
+  businessDay: string;
+  provisional: boolean;
+  orders: {
+    completed: number;
+    refunded: number;
+    cancelled: number;
+    expired: number;
+  };
+  revenueMinor: { total: number; byMethod: Record<string, number> };
+  refundsMinor: number;
+  vatMinor: number;
+  reconciliation: ReconciliationReport | null;
+  reconciliationUnavailable: ReconciliationUnavailable | null;
+}
+
+@Injectable()
+export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
+
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly config: ConfigService<Env, true>,
+    private readonly reconciliation: ReconciliationService,
+  ) {}
+
+  /** The business day currently taking money (§3.3). */
+  currentBusinessDay(): string {
+    return businessDayOf(
+      new Date(),
+      this.config.get('BUSINESS_TIMEZONE', { infer: true }),
+      this.config.get('BUSINESS_DAY_START_HOUR', { infer: true }),
+    );
+  }
+
+  /**
+   * Refuses a field naming a business day after the one still trading.
+   *
+   * Shared by `salesReport`, `topItemsReport` and `zReport`: asking about a day
+   * that has not happened is a client bug, and aggregating it would return
+   * guaranteed-zero buckets that read as data instead.
+   */
+  private refuseIfAfterCurrent(
+    field: 'to' | 'businessDay',
+    value: string,
+    current: string,
+  ): void {
+    if (value > current) {
+      throw new UnprocessableRangeError(
+        `${field} must not be after the current business day (${current})`,
+      );
+    }
+  }
+
+  /**
+   * Totals for each requested business day, from whichever source is correct.
+   *
+   * A finalized rollup is read; anything else is aggregated live with the same
+   * function that produced the rollups. Both paths return a `RollupRow`, so no
+   * caller downstream can tell — or accidentally depend on — where a day came
+   * from.
+   */
+  async dayTotals(days: readonly string[]): Promise<Map<string, RollupRow>> {
+    if (days.length === 0) return new Map();
+
+    /**
+     * Assumes `days` is sorted ascending, which is what `eachBusinessDay`
+     * returns and what every caller passes. The first and last entries become
+     * the bounds of the single range query below; an unsorted input would
+     * silently narrow that range and send days to the live path that already
+     * had rollups.
+     */
+    const from = days[0];
+    const to = days[days.length - 1];
+
+    /**
+     * One query for every rolled day in the range, rather than one per day.
+     * This is what makes §11.2's "historical reports are O(days)" true of the
+     * request and not merely of the storage.
+     */
+    const stored = await this.db
+      .select()
+      .from(dailySalesRollups)
+      .where(
+        and(
+          gte(dailySalesRollups.businessDay, from),
+          lte(dailySalesRollups.businessDay, to),
+          isNotNull(dailySalesRollups.finalizedAt),
+        ),
+      );
+
+    const totals = new Map<string, RollupRow>();
+    for (const row of stored) {
+      totals.set(row.businessDay, {
+        businessDay: row.businessDay,
+        ordersCompleted: row.ordersCompleted,
+        ordersRefunded: row.ordersRefunded,
+        ordersCancelled: row.ordersCancelled,
+        ordersExpired: row.ordersExpired,
+        ordersSettled: row.ordersSettled,
+        revenueMinor: row.revenueMinor,
+        revenueByMethod: row.revenueByMethod as Record<string, number>,
+        refundsMinor: row.refundsMinor,
+        vatMinor: row.vatMinor,
+        topItems: row.topItems as RollupRow['topItems'],
+      });
+    }
+
+    const missing = days.filter((day) => !totals.has(day));
+
+    if (missing.length > MAX_LIVE_DAYS) {
+      throw new DependencyUnavailableError(
+        `${missing.length} of the ${days.length} days requested have no finalized rollup, which is past the ${MAX_LIVE_DAYS}-day limit this endpoint will compute on demand. The nightly rollup has not been running.`,
+      );
+    }
+
+    for (const day of missing) {
+      totals.set(day, buildRollupRow(day, await aggregateDay(this.db, day)));
+    }
+
+    return totals;
+  }
+
+  async salesReport(query: {
+    from: string;
+    to: string;
+    groupBy: 'day' | 'hour';
+  }): Promise<SalesReport> {
+    const current = this.currentBusinessDay();
+
+    /**
+     * A range ending after today is a client bug. Refusing beats aggregating
+     * days that have not happened to return guaranteed-zero buckets, which
+     * would read as data.
+     */
+    this.refuseIfAfterCurrent('to', query.to, current);
+
+    const days = eachBusinessDay(query.from, query.to);
+
+    if (query.groupBy === 'hour') {
+      return {
+        from: query.from,
+        to: query.to,
+        groupBy: 'hour',
+        provisional: days.includes(current),
+        buckets: await this.hourlyBuckets(query.from, query.to),
+      };
+    }
+
+    const totals = await this.dayTotals(days);
+
+    return {
+      from: query.from,
+      to: query.to,
+      groupBy: 'day',
+      provisional: days.includes(current),
+      buckets: days.map((day) => salesBucket(day, totals.get(day)!)),
+    };
+  }
+
+  /**
+   * Hourly buckets, always live.
+   *
+   * The bucket label is keyed by business day, not by the calendar date the
+   * wall-clock hour falls on. With a nonzero `BUSINESS_DAY_START_HOUR`, an
+   * order in the small hours belongs to *yesterday's* business day while its
+   * calendar date already reads today — labelling by calendar date would put
+   * that order's bucket outside a range that correctly includes it, silently
+   * every night the shift crosses midnight. Grouping is by output position
+   * (the `bucket` label) because the timezone travels as a bound parameter:
+   * naming the expression again in GROUP BY emits a second placeholder, and
+   * Postgres will not match the two. Ordering is by `min(created_at)`, which
+   * keeps the small-hours buckets of a business day sorted after its evening
+   * hours rather than before them.
+   *
+   * Only orders that took money are counted, matching the daily path's
+   * `settled` predicate.
+   *
+   * Deliberately not routed through `dayTotals` — the missing-rollup cap there
+   * bounds how much of a *stitched* range may be absent, which has no meaning
+   * for a path that is live by definition.
+   */
+  private async hourlyBuckets(
+    from: string,
+    to: string,
+  ): Promise<SalesBucket[]> {
+    const zone = this.config.get('BUSINESS_TIMEZONE', { infer: true });
+    const localHour = sql`date_trunc('hour', ${orders.createdAt} AT TIME ZONE ${zone})`;
+
+    const rows = await this.db
+      .select({
+        bucket: sql<string>`${orders.businessDay} || 'T' || to_char(${localHour}, 'HH24')`,
+        revenueMinor: sql<number>`coalesce(sum(${orders.totalMinor}), 0)::bigint`,
+        ordersSettled: sql<number>`count(*)::int`,
+      })
+      .from(orders)
+      .where(
+        and(
+          gte(orders.businessDay, from),
+          lte(orders.businessDay, to),
+          exists(
+            this.db
+              .select({ one: sql`1` })
+              .from(payments)
+              .where(
+                and(
+                  eq(payments.orderId, orders.id),
+                  eq(payments.status, 'SUCCEEDED'),
+                ),
+              ),
+          ),
+        ),
+      )
+      .groupBy(sql`1`)
+      .orderBy(sql`min(${orders.createdAt})`);
+
+    return rows.map((row) => ({
+      bucket: row.bucket,
+      revenueMinor: Number(row.revenueMinor),
+      ordersSettled: row.ordersSettled,
+      avgTicketMinor: avgTicketMinor(
+        Number(row.revenueMinor),
+        row.ordersSettled,
+      ),
+    }));
+  }
+
+  async topItemsReport(query: {
+    from: string;
+    to: string;
+    limit: number;
+  }): Promise<TopItemsReport> {
+    const current = this.currentBusinessDay();
+
+    this.refuseIfAfterCurrent('to', query.to, current);
+
+    const days = eachBusinessDay(query.from, query.to);
+    const totals = await this.dayTotals(days);
+
+    return {
+      from: query.from,
+      to: query.to,
+      provisional: days.includes(current),
+      items: mergeTopItems(
+        days.map((day) => ({
+          businessDay: day,
+          topItems: totals.get(day)!.topItems,
+        })),
+        query.limit,
+      ),
+    };
+  }
+
+  async zReport(businessDay: string): Promise<ZReport> {
+    const current = this.currentBusinessDay();
+
+    this.refuseIfAfterCurrent('businessDay', businessDay, current);
+
+    const provisional = businessDay === current;
+    const totals = await this.dayTotals([businessDay]);
+    const row = totals.get(businessDay)!;
+
+    /**
+     * The gateway comparison is skipped outright for a day still trading.
+     * Reconciling an open day reports a delta that is just work in progress,
+     * and a number that means nothing is worse in a cash-up document than an
+     * absent one that says why.
+     */
+    let reconciliation: ReconciliationReport | null = null;
+    let reconciliationUnavailable: ReconciliationUnavailable | null =
+      provisional ? 'DAY_STILL_TRADING' : null;
+
+    if (!provisional) {
+      try {
+        const report = await this.reconcileWithDeadline(businessDay);
+        reconciliation = {
+          ...report,
+          unmatchedEvents: await this.unmatchedEventsForDay(
+            businessDay,
+            report.unmatchedEvents,
+          ),
+        };
+      } catch (error) {
+        /**
+         * Reported as unavailable, never as a delta of zero. "We could not
+         * check" and "we checked and it agrees" are opposite facts, and the
+         * till figures below never depended on the gateway — so the report is
+         * still worth serving. A missed deadline lands here too: `reconcile`
+         * is still running somewhere, but the report has stopped waiting on it.
+         */
+        this.logger.error(
+          `Z-report for ${businessDay} could not reach the gateway; serving without a reconciliation block. ${describeError(error)}`,
+        );
+        reconciliationUnavailable = 'GATEWAY_UNREACHABLE';
+      }
+    }
+
+    return {
+      businessDay,
+      provisional,
+      orders: {
+        completed: row.ordersCompleted,
+        refunded: row.ordersRefunded,
+        cancelled: row.ordersCancelled,
+        expired: row.ordersExpired,
+      },
+      revenueMinor: { total: row.revenueMinor, byMethod: row.revenueByMethod },
+      refundsMinor: row.refundsMinor,
+      vatMinor: row.vatMinor,
+      reconciliation,
+      reconciliationUnavailable,
+    };
+  }
+
+  /**
+   * Races `reconcile` against a fixed deadline so a degraded gateway cannot
+   * hold the request open.
+   *
+   * `reconcile` is not cancelled — nothing in `PaymentProvider` takes a
+   * signal — so a timeout leaves it running to completion in the background,
+   * discarded rather than awaited. That is deliberate: the alternative is
+   * cancelling a query the DB is mid-way through, which trades one kind of
+   * mess for a worse one. The timer that enforces the deadline is always
+   * cleared, so a settle either way never leaves it able to fire later and
+   * keep the process alive.
+   */
+  private async reconcileWithDeadline(
+    businessDay: string,
+  ): Promise<ReconciliationReport> {
+    let timer: NodeJS.Timeout | undefined;
+
+    try {
+      return await Promise.race([
+        this.reconciliation.reconcile(businessDay),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(
+                `reconciliation for ${businessDay} exceeded the ${RECONCILIATION_DEADLINE_MS}ms deadline`,
+              ),
+            );
+          }, RECONCILIATION_DEADLINE_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Narrows `reconcile`'s global unmatched-event list to this business day,
+   * for the Z-report only.
+   *
+   * `ReconciliationService` itself is left alone (see its own comment): the
+   * nightly job's list is a cross-day operational alarm, and an event with no
+   * `payment_id` has to stay visible there, since nothing would ever narrow it
+   * to a day. The Z-report is scoped to one day by definition, so it filters
+   * to events this day can actually be blamed for, via
+   * `payment_events.payment_id → payments.order_id → orders.business_day` —
+   * an event with no `payment_id` cannot join this path and simply drops out
+   * of the report, still visible in the nightly job's unscoped list.
+   */
+  private async unmatchedEventsForDay(
+    businessDay: string,
+    candidateIds: readonly string[],
+  ): Promise<string[]> {
+    if (candidateIds.length === 0) return [];
+
+    const attributable = await this.db
+      .select({ id: paymentEvents.providerEventId })
+      .from(paymentEvents)
+      .innerJoin(payments, eq(paymentEvents.paymentId, payments.id))
+      .innerJoin(orders, eq(payments.orderId, orders.id))
+      .where(
+        and(
+          inArray(paymentEvents.providerEventId, candidateIds),
+          eq(orders.businessDay, businessDay),
+        ),
+      );
+
+    return attributable.map((row) => row.id);
+  }
+}
