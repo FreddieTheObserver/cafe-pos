@@ -53,18 +53,26 @@ never become a full table scan. The recompute is deterministic, so re-running is
 sealing the row would freeze any aggregation bug into every day it touched, recoverable only by
 hand-written SQL.
 
-**What shipped does not yet honour that,** and the gap is recorded here rather than papered over.
-The sweep's predicate is `NOT EXISTS (... finalized_at IS NOT NULL)`, so a day that has been rolled
-once is never revisited — operationally `finalized_at` is a *seal*, not a receipt. That is harmless
-while the 03:00 cron is the only caller, because it only ever names days that are already closed.
-It stops being harmless in the read slice: `rollDay` is public and exported, and `DESIGN.md`:902
-requires the Z-report to serve *today* flagged `"provisional": true`, so the obvious implementation
-would write a finalized row for a partial day that the sweep then skips forever. The same shape
-lets a late Stripe webhook (retried for up to three days) understate a closed day permanently.
+**Operationally `finalized_at` is a seal, not a receipt,** and that is now made safe by a guard
+rather than by a caller convention. The sweep's predicate is
+`NOT EXISTS (... finalized_at IS NOT NULL)`, so a day rolled once is never revisited. Since
+`rollDay` is public and exported, and `DESIGN.md`:902 requires the Z-report to serve *today* flagged
+`"provisional": true`, the obvious read-slice implementation would have written a finalized row for
+a partial day that the sweep then skipped forever.
 
-Resolve this before the read endpoints are written, not during. The two candidates are a guard on
-`rollDay` rejecting a day that is not yet closed, and an unconditional re-roll of a trailing 2–3
-day window instead of skipping anything already finalized.
+`rollDay` therefore **refuses any business day that has not finished trading** — it throws
+`BusinessDayNotClosedError` when `businessDay >= businessDayOf(now)`. The nightly cron cannot trip
+it (it names a day that closed 22 hours earlier); it exists for every other caller. Throwing rather
+than returning early is deliberate: a caller that asked for an open day has a bug, and a silently
+absent row would let that bug ship.
+
+**One residual is knowingly left open.** A mutation landing on an *already-rolled* closed day is
+still not picked up — a Stripe webhook is retried for up to three days, so one arriving more than
+~22 hours after close flips a payment to `SUCCEEDED` on a day whose row is already final, and an
+order left `IN_PREPARATION` at close and completed next morning is never counted. The existing
+reconciliation job *detects* the money case (gateway-versus-books delta pages someone) but nothing
+re-rolls the row. The fix, if this ever bites, is the other candidate: re-roll a trailing 2–3 day
+window unconditionally instead of skipping anything already finalized.
 
 ### 3. No lock — and §11.3 gets amended
 
