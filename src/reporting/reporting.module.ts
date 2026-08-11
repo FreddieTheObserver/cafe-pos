@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
+import { ReportsService } from './reports/reports.service';
 import { DailyRollupService } from './rollup/daily-rollup.service';
 
 /**
  * Reporting (§17 phase 6).
  *
- * Producer only for now — the nightly rollup that §11.2 leans on. The
- * `/reports/*` read side lands in the next slice and joins this module.
+ * The nightly rollup that §11.2 leans on, and the read side that consumes it.
  */
 @Module({
-  providers: [DailyRollupService],
-  exports: [DailyRollupService],
+  providers: [DailyRollupService, ReportsService],
+  exports: [DailyRollupService, ReportsService],
 })
 export class ReportingModule {}
