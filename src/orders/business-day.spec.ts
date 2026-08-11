@@ -1,4 +1,4 @@
-import { businessDayOf, minusDays } from './business-day';
+import { businessDayOf, eachBusinessDay, minusDays } from './business-day';
 
 /** UTC+7 year-round — no DST, which is what makes it the boring baseline. */
 const BANGKOK = 'Asia/Bangkok';
@@ -130,5 +130,40 @@ describe('minusDays', () => {
     // 30 days back from the far side of any transition is still 30 calendar
     // days — the value is a date label, not an instant.
     expect(minusDays('2026-11-30', 30)).toBe('2026-10-31');
+  });
+});
+
+describe('eachBusinessDay', () => {
+  it('is inclusive of both ends', () => {
+    expect(eachBusinessDay('2026-06-01', '2026-06-03')).toEqual([
+      '2026-06-01',
+      '2026-06-02',
+      '2026-06-03',
+    ]);
+  });
+
+  it('returns the single day when from equals to', () => {
+    expect(eachBusinessDay('2026-06-01', '2026-06-01')).toEqual(['2026-06-01']);
+  });
+
+  it('crosses a month boundary', () => {
+    expect(eachBusinessDay('2026-05-30', '2026-06-02')).toEqual([
+      '2026-05-30',
+      '2026-05-31',
+      '2026-06-01',
+      '2026-06-02',
+    ]);
+  });
+
+  it('crosses a leap day', () => {
+    expect(eachBusinessDay('2028-02-28', '2028-03-01')).toEqual([
+      '2028-02-28',
+      '2028-02-29',
+      '2028-03-01',
+    ]);
+  });
+
+  it('returns empty when from is after to', () => {
+    expect(eachBusinessDay('2026-06-03', '2026-06-01')).toEqual([]);
   });
 });
