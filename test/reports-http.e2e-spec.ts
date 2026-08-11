@@ -212,4 +212,53 @@ describe('Reports HTTP (e2e)', () => {
       expect(res.body.provisional).toBe(true);
     });
   });
+
+  describe('GET /reports/top-items', () => {
+    it('is refused to a cashier', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/top-items?from=${DAY}&to=${DAY}`)
+        .set('Authorization', `Bearer ${cashierToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('merges an item across the range', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/top-items?from=${DAY}&to=${DAY}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.items).toEqual([
+        {
+          menuItemId: latteId,
+          name: 'Latte',
+          quantity: 2,
+          revenueMinor: 20_000,
+        },
+      ]);
+    });
+
+    it('honours the limit', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/top-items?from=${DAY}&to=${DAY}&limit=1`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.items).toHaveLength(1);
+    });
+
+    it('refuses a limit outside 1..50', async () => {
+      for (const limit of ['0', '51']) {
+        const res = await harness
+          .http()
+          .get(`/api/v1/reports/top-items?from=${DAY}&to=${DAY}&limit=${limit}`)
+          .set('Authorization', `Bearer ${managerToken}`);
+
+        expect(res.status).toBe(422);
+      }
+    });
+  });
 });

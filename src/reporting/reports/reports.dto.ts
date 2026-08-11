@@ -51,3 +51,28 @@ export const SalesQuerySchema = z
   );
 
 export class SalesQueryDto extends createZodDto(SalesQuerySchema) {}
+
+const DEFAULT_TOP_ITEMS_LIMIT = 10;
+const MAX_TOP_ITEMS_LIMIT = 50;
+
+export const TopItemsQuerySchema = z
+  .object({
+    from: businessDay,
+    to: businessDay,
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_TOP_ITEMS_LIMIT)
+      .default(DEFAULT_TOP_ITEMS_LIMIT),
+  })
+  .refine((q) => q.from <= q.to, {
+    message: 'from must not be after to',
+    path: ['from'],
+  })
+  .refine((q) => spanInDays(q.from, q.to) <= MAX_DAY_RANGE_DAYS, {
+    message: `range must be at most ${MAX_DAY_RANGE_DAYS} days`,
+    path: ['to'],
+  });
+
+export class TopItemsQueryDto extends createZodDto(TopItemsQuerySchema) {}

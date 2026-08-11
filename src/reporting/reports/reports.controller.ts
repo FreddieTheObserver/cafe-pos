@@ -1,7 +1,11 @@
 import { Controller, Get, Header, Query } from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
-import { SalesQueryDto } from './reports.dto';
-import { ReportsService, type SalesReport } from './reports.service';
+import { SalesQueryDto, TopItemsQueryDto } from './reports.dto';
+import {
+  ReportsService,
+  type SalesReport,
+  type TopItemsReport,
+} from './reports.service';
 
 /**
  * The §5.2 reporting reads.
@@ -23,5 +27,12 @@ export class ReportsController {
   @Get('sales')
   sales(@Query() query: SalesQueryDto): Promise<SalesReport> {
     return this.reports.salesReport(query);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Header('Cache-Control', 'no-store')
+  @Get('top-items')
+  topItems(@Query() query: TopItemsQueryDto): Promise<TopItemsReport> {
+    return this.reports.topItemsReport(query);
   }
 }

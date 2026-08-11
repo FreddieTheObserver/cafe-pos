@@ -10,7 +10,13 @@ import { businessDayOf, eachBusinessDay } from '../../orders/business-day';
 import { aggregateDay } from '../rollup/aggregate-day';
 import { buildRollupRow, type RollupRow } from '../rollup/build-rollup-row';
 import { UnprocessableRangeError } from '../errors/reporting.errors';
-import { avgTicketMinor, salesBucket, type SalesBucket } from './shape-reports';
+import {
+  avgTicketMinor,
+  mergeTopItems,
+  salesBucket,
+  type SalesBucket,
+  type TopItem,
+} from './shape-reports';
 
 /**
  * How many days in one request may be aggregated live.
@@ -35,6 +41,14 @@ export interface SalesReport {
   /** True exactly when the range includes the business day still taking money. */
   provisional: boolean;
   buckets: SalesBucket[];
+}
+
+/** The `GET /reports/top-items` body (§5.2). */
+export interface TopItemsReport {
+  from: string;
+  to: string;
+  provisional: boolean;
+  items: TopItem[];
 }
 
 @Injectable()
@@ -228,5 +242,35 @@ export class ReportsService {
         row.ordersSettled,
       ),
     }));
+  }
+
+  async topItemsReport(query: {
+    from: string;
+    to: string;
+    limit: number;
+  }): Promise<TopItemsReport> {
+    const current = this.currentBusinessDay();
+
+    if (query.to > current) {
+      throw new UnprocessableRangeError(
+        `to must not be after the current business day (${current})`,
+      );
+    }
+
+    const days = eachBusinessDay(query.from, query.to);
+    const totals = await this.dayTotals(days);
+
+    return {
+      from: query.from,
+      to: query.to,
+      provisional: days.includes(current),
+      items: mergeTopItems(
+        days.map((day) => ({
+          businessDay: day,
+          topItems: totals.get(day)!.topItems,
+        })),
+        query.limit,
+      ),
+    };
   }
 }
