@@ -1044,7 +1044,7 @@ So the scalability section's job is not to shard anything — it's to (a) not pa
 
 ### 11.3 Horizontal scaling posture
 
-The API is **stateless by construction**: JWT/device-token auth (no session affinity), WS state in Redis pub/sub, jobs (expiry, rollups) guarded by Redis locks (`SET NX`) so N instances don't double-run them, idempotency in Postgres. Scaling = adding instances behind the load balancer. v1 deliberately runs **2 small instances** — not for throughput, but so deploys and crashes don't take the cafe down (NFR availability).
+The API is **stateless by construction**: JWT/device-token auth (no session affinity), WS state in Redis pub/sub, jobs (expiry, rollups) written to be idempotent rather than locked, so N instances running them concurrently converge instead of colliding — expiry's guarded `WHERE status = 'PENDING_PAYMENT'` matches nothing on the loser, and a rollup recomputes a closed day deterministically and upserts it, idempotency in Postgres. Scaling = adding instances behind the load balancer. v1 deliberately runs **2 small instances** — not for throughput, but so deploys and crashes don't take the cafe down (NFR availability).
 
 ### 11.4 Caching strategy
 

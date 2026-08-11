@@ -1,4 +1,4 @@
-import { businessDayOf } from './business-day';
+import { businessDayOf, minusDays } from './business-day';
 
 /** UTC+7 year-round — no DST, which is what makes it the boring baseline. */
 const BANGKOK = 'Asia/Bangkok';
@@ -106,5 +106,29 @@ describe('businessDayOf', () => {
     expect(
       businessDayOf(at('2026-06-01T10:00:00Z'), BANGKOK, OPENS_AT_5AM),
     ).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('minusDays', () => {
+  it('steps back within a month', () => {
+    expect(minusDays('2026-06-11', 3)).toBe('2026-06-08');
+  });
+
+  it('crosses a month boundary', () => {
+    expect(minusDays('2026-06-02', 5)).toBe('2026-05-28');
+  });
+
+  it('crosses a year boundary', () => {
+    expect(minusDays('2026-01-02', 3)).toBe('2025-12-30');
+  });
+
+  it('handles a leap day', () => {
+    expect(minusDays('2028-03-01', 1)).toBe('2028-02-29');
+  });
+
+  it('is calendar arithmetic, so a DST zone cannot shorten a day', () => {
+    // 30 days back from the far side of any transition is still 30 calendar
+    // days — the value is a date label, not an instant.
+    expect(minusDays('2026-11-30', 30)).toBe('2026-10-31');
   });
 });
