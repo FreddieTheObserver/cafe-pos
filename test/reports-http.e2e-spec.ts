@@ -1,6 +1,7 @@
 import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
+import { businessDayOf } from '../src/orders/business-day';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 describe('Reports HTTP (e2e)', () => {
@@ -11,6 +12,7 @@ describe('Reports HTTP (e2e)', () => {
   let cashierId: string;
   let categoryId: string;
   let latteId: string;
+  let currentDay: string;
 
   const touchedDays: string[] = [];
   const DAY = '2021-09-01';
@@ -55,6 +57,13 @@ describe('Reports HTTP (e2e)', () => {
   beforeAll(async () => {
     harness = await IdentityHarness.boot();
     cashierId = (await harness.createStaff('CASHIER')).id;
+    // Same pattern `refunds.e2e-spec.ts` uses: read the real config rather
+    // than hardcoding a zone/hour that would drift from what the service uses.
+    currentDay = businessDayOf(
+      new Date(),
+      process.env.BUSINESS_TIMEZONE ?? 'Asia/Bangkok',
+      Number(process.env.BUSINESS_DAY_START_HOUR ?? 5),
+    );
     // tokenFor mints through AccessTokenService rather than POST /auth/login,
     // so these do not spend the shared per-IP login budget.
     managerToken = await harness.tokenFor('MANAGER');
@@ -173,6 +182,34 @@ describe('Reports HTTP (e2e)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.buckets).toHaveLength(12);
+    });
+
+    it('returns hourly buckets from the live tables', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/sales?from=${DAY}&to=${DAY}&groupBy=hour`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.groupBy).toBe('hour');
+      expect(res.body.buckets).toHaveLength(1);
+      expect(res.body.buckets[0]).toMatchObject({
+        revenueMinor: 20_000,
+        ordersSettled: 2,
+        avgTicketMinor: 10_000,
+      });
+      // Business-day-keyed, per finding 1 — not the wall-clock calendar date.
+      expect(res.body.buckets[0].bucket).toMatch(/^2021-09-01T\d{2}$/);
+    });
+
+    it('flags a range that includes the day still taking money', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/sales?from=${currentDay}&to=${currentDay}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.provisional).toBe(true);
     });
   });
 });

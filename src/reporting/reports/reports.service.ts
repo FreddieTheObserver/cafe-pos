@@ -166,10 +166,20 @@ export class ReportsService {
   /**
    * Hourly buckets, always live.
    *
-   * Bucketed in the business timezone rather than UTC: an hour label is a
-   * wall-clock fact, and a cafe's 09:00 rush is 09:00 on both sides of a
-   * daylight-saving change. Only orders that took money are counted, matching
-   * the daily path's `settled` predicate.
+   * The bucket label is keyed by business day, not by the calendar date the
+   * wall-clock hour falls on. With a nonzero `BUSINESS_DAY_START_HOUR`, an
+   * order in the small hours belongs to *yesterday's* business day while its
+   * calendar date already reads today — labelling by calendar date would put
+   * that order's bucket outside a range that correctly includes it, silently
+   * every night the shift crosses midnight. Grouping is by output position
+   * (the `bucket` label) because the timezone travels as a bound parameter:
+   * naming the expression again in GROUP BY emits a second placeholder, and
+   * Postgres will not match the two. Ordering is by `min(created_at)`, which
+   * keeps the small-hours buckets of a business day sorted after its evening
+   * hours rather than before them.
+   *
+   * Only orders that took money are counted, matching the daily path's
+   * `settled` predicate.
    *
    * Deliberately not routed through `dayTotals` — the missing-rollup cap there
    * bounds how much of a *stitched* range may be absent, which has no meaning
@@ -180,10 +190,11 @@ export class ReportsService {
     to: string,
   ): Promise<SalesBucket[]> {
     const zone = this.config.get('BUSINESS_TIMEZONE', { infer: true });
+    const localHour = sql`date_trunc('hour', ${orders.createdAt} AT TIME ZONE ${zone})`;
 
     const rows = await this.db
       .select({
-        bucket: sql<string>`to_char(date_trunc('hour', ${orders.createdAt} AT TIME ZONE ${zone}), 'YYYY-MM-DD"T"HH24')`,
+        bucket: sql<string>`${orders.businessDay} || 'T' || to_char(${localHour}, 'HH24')`,
         revenueMinor: sql<number>`coalesce(sum(${orders.totalMinor}), 0)::bigint`,
         ordersSettled: sql<number>`count(*)::int`,
       })
@@ -206,7 +217,7 @@ export class ReportsService {
         ),
       )
       .groupBy(sql`1`)
-      .orderBy(sql`1`);
+      .orderBy(sql`min(${orders.createdAt})`);
 
     return rows.map((row) => ({
       bucket: row.bucket,
