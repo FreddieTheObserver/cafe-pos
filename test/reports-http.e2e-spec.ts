@@ -2,6 +2,11 @@ import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
 import { businessDayOf } from '../src/orders/business-day';
+import type {
+  SalesReport,
+  TopItemsReport,
+  ZReport,
+} from '../src/reporting/reports/reports.service';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 describe('Reports HTTP (e2e)', () => {
@@ -17,6 +22,16 @@ describe('Reports HTTP (e2e)', () => {
 
   const touchedDays: string[] = [];
   const DAY = '2021-09-01';
+
+  // Consulted by the stubbed provider below; only the z-report describe
+  // block below flips it, and it is reset to true before each of its tests.
+  let gatewayReachable = true;
+
+  const salesOf = (res: { body: unknown }): SalesReport =>
+    res.body as SalesReport;
+  const topItemsOf = (res: { body: unknown }): TopItemsReport =>
+    res.body as TopItemsReport;
+  const zReportOf = (res: { body: unknown }): ZReport => res.body as ZReport;
 
   async function givenPaidOrder(
     businessDay: string,
@@ -61,14 +76,19 @@ describe('Reports HTTP (e2e)', () => {
     /**
      * Stubbed rather than left to the real Stripe adapter: `stripe-mock` runs
      * locally in this environment, so an unstubbed gateway call could well
-     * succeed and leave the z-report's gateway-unreachable case untested. This
-     * only affects reconciliation — sales and top-items never call the
-     * provider.
+     * succeed or fail depending on what is running, rather than on what the
+     * test means to exercise. This only affects reconciliation — sales and
+     * top-items never call the provider. `gatewayReachable` makes it
+     * switchable, the way `test/reconciliation.e2e-spec.ts` does it, so both
+     * the reachable and unreachable cases are test-controlled rather than one
+     * of them being permanently unreachable and untestable.
      */
     harness = await IdentityHarness.boot({
       paymentProvider: {
-        capturedTotalFor: () =>
-          Promise.reject(new Error('Stripe is unreachable')),
+        capturedTotalFor: (intentIds) =>
+          gatewayReachable
+            ? Promise.resolve({ totalMinor: 0, notCaptured: [...intentIds] })
+            : Promise.reject(new Error('Stripe is unreachable')),
       },
     });
     cashierId = (await harness.createStaff('CASHIER')).id;
@@ -153,7 +173,7 @@ describe('Reports HTTP (e2e)', () => {
         groupBy: 'day',
         provisional: false,
       });
-      expect(res.body.buckets).toEqual([
+      expect(salesOf(res).buckets).toEqual([
         {
           bucket: DAY,
           revenueMinor: 20_000,
@@ -206,7 +226,7 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.buckets).toHaveLength(12);
+      expect(salesOf(res).buckets).toHaveLength(12);
     });
 
     it('returns hourly buckets from the live tables', async () => {
@@ -216,15 +236,15 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.groupBy).toBe('hour');
-      expect(res.body.buckets).toHaveLength(1);
-      expect(res.body.buckets[0]).toMatchObject({
+      expect(salesOf(res).groupBy).toBe('hour');
+      expect(salesOf(res).buckets).toHaveLength(1);
+      expect(salesOf(res).buckets[0]).toMatchObject({
         revenueMinor: 20_000,
         ordersSettled: 2,
         avgTicketMinor: 10_000,
       });
       // Business-day-keyed, per finding 1 — not the wall-clock calendar date.
-      expect(res.body.buckets[0].bucket).toMatch(/^2021-09-01T\d{2}$/);
+      expect(salesOf(res).buckets[0].bucket).toMatch(/^2021-09-01T\d{2}$/);
     });
 
     it('flags a range that includes the day still taking money', async () => {
@@ -234,7 +254,7 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.provisional).toBe(true);
+      expect(salesOf(res).provisional).toBe(true);
     });
   });
 
@@ -255,7 +275,7 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.items).toEqual([
+      expect(topItemsOf(res).items).toEqual([
         {
           menuItemId: latteId,
           name: 'Latte',
@@ -272,7 +292,7 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.items).toHaveLength(1);
+      expect(topItemsOf(res).items).toHaveLength(1);
     });
 
     it('refuses a limit outside 1..50', async () => {
@@ -303,7 +323,7 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.items).toEqual([
+      expect(topItemsOf(res).items).toEqual([
         {
           menuItemId: croissantId,
           name: 'Croissant',
@@ -320,11 +340,17 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.provisional).toBe(true);
+      expect(topItemsOf(res).provisional).toBe(true);
     });
   });
 
   describe('GET /reports/z-report', () => {
+    // Only 'serves the report ... gateway is down' turns this off; every
+    // other test in this block sees a reachable gateway.
+    beforeEach(() => {
+      gatewayReachable = true;
+    });
+
     it('is refused to a barista', async () => {
       const res = await harness
         .http()
@@ -348,14 +374,30 @@ describe('Reports HTTP (e2e)', () => {
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
+      expect(zReportOf(res)).toMatchObject({
         businessDay: DAY,
         provisional: false,
         revenueMinor: { total: 20_000, byMethod: { CASH: 20_000 } },
         refundsMinor: 0,
         vatMinor: 0,
       });
-      expect(res.body.orders).toMatchObject({ completed: 2 });
+      expect(zReportOf(res).orders).toMatchObject({ completed: 2 });
+    });
+
+    it('embeds a computed reconciliation for a closed day', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      const body = zReportOf(res);
+      expect(body.reconciliationUnavailable).toBeNull();
+      expect(body.reconciliation).not.toBeNull();
+      // Cash-only day: nothing went through the gateway, so both sides are 0.
+      expect(body.reconciliation!.deltaMinor).toBe(0);
+      expect(body.reconciliation!.gatewayCapturedMinor).toBe(0);
+      expect(body.reconciliation!.dbRecordedMinor).toBe(0);
     });
 
     /**
@@ -364,39 +406,31 @@ describe('Reports HTTP (e2e)', () => {
      * fabricated as zero either.
      */
     it('serves the report with reconciliation explicitly unavailable when the gateway is down', async () => {
+      gatewayReachable = false;
+
       const res = await harness
         .http()
         .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.reconciliation).toBeNull();
-      expect(res.body.reconciliationUnavailable).toBe('GATEWAY_UNREACHABLE');
+      expect(zReportOf(res).reconciliation).toBeNull();
+      expect(zReportOf(res).reconciliationUnavailable).toBe(
+        'GATEWAY_UNREACHABLE',
+      );
     });
 
     it('flags the open business day and skips reconciliation as meaningless', async () => {
-      const today = await harness
-        .http()
-        .get('/api/v1/reports/sales?from=2021-09-01&to=2021-09-01')
-        .set('Authorization', `Bearer ${managerToken}`);
-      expect(today.status).toBe(200);
-
-      // The current business day, whatever it is when this runs.
-      const current = new Date().toISOString().slice(0, 10);
       const res = await harness
         .http()
-        .get(`/api/v1/reports/z-report?businessDay=${current}`)
+        .get(`/api/v1/reports/z-report?businessDay=${currentDay}`)
         .set('Authorization', `Bearer ${managerToken}`);
 
-      if (res.status === 200) {
-        expect(res.body.provisional).toBe(true);
-        expect(res.body.reconciliation).toBeNull();
-        expect(res.body.reconciliationUnavailable).toBe('DAY_STILL_TRADING');
-      } else {
-        // Between 00:00 and 05:00 local the calendar date is one day ahead of
-        // the business day, so this URL names a future day and 422 is correct.
-        expect(res.status).toBe(422);
-      }
+      expect(res.status).toBe(200);
+      const body = zReportOf(res);
+      expect(body.provisional).toBe(true);
+      expect(body.reconciliation).toBeNull();
+      expect(body.reconciliationUnavailable).toBe('DAY_STILL_TRADING');
     });
   });
 });
