@@ -14,6 +14,7 @@ import {
   sum,
 } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
+import { BusinessDayNotClosedError } from '../errors/reporting.errors';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
@@ -60,10 +61,31 @@ export class DailyRollupService {
    * Recomputes one business day from live tables and upserts its row.
    *
    * Safe to call repeatedly. The day this runs against is closed — §3.3 freezes
-   * its refunds and the caller only ever names a day that ended hours ago — so
-   * the aggregation is deterministic and a second run reproduces the first.
+   * its refunds and the guard below refuses anything else — so the aggregation
+   * is deterministic and a second run reproduces the first.
    */
   async rollDay(businessDay: string): Promise<RollupRow> {
+    /**
+     * Only a day that has finished trading may be rolled.
+     *
+     * The nightly cron cannot trip this: it names a day that closed 22 hours
+     * earlier. The guard is here for every *other* caller, because a rollup row
+     * is treated as final — `missedDays` skips any day carrying `finalized_at`,
+     * so a row written for a partial day would never be corrected. §5.3's
+     * Z-report has to serve today flagged `provisional`, which makes
+     * `rollDay(today)` the obvious wrong turn for the read slice to take.
+     *
+     * Throwing rather than returning early: a caller that asked for an open day
+     * has a bug, and handing back a silently absent row would let it ship.
+     *
+     * Lexicographic comparison is exact here — both sides are `YYYY-MM-DD`,
+     * zero-padded by `formatDate`, so string order is calendar order.
+     */
+    const currentBusinessDay = this.businessDayAt(Date.now());
+    if (businessDay >= currentBusinessDay) {
+      throw new BusinessDayNotClosedError(businessDay, currentBusinessDay);
+    }
+
     const row = await this.db.transaction(
       async (tx) => {
         /**

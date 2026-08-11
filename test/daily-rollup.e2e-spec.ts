@@ -2,6 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
 import type { PaymentMethod } from '../src/database/schema/enums';
+import { BusinessDayNotClosedError } from '../src/reporting/errors/reporting.errors';
 import { DailyRollupService } from '../src/reporting/rollup/daily-rollup.service';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -126,7 +127,18 @@ describe('Daily sales rollup (e2e)', () => {
 
   beforeEach(() => {
     dayCounter += 1;
-    day = `2031-01-${String(dayCounter).padStart(2, '0')}`;
+    /**
+     * A year safely in the *past*. These tests run against the real clock, and
+     * `rollDay` refuses any day that has not finished trading — so a
+     * future-dated fixture day would be rejected by the guard rather than
+     * rolled. 2020 also predates every real row this database could hold, which
+     * is what keeps the totals attributable to the fixture.
+     *
+     * The clock-mocked blocks below use 2031 dates instead; they move `now`
+     * forward to match, and being in a different decade from these days means
+     * no catch-up window can ever reach them.
+     */
+    day = `2020-01-${String(dayCounter).padStart(2, '0')}`;
   });
 
   afterAll(async () => {
@@ -435,7 +447,7 @@ describe('Daily sales rollup (e2e)', () => {
 
       const target = '2031-04-01';
       /**
-       * Deliberately in a different year from the `2031-01-XX` days the
+       * Deliberately in a different year from the counter-generated days the
        * per-test counter hands out. Picking a January date here would collide
        * with a day an earlier test already finalized, and this assertion would
        * pass or fail for a reason that has nothing to do with the window.
@@ -494,6 +506,79 @@ describe('Daily sales rollup (e2e)', () => {
       expect(summary.rolled).toBeGreaterThanOrEqual(1);
       expect((await storedRow(target)).revenueMinor).toBe(10_000);
       expect(await storedRow(doomed)).toBeUndefined();
+    });
+  });
+
+  /**
+   * The guard that stops `finalized_at` becoming a seal on a day still taking
+   * money.
+   *
+   * The nightly cron cannot trip this — it only ever names a day that closed 22
+   * hours earlier. The guard exists for the read slice: `rollDay` is public and
+   * exported, and §5.3's Z-report has to serve *today* flagged `provisional`,
+   * so the obvious implementation would finalize a partial day that the
+   * catch-up sweep then skips forever.
+   */
+  describe('the closed-day guard', () => {
+    function pretendItIs(iso: string): void {
+      jest.spyOn(Date, 'now').mockReturnValue(Date.parse(iso));
+    }
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('refuses the business day that is currently open, and writes nothing', async () => {
+      // 2031-06-03T03:00 Bangkok. Hour 3 < the 05:00 boundary, so the current
+      // business day is still 2031-06-02 — open, and taking money.
+      pretendItIs('2031-06-02T20:00:00Z');
+
+      const openDay = '2031-06-02';
+      /**
+       * Registered for cleanup even though a working guard writes nothing.
+       * Deleting the guard to check this test actually fails — which is how it
+       * was verified — makes these calls succeed and leave rows behind, and an
+       * un-cleaned row then fails the *next* run for a reason that has nothing
+       * to do with the guard. Cheap insurance that keeps the check repeatable.
+       */
+      rolledDays.push(openDay);
+
+      await givenOrder({
+        businessDay: openDay,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+
+      await expect(rollup.rollDay(openDay)).rejects.toThrow(
+        BusinessDayNotClosedError,
+      );
+      expect(await storedRow(openDay)).toBeUndefined();
+    });
+
+    it('refuses a business day in the future', async () => {
+      pretendItIs('2031-06-02T20:00:00Z');
+      rolledDays.push('2031-06-09'); // see the note above
+
+      await expect(rollup.rollDay('2031-06-09')).rejects.toThrow(
+        BusinessDayNotClosedError,
+      );
+      expect(await storedRow('2031-06-09')).toBeUndefined();
+    });
+
+    it('still rolls the day that closed most recently', async () => {
+      pretendItIs('2031-06-02T20:00:00Z');
+
+      // The business day immediately before the open one — closed at 05:00
+      // this morning, so it is fair game.
+      const closedDay = '2031-06-01';
+      rolledDays.push(closedDay);
+
+      await givenOrder({
+        businessDay: closedDay,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 2, lineMinor: 20_000 }],
+      });
+
+      await expect(rollup.rollDay(closedDay)).resolves.toBeDefined();
+      expect((await storedRow(closedDay)).revenueMinor).toBe(20_000);
     });
   });
 });
