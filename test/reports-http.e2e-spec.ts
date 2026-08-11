@@ -18,7 +18,36 @@ describe('Reports HTTP (e2e)', () => {
   let categoryId: string;
   let latteId: string;
   let croissantId: string;
-  let currentDay: string;
+  /**
+   * Pins the clock so the test and the service under test read the same
+   * instant, and returns the business day that instant belongs to.
+   *
+   * Computing the day once in `beforeAll` is not enough: the service computes
+   * its own `current` per request. Those are the same value
+   * for all but one moment a day — at the 05:00 boundary the cached day names
+   * yesterday while the service names today, `provisional` comes back `false`,
+   * and the assertion fails for a reason that has nothing to do with the code.
+   * A narrow window, but this branch has already shipped one wall-clock race
+   * (a UTC date compared against a business day) and it is not worth shipping
+   * a second.
+   *
+   * `Date.now` only, deliberately — `jest.useFakeTimers()` would also replace
+   * `queueMicrotask` and `hrtime`, which the Postgres driver runs on.
+   */
+  function freezeAtCurrentBusinessDay(): string {
+    const instant = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(instant);
+
+    return businessDayOf(
+      new Date(instant),
+      process.env.BUSINESS_TIMEZONE ?? 'Asia/Bangkok',
+      Number(process.env.BUSINESS_DAY_START_HOUR ?? 5),
+    );
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
 
   const touchedDays: string[] = [];
   const DAY = '2021-09-01';
@@ -98,13 +127,6 @@ describe('Reports HTTP (e2e)', () => {
       },
     });
     cashierId = (await harness.createStaff('CASHIER')).id;
-    // Same pattern `refunds.e2e-spec.ts` uses: read the real config rather
-    // than hardcoding a zone/hour that would drift from what the service uses.
-    currentDay = businessDayOf(
-      new Date(),
-      process.env.BUSINESS_TIMEZONE ?? 'Asia/Bangkok',
-      Number(process.env.BUSINESS_DAY_START_HOUR ?? 5),
-    );
     // tokenFor mints through AccessTokenService rather than POST /auth/login,
     // so these do not spend the shared per-IP login budget.
     managerToken = await harness.tokenFor('MANAGER');
@@ -254,9 +276,10 @@ describe('Reports HTTP (e2e)', () => {
     });
 
     it('flags a range that includes the day still taking money', async () => {
+      const open = freezeAtCurrentBusinessDay();
       const res = await harness
         .http()
-        .get(`/api/v1/reports/sales?from=${currentDay}&to=${currentDay}`)
+        .get(`/api/v1/reports/sales?from=${open}&to=${open}`)
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
@@ -340,9 +363,10 @@ describe('Reports HTTP (e2e)', () => {
     });
 
     it('flags a range that includes the day still taking money', async () => {
+      const open = freezeAtCurrentBusinessDay();
       const res = await harness
         .http()
-        .get(`/api/v1/reports/top-items?from=${currentDay}&to=${currentDay}`)
+        .get(`/api/v1/reports/top-items?from=${open}&to=${open}`)
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);
@@ -462,9 +486,10 @@ describe('Reports HTTP (e2e)', () => {
     });
 
     it('flags the open business day and skips reconciliation as meaningless', async () => {
+      const open = freezeAtCurrentBusinessDay();
       const res = await harness
         .http()
-        .get(`/api/v1/reports/z-report?businessDay=${currentDay}`)
+        .get(`/api/v1/reports/z-report?businessDay=${open}`)
         .set('Authorization', `Bearer ${managerToken}`);
 
       expect(res.status).toBe(200);

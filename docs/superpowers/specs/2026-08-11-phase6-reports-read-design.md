@@ -1,7 +1,7 @@
 # Phase 6, slice 2 — the reporting read endpoints
 
 **Date:** 2026-08-11
-**Status:** approved, not yet implemented
+**Status:** implemented on `phase6-reports-read` (PR #17)
 **Scope:** `GET /reports/sales`, `GET /reports/top-items`, `GET /reports/z-report`, plus the shared aggregation seam and migration `0006` they require.
 **Depends on:** slice 1 (the nightly rollup producer), merged as `72e6f55` and `0da1e91`.
 
