@@ -58,7 +58,19 @@ describe('Reports HTTP (e2e)', () => {
   }
 
   beforeAll(async () => {
-    harness = await IdentityHarness.boot();
+    /**
+     * Stubbed rather than left to the real Stripe adapter: `stripe-mock` runs
+     * locally in this environment, so an unstubbed gateway call could well
+     * succeed and leave the z-report's gateway-unreachable case untested. This
+     * only affects reconciliation — sales and top-items never call the
+     * provider.
+     */
+    harness = await IdentityHarness.boot({
+      paymentProvider: {
+        capturedTotalFor: () =>
+          Promise.reject(new Error('Stripe is unreachable')),
+      },
+    });
     cashierId = (await harness.createStaff('CASHIER')).id;
     // Same pattern `refunds.e2e-spec.ts` uses: read the real config rather
     // than hardcoding a zone/hour that would drift from what the service uses.
@@ -309,6 +321,82 @@ describe('Reports HTTP (e2e)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.provisional).toBe(true);
+    });
+  });
+
+  describe('GET /reports/z-report', () => {
+    it('is refused to a barista', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
+        .set('Authorization', `Bearer ${baristaToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    /**
+     * §17's Phase 6 exit criterion: *"Z-report matches hand-computed totals
+     * over seeded data."* The seed is two cash orders of 12,000 and 8,000
+     * minor units, both COMPLETED — so by hand the day totals 20,000, all of
+     * it CASH, across 2 completed orders, with no refunds and no VAT. Every
+     * figure below is that arithmetic, not a value copied from a previous run.
+     */
+    it('reports the day the till has to be cashed up against', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        businessDay: DAY,
+        provisional: false,
+        revenueMinor: { total: 20_000, byMethod: { CASH: 20_000 } },
+        refundsMinor: 0,
+        vatMinor: 0,
+      });
+      expect(res.body.orders).toMatchObject({ completed: 2 });
+    });
+
+    /**
+     * The figures a manager cashes up against never depended on the gateway,
+     * so a Stripe outage must not withhold them — but the delta must never be
+     * fabricated as zero either.
+     */
+    it('serves the report with reconciliation explicitly unavailable when the gateway is down', async () => {
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.reconciliation).toBeNull();
+      expect(res.body.reconciliationUnavailable).toBe('GATEWAY_UNREACHABLE');
+    });
+
+    it('flags the open business day and skips reconciliation as meaningless', async () => {
+      const today = await harness
+        .http()
+        .get('/api/v1/reports/sales?from=2021-09-01&to=2021-09-01')
+        .set('Authorization', `Bearer ${managerToken}`);
+      expect(today.status).toBe(200);
+
+      // The current business day, whatever it is when this runs.
+      const current = new Date().toISOString().slice(0, 10);
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${current}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      if (res.status === 200) {
+        expect(res.body.provisional).toBe(true);
+        expect(res.body.reconciliation).toBeNull();
+        expect(res.body.reconciliationUnavailable).toBe('DAY_STILL_TRADING');
+      } else {
+        // Between 00:00 and 05:00 local the calendar date is one day ahead of
+        // the business day, so this URL names a future day and 422 is correct.
+        expect(res.status).toBe(422);
+      }
     });
   });
 });

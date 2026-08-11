@@ -1,10 +1,15 @@
 import { Controller, Get, Header, Query } from '@nestjs/common';
 import { Roles } from '../../identity/decorators/roles.decorator';
-import { SalesQueryDto, TopItemsQueryDto } from './reports.dto';
+import {
+  SalesQueryDto,
+  TopItemsQueryDto,
+  ZReportQueryDto,
+} from './reports.dto';
 import {
   ReportsService,
   type SalesReport,
   type TopItemsReport,
+  type ZReport,
 } from './reports.service';
 
 /**
@@ -34,5 +39,12 @@ export class ReportsController {
   @Get('top-items')
   topItems(@Query() query: TopItemsQueryDto): Promise<TopItemsReport> {
     return this.reports.topItemsReport(query);
+  }
+
+  @Roles('ADMIN', 'MANAGER')
+  @Header('Cache-Control', 'no-store')
+  @Get('z-report')
+  zReport(@Query() query: ZReportQueryDto): Promise<ZReport> {
+    return this.reports.zReport(query.businessDay);
   }
 }

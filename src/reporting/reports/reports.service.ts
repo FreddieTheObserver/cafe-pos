@@ -1,12 +1,17 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { and, eq, exists, gte, isNotNull, lte, sql } from 'drizzle-orm';
+import { describeError } from '../../common/errors/describe-error';
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { dailySalesRollups, orders, payments } from '../../database/schema';
 import { businessDayOf, eachBusinessDay } from '../../orders/business-day';
+import {
+  ReconciliationService,
+  type ReconciliationReport,
+} from '../../payments/reconciliation/reconciliation.service';
 import { aggregateDay } from '../rollup/aggregate-day';
 import { buildRollupRow, type RollupRow } from '../rollup/build-rollup-row';
 import { UnprocessableRangeError } from '../errors/reporting.errors';
@@ -51,11 +56,35 @@ export interface TopItemsReport {
   items: TopItem[];
 }
 
+/** Why a Z-report carries no gateway comparison. */
+export type ReconciliationUnavailable =
+  'DAY_STILL_TRADING' | 'GATEWAY_UNREACHABLE';
+
+/** The `GET /reports/z-report` body (§5.3). */
+export interface ZReport {
+  businessDay: string;
+  provisional: boolean;
+  orders: {
+    completed: number;
+    refunded: number;
+    cancelled: number;
+    expired: number;
+  };
+  revenueMinor: { total: number; byMethod: Record<string, number> };
+  refundsMinor: number;
+  vatMinor: number;
+  reconciliation: ReconciliationReport | null;
+  reconciliationUnavailable: ReconciliationUnavailable | null;
+}
+
 @Injectable()
 export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly config: ConfigService<Env, true>,
+    private readonly reconciliation: ReconciliationService,
   ) {}
 
   /** The business day currently taking money (§3.3). */
@@ -271,6 +300,63 @@ export class ReportsService {
         })),
         query.limit,
       ),
+    };
+  }
+
+  async zReport(businessDay: string): Promise<ZReport> {
+    const current = this.currentBusinessDay();
+
+    if (businessDay > current) {
+      throw new UnprocessableRangeError(
+        `businessDay must not be after the current business day (${current})`,
+      );
+    }
+
+    const provisional = businessDay === current;
+    const totals = await this.dayTotals([businessDay]);
+    const row = totals.get(businessDay)!;
+
+    /**
+     * The gateway comparison is skipped outright for a day still trading.
+     * Reconciling an open day reports a delta that is just work in progress,
+     * and a number that means nothing is worse in a cash-up document than an
+     * absent one that says why.
+     */
+    let reconciliation: ReconciliationReport | null = null;
+    let reconciliationUnavailable: ReconciliationUnavailable | null =
+      provisional ? 'DAY_STILL_TRADING' : null;
+
+    if (!provisional) {
+      try {
+        reconciliation = await this.reconciliation.reconcile(businessDay);
+      } catch (error) {
+        /**
+         * Reported as unavailable, never as a delta of zero. "We could not
+         * check" and "we checked and it agrees" are opposite facts, and the
+         * till figures below never depended on the gateway — so the report is
+         * still worth serving.
+         */
+        this.logger.error(
+          `Z-report for ${businessDay} could not reach the gateway; serving without a reconciliation block. ${describeError(error)}`,
+        );
+        reconciliationUnavailable = 'GATEWAY_UNREACHABLE';
+      }
+    }
+
+    return {
+      businessDay,
+      provisional,
+      orders: {
+        completed: row.ordersCompleted,
+        refunded: row.ordersRefunded,
+        cancelled: row.ordersCancelled,
+        expired: row.ordersExpired,
+      },
+      revenueMinor: { total: row.revenueMinor, byMethod: row.revenueByMethod },
+      refundsMinor: row.refundsMinor,
+      vatMinor: row.vatMinor,
+      reconciliation,
+      reconciliationUnavailable,
     };
   }
 }

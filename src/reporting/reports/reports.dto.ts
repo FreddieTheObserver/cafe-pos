@@ -76,3 +76,7 @@ export const TopItemsQuerySchema = z
   });
 
 export class TopItemsQueryDto extends createZodDto(TopItemsQuerySchema) {}
+
+export const ZReportQuerySchema = z.object({ businessDay });
+
+export class ZReportQueryDto extends createZodDto(ZReportQuerySchema) {}

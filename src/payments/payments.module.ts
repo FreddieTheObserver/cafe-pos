@@ -117,6 +117,6 @@ function apiBase(
     },
     { provide: PAYMENT_PROVIDER, useClass: StripePaymentProvider },
   ],
-  exports: [PAYMENT_PROVIDER],
+  exports: [PAYMENT_PROVIDER, ReconciliationService],
 })
 export class PaymentsModule {}
