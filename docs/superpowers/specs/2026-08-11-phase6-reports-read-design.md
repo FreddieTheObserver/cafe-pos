@@ -52,6 +52,18 @@ Bucketing is timezone-aware — `date_trunc('hour', created_at AT TIME ZONE :BUS
 naive UTC, for the same reason `businessDayOf` reads the zone through `Intl`: an hour label is a
 wall-clock fact.
 
+The bucket label itself is keyed by **business day**, not by the wall-clock hour's calendar date,
+with the hour appended (`2026-06-11T02`) and rows ordered by `min(created_at)` rather than by the
+label. A calendar-date label would be wrong exactly where `businessDayOf` already isn't naive: an
+order at 02:00 belongs to *yesterday's* business day while its wall-clock hour reads today, so
+labelling by calendar date would put that order's bucket outside a range that legitimately
+contained it. Ordering by the real instant, instead of the label, keeps a business day's small-hours
+buckets sorted after its evening hours rather than before them. One consequence: hourly buckets are
+**sparse** (only hours that had a sale appear at all) while daily buckets from `groupBy=day` are
+**dense** (every day in range appears, zero-sales days included with zeroed fields) — and because
+ordering follows the instant rather than the label, the hourly bucket string is no longer
+lexicographically sortable.
+
 An `hourly_sales_rollups` table was rejected as YAGNI. Nothing asks for hourly-over-a-year, it
 doubles this slice, and the open day would still need the live path regardless. The endpoint's
 contract does not change if one is added later.
@@ -165,7 +177,9 @@ Roles: ADMIN, MANAGER. `from` and `to` are business days (`YYYY-MM-DD`).
 }
 ```
 
-`bucket` is `YYYY-MM-DD` for `day` and `YYYY-MM-DDTHH` in the business timezone for `hour`.
+`bucket` is `YYYY-MM-DD` for `day`. For `hour` it is the business day with the wall-clock hour
+appended (`YYYY-MM-DDTHH`, business timezone) rather than the calendar date the hour falls on — see
+decision 2 for why, and for the resulting sparse/dense and sort-order differences from `day`.
 
 `avgTicketMinor` is `Math.round(revenueMinor / ordersSettled)`, and `null` when `ordersSettled` is 0.
 This is the one division near money in the codebase, and it is allowed because an average ticket is

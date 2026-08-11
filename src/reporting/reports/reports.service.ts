@@ -1,12 +1,26 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, eq, exists, gte, isNotNull, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  exists,
+  gte,
+  inArray,
+  isNotNull,
+  lte,
+  sql,
+} from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
-import { dailySalesRollups, orders, payments } from '../../database/schema';
+import {
+  dailySalesRollups,
+  orders,
+  paymentEvents,
+  payments,
+} from '../../database/schema';
 import { businessDayOf, eachBusinessDay } from '../../orders/business-day';
 import {
   ReconciliationService,
@@ -37,6 +51,17 @@ import {
  * reject the largest valid request.
  */
 export const MAX_LIVE_DAYS = 31;
+
+/**
+ * How long the Z-report will wait for the gateway before giving up on it.
+ *
+ * `reconcile` retrieves one payment intent per gateway payment, serially, so
+ * its worst case grows with the day's volume — and this endpoint is opened at
+ * the end of the busiest day, with `no-store`, so every refresh pays it again.
+ * The report is worth more than the delta: past this deadline it is served
+ * without a reconciliation block rather than not served at all.
+ */
+const RECONCILIATION_DEADLINE_MS = 5_000;
 
 /** The `GET /reports/sales` body (§5.2). */
 export interface SalesReport {
@@ -94,6 +119,25 @@ export class ReportsService {
       this.config.get('BUSINESS_TIMEZONE', { infer: true }),
       this.config.get('BUSINESS_DAY_START_HOUR', { infer: true }),
     );
+  }
+
+  /**
+   * Refuses a field naming a business day after the one still trading.
+   *
+   * Shared by `salesReport`, `topItemsReport` and `zReport`: asking about a day
+   * that has not happened is a client bug, and aggregating it would return
+   * guaranteed-zero buckets that read as data instead.
+   */
+  private refuseIfAfterCurrent(
+    field: 'to' | 'businessDay',
+    value: string,
+    current: string,
+  ): void {
+    if (value > current) {
+      throw new UnprocessableRangeError(
+        `${field} must not be after the current business day (${current})`,
+      );
+    }
   }
 
   /**
@@ -177,11 +221,7 @@ export class ReportsService {
      * days that have not happened to return guaranteed-zero buckets, which
      * would read as data.
      */
-    if (query.to > current) {
-      throw new UnprocessableRangeError(
-        `to must not be after the current business day (${current})`,
-      );
-    }
+    this.refuseIfAfterCurrent('to', query.to, current);
 
     const days = eachBusinessDay(query.from, query.to);
 
@@ -280,11 +320,7 @@ export class ReportsService {
   }): Promise<TopItemsReport> {
     const current = this.currentBusinessDay();
 
-    if (query.to > current) {
-      throw new UnprocessableRangeError(
-        `to must not be after the current business day (${current})`,
-      );
-    }
+    this.refuseIfAfterCurrent('to', query.to, current);
 
     const days = eachBusinessDay(query.from, query.to);
     const totals = await this.dayTotals(days);
@@ -306,11 +342,7 @@ export class ReportsService {
   async zReport(businessDay: string): Promise<ZReport> {
     const current = this.currentBusinessDay();
 
-    if (businessDay > current) {
-      throw new UnprocessableRangeError(
-        `businessDay must not be after the current business day (${current})`,
-      );
-    }
+    this.refuseIfAfterCurrent('businessDay', businessDay, current);
 
     const provisional = businessDay === current;
     const totals = await this.dayTotals([businessDay]);
@@ -328,13 +360,21 @@ export class ReportsService {
 
     if (!provisional) {
       try {
-        reconciliation = await this.reconciliation.reconcile(businessDay);
+        const report = await this.reconcileWithDeadline(businessDay);
+        reconciliation = {
+          ...report,
+          unmatchedEvents: await this.unmatchedEventsForDay(
+            businessDay,
+            report.unmatchedEvents,
+          ),
+        };
       } catch (error) {
         /**
          * Reported as unavailable, never as a delta of zero. "We could not
          * check" and "we checked and it agrees" are opposite facts, and the
          * till figures below never depended on the gateway — so the report is
-         * still worth serving.
+         * still worth serving. A missed deadline lands here too: `reconcile`
+         * is still running somewhere, but the report has stopped waiting on it.
          */
         this.logger.error(
           `Z-report for ${businessDay} could not reach the gateway; serving without a reconciliation block. ${describeError(error)}`,
@@ -358,5 +398,74 @@ export class ReportsService {
       reconciliation,
       reconciliationUnavailable,
     };
+  }
+
+  /**
+   * Races `reconcile` against a fixed deadline so a degraded gateway cannot
+   * hold the request open.
+   *
+   * `reconcile` is not cancelled — nothing in `PaymentProvider` takes a
+   * signal — so a timeout leaves it running to completion in the background,
+   * discarded rather than awaited. That is deliberate: the alternative is
+   * cancelling a query the DB is mid-way through, which trades one kind of
+   * mess for a worse one. The timer that enforces the deadline is always
+   * cleared, so a settle either way never leaves it able to fire later and
+   * keep the process alive.
+   */
+  private async reconcileWithDeadline(
+    businessDay: string,
+  ): Promise<ReconciliationReport> {
+    let timer: NodeJS.Timeout | undefined;
+
+    try {
+      return await Promise.race([
+        this.reconciliation.reconcile(businessDay),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(
+                `reconciliation for ${businessDay} exceeded the ${RECONCILIATION_DEADLINE_MS}ms deadline`,
+              ),
+            );
+          }, RECONCILIATION_DEADLINE_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Narrows `reconcile`'s global unmatched-event list to this business day,
+   * for the Z-report only.
+   *
+   * `ReconciliationService` itself is left alone (see its own comment): the
+   * nightly job's list is a cross-day operational alarm, and an event with no
+   * `payment_id` has to stay visible there, since nothing would ever narrow it
+   * to a day. The Z-report is scoped to one day by definition, so it filters
+   * to events this day can actually be blamed for, via
+   * `payment_events.payment_id → payments.order_id → orders.business_day` —
+   * an event with no `payment_id` cannot join this path and simply drops out
+   * of the report, still visible in the nightly job's unscoped list.
+   */
+  private async unmatchedEventsForDay(
+    businessDay: string,
+    candidateIds: readonly string[],
+  ): Promise<string[]> {
+    if (candidateIds.length === 0) return [];
+
+    const attributable = await this.db
+      .select({ id: paymentEvents.providerEventId })
+      .from(paymentEvents)
+      .innerJoin(payments, eq(paymentEvents.paymentId, payments.id))
+      .innerJoin(orders, eq(payments.orderId, orders.id))
+      .where(
+        and(
+          inArray(paymentEvents.providerEventId, candidateIds),
+          eq(orders.businessDay, businessDay),
+        ),
+      );
+
+    return attributable.map((row) => row.id);
   }
 }

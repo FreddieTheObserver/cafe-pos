@@ -620,18 +620,24 @@ The `method` in the *request* survives for one reason: `CASH` never reaches Stri
 ```json
 {
   "businessDay": "2026-06-11",
+  "provisional": false,
   "orders": { "completed": 412, "refunded": 3, "cancelled": 9, "expired": 17 },
   "revenueMinor": { "total": 4812000, "byMethod": { "CARD": 2100000, "PROMPTPAY": 2300000, "CASH": 412000 } },
   "refundsMinor": 21500,
   "vatMinor": 314897,
   "reconciliation": {
+    "businessDay": "2026-06-11",
     "gatewayCapturedMinor": 4400000,
     "dbRecordedMinor": 4400000,
     "deltaMinor": 0,
-    "unmatchedEvents": []
-  }
+    "unmatchedEvents": [],
+    "notCaptured": []
+  },
+  "reconciliationUnavailable": null
 }
 ```
+
+`reconciliationUnavailable` is non-null, and `reconciliation` is `null`, exactly when the gateway comparison could not be trusted — `"DAY_STILL_TRADING"` for the still-open business day, `"GATEWAY_UNREACHABLE"` when Stripe could not be reached within the report's deadline. The figures above `reconciliation` never depend on the gateway and are always served.
 
 ### 5.4 Status code policy
 
@@ -831,9 +837,10 @@ idempotency_keys (key TEXT PRIMARY KEY, request_hash TEXT,
 
 -- Reporting
 daily_sales_rollups (business_day DATE PRIMARY KEY, orders_completed INT, orders_refunded INT,
-                  orders_cancelled INT, orders_expired INT, revenue_minor BIGINT,
-                  revenue_by_method JSONB, refunds_minor BIGINT, vat_minor BIGINT,
-                  top_items JSONB, finalized_at TIMESTAMPTZ)
+                  orders_cancelled INT, orders_expired INT,
+                  orders_settled INT,  -- took money (>=1 SUCCEEDED payment); avg-ticket denominator
+                  revenue_minor BIGINT, revenue_by_method JSONB, refunds_minor BIGINT,
+                  vat_minor BIGINT, top_items JSONB, finalized_at TIMESTAMPTZ)
 ```
 
 Queue-number generation (B3): a per-business-day counter via `INSERT … ON CONFLICT DO UPDATE … RETURNING` on a tiny `order_number_counters (business_day PK, last_value INT)` table — atomic, gapless-enough, and survives concurrent checkouts; sequences-per-day and `MAX()+1` both rejected (the former is DDL-at-runtime, the latter races).

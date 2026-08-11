@@ -14,10 +14,14 @@ export const MAX_DAY_RANGE_DAYS = 366;
  */
 export const MAX_HOUR_RANGE_DAYS = 31;
 
-/** `YYYY-MM-DD`, the shape of every `business_day` value in the schema. */
-const businessDay = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a YYYY-MM-DD business day');
+/**
+ * `YYYY-MM-DD`, the shape of every `business_day` value in the schema.
+ *
+ * `z.iso.date()` is calendar-aware — it rejects `2026-02-30` and `2026-04-31`
+ * where a bare regex would pass them through to `Date.parse`, which rolls an
+ * invalid date to the next real one instead of returning `NaN`.
+ */
+const businessDay = z.iso.date();
 
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 

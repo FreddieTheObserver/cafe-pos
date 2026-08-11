@@ -39,6 +39,10 @@ describe('Reports HTTP (e2e)', () => {
     qty = 1,
     itemId: string = latteId,
     nameSnapshot = 'Latte',
+    {
+      status = 'COMPLETED',
+      paid = true,
+    }: { status?: schema.OrderStatus; paid?: boolean } = {},
   ): Promise<void> {
     const orderId = uuidv7();
     await harness.db.insert(schema.orders).values({
@@ -46,7 +50,7 @@ describe('Reports HTTP (e2e)', () => {
       businessDay,
       channel: 'COUNTER',
       createdByUserId: cashierId,
-      status: 'COMPLETED',
+      status,
       subtotalMinor: lineMinor,
       vatMinor: 0,
       totalMinor: lineMinor,
@@ -61,15 +65,17 @@ describe('Reports HTTP (e2e)', () => {
       quantity: qty,
       lineTotalMinor: lineMinor,
     });
-    await harness.db.insert(schema.payments).values({
-      orderId,
-      provider: 'CASH',
-      method: 'CASH',
-      status: 'SUCCEEDED',
-      amountMinor: lineMinor,
-      currency: 'THB',
-      cashTenderedMinor: lineMinor,
-    });
+    if (paid) {
+      await harness.db.insert(schema.payments).values({
+        orderId,
+        provider: 'CASH',
+        method: 'CASH',
+        status: 'SUCCEEDED',
+        amountMinor: lineMinor,
+        currency: 'THB',
+        cashTenderedMinor: lineMinor,
+      });
+    }
   }
 
   beforeAll(async () => {
@@ -384,6 +390,41 @@ describe('Reports HTTP (e2e)', () => {
       expect(zReportOf(res).orders).toMatchObject({ completed: 2 });
     });
 
+    /**
+     * `DAY`'s seed is all COMPLETED, so it can never catch a status miscounted
+     * as another one — a mapping bug like `cancelled: row.ordersExpired` would
+     * pass every assertion above. A day with one order in each terminal status
+     * pins the whole block with `toEqual`, so a swapped or aliased field fails.
+     */
+    it('pins every field of the orders block, not just completed', async () => {
+      const day = '2021-09-15';
+      touchedDays.push(day);
+
+      await givenPaidOrder(day, 10_000, 1, latteId, 'Latte', {
+        status: 'COMPLETED',
+      });
+      await givenPaidOrder(day, 10_000, 1, latteId, 'Latte', {
+        status: 'REFUNDED',
+      });
+      await givenPaidOrder(day, 10_000, 1, latteId, 'Latte', {
+        status: 'CANCELLED',
+        paid: false,
+      });
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${day}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(zReportOf(res).orders).toEqual({
+        completed: 1,
+        refunded: 1,
+        cancelled: 1,
+        expired: 0,
+      });
+    });
+
     it('embeds a computed reconciliation for a closed day', async () => {
       const res = await harness
         .http()
@@ -431,6 +472,30 @@ describe('Reports HTTP (e2e)', () => {
       expect(body.provisional).toBe(true);
       expect(body.reconciliation).toBeNull();
       expect(body.reconciliationUnavailable).toBe('DAY_STILL_TRADING');
+    });
+  });
+
+  /**
+   * `Date.parse('2026-02-30T00:00:00Z')` is not `NaN` — V8 rolls it to March
+   * 2 — so a bare regex validator lets a date that does not exist through and
+   * the day silently normalises downstream. `z.iso.date()` is calendar-aware
+   * and refuses it at the door, on all three endpoints that take a business
+   * day.
+   */
+  describe('calendar validation shared by every business-day parameter', () => {
+    it('refuses a date that is not on the calendar', async () => {
+      for (const url of [
+        `/api/v1/reports/sales?from=2026-02-30&to=2026-02-30`,
+        `/api/v1/reports/top-items?from=2026-02-30&to=2026-02-30`,
+        `/api/v1/reports/z-report?businessDay=2026-02-30`,
+      ]) {
+        const res = await harness
+          .http()
+          .get(url)
+          .set('Authorization', `Bearer ${managerToken}`);
+
+        expect(res.status).toBe(422);
+      }
     });
   });
 });
