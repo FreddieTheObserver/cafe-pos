@@ -168,6 +168,60 @@ describe('mergeTopItems', () => {
     ]);
   });
 
+  it('applies the limit only after merging, so a steady seller beats a spike', () => {
+    const spikeVsSteady: DayItems[] = [
+      {
+        businessDay: '2026-06-01',
+        topItems: [
+          {
+            menuItemId: 'spike',
+            name: 'Spike',
+            quantity: 10,
+            revenueMinor: 100,
+          },
+          {
+            menuItemId: 'steady',
+            name: 'Steady',
+            quantity: 6,
+            revenueMinor: 60,
+          },
+        ],
+      },
+      {
+        businessDay: '2026-06-02',
+        topItems: [
+          {
+            menuItemId: 'steady',
+            name: 'Steady',
+            quantity: 6,
+            revenueMinor: 60,
+          },
+        ],
+      },
+      {
+        businessDay: '2026-06-03',
+        topItems: [
+          {
+            menuItemId: 'steady',
+            name: 'Steady',
+            quantity: 6,
+            revenueMinor: 60,
+          },
+        ],
+      },
+    ];
+
+    /**
+     * Steady tops no single day, but 18 across the range beats the spike's 10.
+     * An implementation that truncated to `limit` per day before merging would
+     * drop Steady on day one and report 12 — so this fixture fails for the
+     * wrong implementation, which the other limit test does not.
+     */
+    expect(mergeTopItems(spikeVsSteady, 1)).toEqual([
+      { menuItemId: 'steady', name: 'Steady', quantity: 18, revenueMinor: 180 },
+    ]);
+  });
+
   it('returns empty for a range with no sales', () => {
     expect(mergeTopItems([], 10)).toEqual([]);
   });
