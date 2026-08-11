@@ -1,7 +1,7 @@
 # Phase 6, slice 1 — the nightly sales rollup job
 
 **Date:** 2026-08-10
-**Status:** approved, not yet implemented
+**Status:** implemented on `phase6-reporting` (PR #15). Read-side endpoints not started.
 **Scope:** the `daily_sales_rollups` producer only. No `/reports/*` endpoints.
 
 ## Why this slice exists
@@ -52,6 +52,19 @@ never become a full table scan. The recompute is deterministic, so re-running is
 `finalized_at` therefore means *"last successfully computed"*, not *"sealed"*. This is deliberate:
 sealing the row would freeze any aggregation bug into every day it touched, recoverable only by
 hand-written SQL.
+
+**What shipped does not yet honour that,** and the gap is recorded here rather than papered over.
+The sweep's predicate is `NOT EXISTS (... finalized_at IS NOT NULL)`, so a day that has been rolled
+once is never revisited — operationally `finalized_at` is a *seal*, not a receipt. That is harmless
+while the 03:00 cron is the only caller, because it only ever names days that are already closed.
+It stops being harmless in the read slice: `rollDay` is public and exported, and `DESIGN.md`:902
+requires the Z-report to serve *today* flagged `"provisional": true`, so the obvious implementation
+would write a finalized row for a partial day that the sweep then skips forever. The same shape
+lets a late Stripe webhook (retried for up to three days) understate a closed day permanently.
+
+Resolve this before the read endpoints are written, not during. The two candidates are a guard on
+`rollDay` rejecting a day that is not yet closed, and an unconditional re-roll of a trailing 2–3
+day window instead of skipping anything already finalized.
 
 ### 3. No lock — and §11.3 gets amended
 
