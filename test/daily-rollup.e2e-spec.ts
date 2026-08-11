@@ -246,6 +246,10 @@ describe('Daily sales rollup (e2e)', () => {
     const row = await storedRow();
 
     expect(row.refundsMinor).toBe(2_150);
+    // Gross revenue: a refund is an offset line, never a subtraction. Without
+    // this, a regression that netted refunds off revenue would pass every test
+    // in this file.
+    expect(row.revenueMinor).toBe(10_000);
   });
 
   /**

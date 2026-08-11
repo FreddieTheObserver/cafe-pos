@@ -98,6 +98,10 @@ export class DailyRollupService {
         // q2 — revenue by method. Cash is a payment row like any other, so it
         // lands in the total here and is excluded only from the *gateway*
         // comparison reconciliation makes.
+        //
+        // `settled` is an order-level predicate; this query needs row-level
+        // filtering on individual payments. Reusing `settled` would sum FAILED
+        // payment rows that belong to an otherwise-settled order.
         const revenueByMethod = await tx
           .select({
             method: payments.method,
@@ -178,13 +182,11 @@ export class DailyRollupService {
         });
       },
       /**
-       * One snapshot for all five queries. `accessMode: 'read only'` alone
-       * would not buy this — Postgres's default READ COMMITTED takes a fresh
-       * snapshot per *statement*, so the five queries could each see
-       * different data. `isolationLevel: 'repeatable read'` is what actually
-       * pins them to one snapshot; `read only` on top of it is what lets
-       * Postgres skip the write-conflict bookkeeping repeatable read would
-       * otherwise pay for.
+       * REPEATABLE READ isolation pins all five queries to one snapshot. Postgres
+       * defaults to READ COMMITTED, which re-snapshots per statement, so READ ONLY
+       * alone guarantees nothing. The day is closed, so they could not disagree in
+       * practice — the isolation level costs nothing and removes the need to reason
+       * about snapshot consistency every time someone reads the code.
        */
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
