@@ -1,7 +1,17 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, asc, eq, gte, isNotNull, lt, notExists, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  isNotNull,
+  lt,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
 import { BusinessDayNotClosedError } from '../errors/reporting.errors';
 import type { Env } from '../../config/env.validation';
@@ -11,6 +21,7 @@ import { dailySalesRollups, orders } from '../../database/schema';
 import { businessDayOf, minusDays } from '../../orders/business-day';
 import { aggregateDay } from './aggregate-day';
 import { buildRollupRow, type RollupRow } from './build-rollup-row';
+import { describeCorrection } from './describe-correction';
 
 /** What one nightly run did. */
 export interface RollupSummary {
@@ -27,6 +38,27 @@ export interface RollupSummary {
  * conversation, not a job quietly grinding through a year of history.
  */
 const CATCH_UP_DAYS = 30;
+
+/**
+ * How many closed days before the target are re-rolled unconditionally, even
+ * though their rows already carry `finalized_at`.
+ *
+ * Three, because that is Stripe's retry horizon: a webhook is retried for up to
+ * three days, so an event belonging to day D can arrive long after D was rolled
+ * and flip a payment to `SUCCEEDED` on a row already treated as final. An order
+ * left `IN_PREPARATION` at close and finished the next morning moves the counts
+ * the same way.
+ *
+ * The dates are worth stating exactly, because the run does not name the day it
+ * starts on: D closes at 05:00 on D+1, and the 03:00 cron targets the day that
+ * closed 22 hours earlier — so D is first rolled at 03:00 on **D+2**. Three
+ * more nights re-roll it on D+3, D+4 and D+5, which leaves the row open to
+ * correction for a full three days after it was first written.
+ *
+ * Wider would re-aggregate history every night for nothing; narrower would
+ * leave the tail of the retry window exactly as unhandled as it was before.
+ */
+const REROLL_DAYS = 3;
 
 /**
  * The §11.2 nightly rollup: one finalized row per business day, so historical
@@ -54,8 +86,9 @@ export class DailyRollupService {
      *
      * The nightly cron cannot trip this: it names a day that closed 22 hours
      * earlier. The guard is here for every *other* caller, because a rollup row
-     * is treated as final — `missedDays` skips any day carrying `finalized_at`,
-     * so a row written for a partial day would never be corrected. §5.3's
+     * is treated as final — `daysNeedingRoll` revisits an already-finalized day
+     * only inside the `REROLL_DAYS` window, so a row written for a partial day
+     * ossifies as soon as it falls out of that window. §5.3's
      * Z-report has to serve today flagged `provisional`, which makes
      * `rollDay(today)` the obvious wrong turn for the read slice to take.
      *
@@ -69,6 +102,35 @@ export class DailyRollupService {
     if (businessDay >= currentBusinessDay) {
       throw new BusinessDayNotClosedError(businessDay, currentBusinessDay);
     }
+
+    /**
+     * Read before the upsert overwrites it, so a re-roll can report what it
+     * changed. Correcting a finalized day in silence is its own small version
+     * of the bug the re-roll window exists to fix: yesterday's Z-report and
+     * today's would disagree with nothing anywhere saying why.
+     *
+     * Columns named rather than `select()`: the two `jsonb` columns are the
+     * large ones and neither is compared, so pulling them every night for every
+     * day in the window would be IO spent on nothing. The projection has to
+     * satisfy `describeCorrection`'s parameter, so a field added to the
+     * comparison and not to this list fails to compile rather than silently
+     * going unreported.
+     */
+    const [previous] = await this.db
+      .select({
+        ordersCompleted: dailySalesRollups.ordersCompleted,
+        ordersRefunded: dailySalesRollups.ordersRefunded,
+        ordersCancelled: dailySalesRollups.ordersCancelled,
+        ordersExpired: dailySalesRollups.ordersExpired,
+        ordersSettled: dailySalesRollups.ordersSettled,
+        revenueMinor: dailySalesRollups.revenueMinor,
+        refundsMinor: dailySalesRollups.refundsMinor,
+        vatMinor: dailySalesRollups.vatMinor,
+        finalizedAt: dailySalesRollups.finalizedAt,
+      })
+      .from(dailySalesRollups)
+      .where(eq(dailySalesRollups.businessDay, businessDay))
+      .limit(1);
 
     const row = buildRollupRow(
       businessDay,
@@ -99,6 +161,16 @@ export class DailyRollupService {
       `Rolled up ${businessDay}: ${row.revenueMinor} minor units across ${row.topItems.length} items.`,
     );
 
+    const correction = previous?.finalizedAt
+      ? describeCorrection(previous, row)
+      : null;
+
+    if (correction) {
+      this.logger.warn(
+        `Re-rolling ${businessDay} changed a day already finalized: ${correction}. Something landed on it after it was rolled — a webhook Stripe retried past close, or an order finished the next morning.`,
+      );
+    }
+
     return row;
   }
 
@@ -124,7 +196,7 @@ export class DailyRollupService {
   })
   async rollUpYesterday(): Promise<RollupSummary> {
     const target = this.businessDayAt(Date.now() - 24 * 60 * 60 * 1000);
-    return this.rollDays([target, ...(await this.missedDays(target))]);
+    return this.rollDays([target, ...(await this.daysNeedingRoll(target))]);
   }
 
   /**
@@ -152,14 +224,28 @@ export class DailyRollupService {
   }
 
   /**
-   * Business days inside the window that saw trade but carry no finalized
-   * rollup — either the job never ran for them, or it ran and failed.
+   * Every day besides the target that tonight's run has to roll — two
+   * populations, one query.
    *
-   * Selected from `orders` rather than from a calendar, so the sweep can only
-   * ever revisit days that actually happened. A calendar-driven version would
-   * manufacture zero rows for every date the cafe was shut.
+   * **Inside `REROLL_DAYS`: everything that traded, finalized or not.** A day
+   * is not finished changing when it closes. Stripe retries a webhook for up to
+   * three days, and an order left `IN_PREPARATION` at close gets completed the
+   * next morning; either one lands on a row already written and marked final.
+   * The reconciliation job *detects* the money case — a gateway-versus-books
+   * delta pages someone — but nothing re-rolled the row, so the stored day
+   * simply stayed wrong. Re-rolling costs one aggregation per day and risks
+   * nothing: `rollDay` recomputes from the live tables, so a day nothing
+   * touched produces the identical row it produced last night.
+   *
+   * **Older than that: only days carrying no finalized rollup** — the outage
+   * case, unchanged. Beyond the retry horizon a finalized day is left alone,
+   * which is what keeps the nightly cost flat instead of growing with history.
+   *
+   * Both populations are selected from `orders` rather than from a calendar, so
+   * the sweep can only ever visit days that actually happened. A calendar-driven
+   * version would manufacture zero rows for every date the cafe was shut.
    */
-  private async missedDays(target: string): Promise<string[]> {
+  private async daysNeedingRoll(target: string): Promise<string[]> {
     const rows = await this.db
       .selectDistinct({ businessDay: orders.businessDay })
       .from(orders)
@@ -167,16 +253,19 @@ export class DailyRollupService {
         and(
           gte(orders.businessDay, minusDays(target, CATCH_UP_DAYS)),
           lt(orders.businessDay, target),
-          notExists(
-            this.db
-              .select({ one: sql`1` })
-              .from(dailySalesRollups)
-              .where(
-                and(
-                  eq(dailySalesRollups.businessDay, orders.businessDay),
-                  isNotNull(dailySalesRollups.finalizedAt),
+          or(
+            gte(orders.businessDay, minusDays(target, REROLL_DAYS)),
+            notExists(
+              this.db
+                .select({ one: sql`1` })
+                .from(dailySalesRollups)
+                .where(
+                  and(
+                    eq(dailySalesRollups.businessDay, orders.businessDay),
+                    isNotNull(dailySalesRollups.finalizedAt),
+                  ),
                 ),
-              ),
+            ),
           ),
         ),
       )

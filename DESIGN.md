@@ -637,7 +637,7 @@ The `method` in the *request* survives for one reason: `CASH` never reaches Stri
 }
 ```
 
-`reconciliationUnavailable` is non-null, and `reconciliation` is `null`, exactly when the gateway comparison could not be trusted — `"DAY_STILL_TRADING"` for the still-open business day, `"GATEWAY_UNREACHABLE"` when Stripe could not be reached within the report's deadline. The figures above `reconciliation` never depend on the gateway and are always served.
+`reconciliationUnavailable` is non-null, and `reconciliation` is `null`, exactly when the gateway comparison could not be trusted — `"DAY_STILL_TRADING"` for the still-open business day, `"GATEWAY_UNREACHABLE"` when Stripe could not be reached within the report's deadline, and `"DATABASE_UNAVAILABLE"` when the gateway answered but this system failed while assembling the block (the unmatched-event list is narrowed to the day by a local query, which can fail on its own). The three are never collapsed into one: they page different people. The figures above `reconciliation` never depend on the gateway and are always served.
 
 ### 5.4 Status code policy
 
