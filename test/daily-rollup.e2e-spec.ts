@@ -498,6 +498,95 @@ describe('Daily sales rollup (e2e)', () => {
     });
 
     /**
+     * The residual slice 1 left open on purpose.
+     *
+     * A business day does not stop changing when it closes. Stripe retries a
+     * webhook for up to three days, so one arriving after the day was rolled
+     * flips a payment to `SUCCEEDED` on a row already marked final; an order
+     * left `IN_PREPARATION` at close and finished the next morning moves the
+     * counts the same way. The sweep used to skip anything carrying
+     * `finalized_at`, so the stored row kept its pre-mutation numbers forever
+     * and reconciliation's delta was the only trace anything was wrong.
+     */
+    it('re-rolls a finalized day inside the window when money lands on it late', async () => {
+      /**
+       * August, because the closed-day guard block below owns June and these
+       * suites share one database: two tests seeding orders onto the same
+       * business day would sum into each other's totals, and the failure would
+       * look like a rollup bug rather than a fixture collision.
+       */
+      pretendItIs('2031-08-02T20:00:00Z'); // 2031-08-03T03:00 Bangkok
+
+      const target = '2031-08-01';
+      const settled = '2031-07-31'; // target - 1: inside REROLL_DAYS
+      rolledDays.push(target, settled);
+
+      await givenOrder({
+        businessDay: target,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+      await givenOrder({
+        businessDay: settled,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 2, lineMinor: 20_000 }],
+      });
+
+      // Last night's run, when the day looked like one 20 000 sale.
+      await rollup.rollDay(settled);
+      expect((await storedRow(settled)).revenueMinor).toBe(20_000);
+
+      // The late arrival: a webhook Stripe retried past close.
+      await givenOrder({
+        businessDay: settled,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+
+      const summary = await rollup.rollUpYesterday();
+
+      expect(summary.failed).toBe(0);
+      const row = await storedRow(settled);
+      expect(row.revenueMinor).toBe(30_000);
+      expect(row.ordersCompleted).toBe(2);
+      expect(row.ordersSettled).toBe(2);
+    });
+
+    /**
+     * The other edge of the same window, and the reason it is a window at all.
+     * Without this, dropping the `finalized_at` check outright — re-rolling
+     * thirty days every night — would pass the test above while quietly making
+     * the nightly cost grow with history, which is the §11.2 failure the rollup
+     * exists to avoid.
+     */
+    it('leaves a finalized day older than the window alone', async () => {
+      pretendItIs('2031-07-02T20:00:00Z'); // 2031-07-03T03:00 Bangkok
+
+      const target = '2031-07-01';
+      // Inside the 30-day catch-up window, well outside the 3-day re-roll one.
+      const old = '2031-06-20';
+      rolledDays.push(target, old);
+
+      await givenOrder({
+        businessDay: target,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+      await givenOrder({
+        businessDay: old,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 2, lineMinor: 20_000 }],
+      });
+
+      await rollup.rollDay(old);
+
+      // A mutation this late is past the retry horizon and is not chased.
+      await givenOrder({
+        businessDay: old,
+        lines: [{ itemId: latteId, name: 'Latte', qty: 1, lineMinor: 10_000 }],
+      });
+
+      await rollup.rollUpYesterday();
+
+      expect((await storedRow(old)).revenueMinor).toBe(20_000);
+    });
+
+    /**
      * The mechanism the whole catch-up story rests on: a day that fails must
      * leave no finalized row, because "no finalized row" is exactly what the
      * sweep looks for. If a failure wrote a partial row instead, tomorrow would
