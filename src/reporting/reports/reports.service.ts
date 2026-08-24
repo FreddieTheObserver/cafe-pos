@@ -81,9 +81,16 @@ export interface TopItemsReport {
   items: TopItem[];
 }
 
-/** Why a Z-report carries no gateway comparison. */
+/**
+ * Why a Z-report carries no gateway comparison.
+ *
+ * Three distinct facts, never collapsed: the day is not finished yet, the
+ * gateway could not be reached, or our own database failed while the block was
+ * being assembled. Only the middle one is Stripe's problem, and the operator
+ * reading the log acts on a different thing in each case.
+ */
 export type ReconciliationUnavailable =
-  'DAY_STILL_TRADING' | 'GATEWAY_UNREACHABLE';
+  'DAY_STILL_TRADING' | 'GATEWAY_UNREACHABLE' | 'DATABASE_UNAVAILABLE';
 
 /** The `GET /reports/z-report` body (§5.3). */
 export interface ZReport {
@@ -359,15 +366,19 @@ export class ReportsService {
       provisional ? 'DAY_STILL_TRADING' : null;
 
     if (!provisional) {
+      /**
+       * Two stages with two catches, because they fail for different reasons
+       * and a reader acts on the difference. Reaching the gateway is the
+       * remote call; narrowing its unmatched events to this day is a local
+       * query against our own tables. Folded into one catch — as this first
+       * shipped — a failed database query was reported as
+       * `GATEWAY_UNREACHABLE` and logged as "could not reach the gateway",
+       * about a gateway that had just answered.
+       */
+      let report: ReconciliationReport | null = null;
+
       try {
-        const report = await this.reconcileWithDeadline(businessDay);
-        reconciliation = {
-          ...report,
-          unmatchedEvents: await this.unmatchedEventsForDay(
-            businessDay,
-            report.unmatchedEvents,
-          ),
-        };
+        report = await this.reconcileWithDeadline(businessDay);
       } catch (error) {
         /**
          * Reported as unavailable, never as a delta of zero. "We could not
@@ -380,6 +391,31 @@ export class ReportsService {
           `Z-report for ${businessDay} could not reach the gateway; serving without a reconciliation block. ${describeError(error)}`,
         );
         reconciliationUnavailable = 'GATEWAY_UNREACHABLE';
+      }
+
+      if (report) {
+        try {
+          reconciliation = {
+            ...report,
+            unmatchedEvents: await this.unmatchedEventsForDay(
+              businessDay,
+              report.unmatchedEvents,
+            ),
+          };
+        } catch (error) {
+          /**
+           * The gateway answered and the till figures are already in hand;
+           * only the scoping query failed. Serving `report` with its
+           * *unscoped* list would be worse than serving none — those ids can
+           * belong to other days, and a manager chasing them would be chasing
+           * another shift's problem. So this degrades the same way, and says
+           * which half broke.
+           */
+          this.logger.error(
+            `Z-report for ${businessDay} reconciled, but scoping its unmatched events to the day failed; serving without a reconciliation block. ${describeError(error)}`,
+          );
+          reconciliationUnavailable = 'DATABASE_UNAVAILABLE';
+        }
       }
     }
 

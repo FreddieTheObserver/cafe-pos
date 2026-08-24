@@ -2,12 +2,25 @@ import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
 import { businessDayOf } from '../src/orders/business-day';
-import type {
-  SalesReport,
-  TopItemsReport,
-  ZReport,
+import {
+  ReportsService,
+  type SalesReport,
+  type TopItemsReport,
+  type ZReport,
 } from '../src/reporting/reports/reports.service';
 import { IdentityHarness } from './fixtures/identity-fixtures';
+
+/**
+ * `ReportsService.unmatchedEventsForDay` is private, and stays private: only
+ * one test needs it, and only needs it to fail. Naming the shape here rather
+ * than casting inline keeps the assertion readable at the call site.
+ */
+type ScopingSeam = {
+  unmatchedEventsForDay: (
+    businessDay: string,
+    candidateIds: readonly string[],
+  ) => Promise<string[]>;
+};
 
 describe('Reports HTTP (e2e)', () => {
   let harness: IdentityHarness;
@@ -483,6 +496,40 @@ describe('Reports HTTP (e2e)', () => {
       expect(zReportOf(res).reconciliationUnavailable).toBe(
         'GATEWAY_UNREACHABLE',
       );
+    });
+
+    /**
+     * The day-scoping query runs against our own tables, after the gateway has
+     * already answered. Reported as `GATEWAY_UNREACHABLE` — as this first
+     * shipped — both the response and the log blame Stripe for a fault in this
+     * system, and whoever is paged goes and checks the wrong one.
+     *
+     * The private method is spied rather than the driver on purpose: a spy on
+     * `db.select` would also catch `dayTotals`, which runs first, and the test
+     * would then pass for a reason that has nothing to do with this branch.
+     */
+    it('names the database, not the gateway, when the day-scoping query fails', async () => {
+      /**
+       * Annotated rather than asserted: `app.get` hands back `any`, so this is
+       * what gives the spy below a signature to check against.
+       */
+      const scoping: ScopingSeam = harness.app.get(ReportsService);
+
+      jest
+        .spyOn(scoping, 'unmatchedEventsForDay')
+        .mockRejectedValue(new Error('connection terminated unexpectedly'));
+
+      const res = await harness
+        .http()
+        .get(`/api/v1/reports/z-report?businessDay=${DAY}`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(res.status).toBe(200);
+      const body = zReportOf(res);
+      expect(body.reconciliation).toBeNull();
+      expect(body.reconciliationUnavailable).toBe('DATABASE_UNAVAILABLE');
+      // Neither dependency was ever load-bearing for the till figures.
+      expect(body.revenueMinor.total).toBe(20_000);
     });
 
     it('flags the open business day and skips reconciliation as meaningless', async () => {
