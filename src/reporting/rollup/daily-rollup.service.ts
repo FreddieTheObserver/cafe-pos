@@ -44,11 +44,16 @@ const CATCH_UP_DAYS = 30;
  * though their rows already carry `finalized_at`.
  *
  * Three, because that is Stripe's retry horizon: a webhook is retried for up to
- * three days, so an event belonging to day D can land as late as D+3 — long
- * after D was rolled at D+1 03:00 — and flip a payment to `SUCCEEDED` on a row
- * already treated as final. An order left `IN_PREPARATION` at close and
- * finished the next morning moves the counts the same way. Rolling D once and
- * then again on D+2, D+3 and D+4 covers the whole window.
+ * three days, so an event belonging to day D can arrive long after D was rolled
+ * and flip a payment to `SUCCEEDED` on a row already treated as final. An order
+ * left `IN_PREPARATION` at close and finished the next morning moves the counts
+ * the same way.
+ *
+ * The dates are worth stating exactly, because the run does not name the day it
+ * starts on: D closes at 05:00 on D+1, and the 03:00 cron targets the day that
+ * closed 22 hours earlier — so D is first rolled at 03:00 on **D+2**. Three
+ * more nights re-roll it on D+3, D+4 and D+5, which leaves the row open to
+ * correction for a full three days after it was first written.
  *
  * Wider would re-aggregate history every night for nothing; narrower would
  * leave the tail of the retry window exactly as unhandled as it was before.
@@ -103,9 +108,26 @@ export class DailyRollupService {
      * changed. Correcting a finalized day in silence is its own small version
      * of the bug the re-roll window exists to fix: yesterday's Z-report and
      * today's would disagree with nothing anywhere saying why.
+     *
+     * Columns named rather than `select()`: the two `jsonb` columns are the
+     * large ones and neither is compared, so pulling them every night for every
+     * day in the window would be IO spent on nothing. The projection has to
+     * satisfy `describeCorrection`'s parameter, so a field added to the
+     * comparison and not to this list fails to compile rather than silently
+     * going unreported.
      */
     const [previous] = await this.db
-      .select()
+      .select({
+        ordersCompleted: dailySalesRollups.ordersCompleted,
+        ordersRefunded: dailySalesRollups.ordersRefunded,
+        ordersCancelled: dailySalesRollups.ordersCancelled,
+        ordersExpired: dailySalesRollups.ordersExpired,
+        ordersSettled: dailySalesRollups.ordersSettled,
+        revenueMinor: dailySalesRollups.revenueMinor,
+        refundsMinor: dailySalesRollups.refundsMinor,
+        vatMinor: dailySalesRollups.vatMinor,
+        finalizedAt: dailySalesRollups.finalizedAt,
+      })
       .from(dailySalesRollups)
       .where(eq(dailySalesRollups.businessDay, businessDay))
       .limit(1);
