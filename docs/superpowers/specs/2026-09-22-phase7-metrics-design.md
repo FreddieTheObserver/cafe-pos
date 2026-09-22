@@ -74,6 +74,12 @@ So the counter stays, counting only processing exceptions.
 A new gauge, `payment_inbox_oldest_unprocessed_age_seconds`, answers the direct question: is any money event sitting unhandled?
 It covers REFUSE, crashes, and a dead sweep with one number, and one stuck event pages once rather than every 30 seconds.
 
+A lost race is not counted as a failure.
+Two instances can apply the same event at once: both read it unprocessed, and the second's guarded `PENDING_PAYMENT -> PAID` transition then finds the order already paid and throws.
+Today that is logged at `error`.
+Counted, it would page on the system working correctly, so `processEvent` treats it the way the expiry sweep already does (`isLostRace`): logged at `debug`, not counted.
+Nothing is lost by this, because the transaction rolled back and the row is re-read by the next sweep, where the inbox gauge is what notices if it never settles.
+
 ### 5. Each app has its own registry, and `prom-client` is used directly
 
 `realtime-two-instances.e2e-spec.ts` boots two `AppModule`s in one process.
@@ -172,15 +178,22 @@ A duplicate delivery is Stripe retrying an event we already hold, and observing 
 
 `src/observability/metrics/`:
 
-- `metrics.ts` defines every metric (name, help, labels, buckets) in one place, so tests and the cross-check below read a single source.
-- `MetricsModule` is `@Global()`, like `RealtimeModule`, and provides the per-app `Registry` and a typed `Metrics` holding the instruments.
-  Producers (orders, payments, webhooks, reconciliation, throttler) inject `Metrics` and increment.
-- `MetricsServer` owns the second listener (decision 1).
-- The scrape-time collectors live beside it, each wrapped by the failure rule from decision 7.
-  The gateways register their namespaces with `Metrics` in `afterInit`, so `ws_connected` reads live socket counts without the metrics module importing realtime.
-- `business-hours.ts` holds the pure `isOpenAt`.
+- `metrics.ts` defines the counters and histograms, and the in-memory gauges (`reconciliation_delta_minor`, `ws_connected`).
+  `Metrics` is the typed facade producers inject: orders, payments, webhooks, reconciliation, the throttler and the gateways.
+- `scraped-gauge.ts` is the one primitive behind every gauge read at scrape time, and the only place decision 7's failure rule lives.
+  prom-client's `reset()` puts an unlabelled gauge back to 0, so a plain gauge cannot say "unknown"; `ScrapedGauge` overrides `get()` and exports exactly what this scrape read.
+- `MetricsModule` is `@Global()`, like `RealtimeModule`, and provides the per-app `Metrics` and `MetricsServer`.
+  It has no dependencies, so the probe-module suite that boots without a database can still run `configureApp`.
+- `StateGaugesModule` registers the gauges that need the database, the readiness checks, or config.
+  It is separate from `MetricsModule` for the same reason.
+- The gateways register their namespaces with `Metrics` in `afterInit`, so `ws_connected` reads live socket counts without the metrics module importing realtime.
+
+`isOpenAt` lives in `src/orders/business-hours.ts`, beside `businessDayOf`, because opening hours are a trading fact rather than a monitoring one.
 
 The HTTP timing middleware is installed by `configureApp`, so every e2e suite exercises it through the same code path production uses.
+
+The rate-limit rule a rejection is counted under comes from `@RateLimit`, which takes the rule's name (`@RateLimit('login')`) rather than the rule object, so the guard can read it back.
+The per-account login lockout is counted as `loginAccount`.
 
 ### Alert rules
 
@@ -195,13 +208,13 @@ Database-derived gauges are reported identically by every instance and are read 
 | `DatabaseDown` | `dependency_up{dependency="postgres"}` is 0 | 1m | page |
 | `RedisDown` | `dependency_up{dependency="redis"}` is 0 | 2m | notify |
 | `ReconciliationDelta` | `reconciliation_delta_minor` is not 0 | - | page |
-| `ReconciliationFailed` | a `failed` run in the last day | - | page |
+| `ReconciliationFailed` | a `failed` run in the last day, and no instance completed one | - | page |
 | `WebhookProcessingFailures` | any failure in the last 10 minutes | - | page |
 | `PaymentInboxStuck` | oldest unprocessed event older than 120 s | - | page |
 | `KitchenBlind` | no `kds` socket on any instance, while open | 2m | page |
 | `WebhookLagHigh` | p95 lag above 60 s over 10 minutes | - | notify |
 | `PaymentFailureRatio` | Stripe `FAILED` above 10% of `SUCCEEDED` + `FAILED` over 10 minutes, with at least 5 attempts | - | notify |
-| `LatencyP95High` | a route's p95 above 300 ms, excluding `/api/v1/reports/*` | 5m | notify |
+| `LatencyP95High` | a route's p95 above 300 ms on at least 3 requests a minute, excluding `/api/v1/reports/*` and `unmatched` | 5m | notify |
 | `PendingPaymentOverdue` | an order more than 5 minutes past its expiry | - | notify |
 | `OrdersSilent` | no orders in 15 minutes, while open for all 15 | - | notify |
 | `KioskOffline` | an `ACTIVE` kiosk unseen for 120 s, while open | - | notify |
@@ -217,12 +230,18 @@ Where this departs from §13, and why:
 - **Reports are excluded from the latency alert.**
   A closed day's Z-report calls Stripe once per payment, deadlined at 5 seconds.
   One manager opening it would breach a 300 ms p95 on its own.
+- **The latency alert needs traffic.**
+  On a quiet route, one slow request is the whole p95 for five minutes, so a route has to carry at least 3 requests a minute before its p95 can alert.
+  `unmatched` is excluded too: a scanner's 404s say nothing about how the cafe's routes perform.
+- **`ReconciliationFailed` needs every instance to have failed.**
+  Both instances run the nightly job, and one hitting a Stripe blip while the other checks the books successfully is not a night nobody checked.
 - **`OrdersSilent` requires the cafe to have been open for the whole window**, so the first 15 minutes after opening cannot fire it.
 
 ### Local stack
 
 `docker-compose.yml` gains `prometheus` on port 9090 and `grafana` on port 3001, since the API has 3000.
-Both are pinned, like the existing images.
+Both are pinned, like the existing images, and both sit behind an `observability` profile.
+A plain `docker compose up -d` still brings up only what the tests need, and `docker compose --profile observability up -d` adds the monitoring.
 
 Prometheus scrapes the app on the host through `host.docker.internal:9464`, with a `host-gateway` mapping so the same file works on Linux.
 It loads `alerts.yml`, so the rules can be watched evaluating locally.
