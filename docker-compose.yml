@@ -102,6 +102,17 @@ services:
     volumes:
       - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+  # Receives traces from the app on the host (OTLP over HTTP on 4318) and
+  # shows them on http://localhost:16686. Start the app with
+  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    container_name: cafepos-jaeger
+    restart: unless-stopped
+    profiles: [observability]
+    ports:
+      - '4318:4318'
+      - '16686:16686'
 
 volumes:
   cafepos_pgdata:

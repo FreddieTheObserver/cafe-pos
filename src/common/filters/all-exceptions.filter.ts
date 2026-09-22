@@ -3,6 +3,7 @@ import {
   Catch,
   ExceptionFilter,
   HttpException,
+  Inject,
   Logger,
 } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
@@ -16,6 +17,11 @@ import {
   type ValidationErrorItem,
 } from '../errors/problem-details';
 import { getRequestId } from '../http/request-id';
+import {
+  ERROR_REPORTER,
+  type ErrorReporter,
+} from '../../observability/errors/error-reporter';
+import { routeLabelOf } from '../../observability/metrics/http-metrics';
 
 /** Default code + title per HTTP status for framework-raised HttpExceptions. */
 const HTTP_STATUS_MAP: Record<number, { code: string; title: string }> = {
@@ -38,7 +44,10 @@ const HTTP_STATUS_MAP: Record<number, { code: string; title: string }> = {
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
 
-  constructor(private readonly httpAdapterHost: HttpAdapterHost) {}
+  constructor(
+    private readonly httpAdapterHost: HttpAdapterHost,
+    @Inject(ERROR_REPORTER) private readonly reporter: ErrorReporter,
+  ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const { httpAdapter } = this.httpAdapterHost;
@@ -67,6 +76,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
         where,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      this.reporter.report(exception, {
+        requestId,
+        method: req.method,
+        route: routeLabelOf(req),
+      });
     }
 
     httpAdapter.reply(ctx.getResponse(), problem, problem.status);

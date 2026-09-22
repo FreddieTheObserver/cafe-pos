@@ -240,6 +240,11 @@ export const envSchema = z.object({
    */
   STRIPE_MODE: z.enum(['test', 'live']).default('test'),
   /**
+   * Where unplanned failures are reported (§13). Unset, they are logged and
+   * nothing more. Read here to choose the reporter; `instrument.ts` starts the SDK.
+   */
+  SENTRY_DSN: z.url().optional(),
+  /**
    * Points the Stripe client somewhere other than api.stripe.com.
    *
    * Exists for `stripe-mock`, which speaks the real protocol and returns

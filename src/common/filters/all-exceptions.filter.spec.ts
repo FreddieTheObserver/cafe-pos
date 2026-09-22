@@ -34,6 +34,7 @@ describe('AllExceptionsFilter', () => {
   let host: ArgumentsHost;
   let logError: jest.SpyInstance;
   let logWarn: jest.SpyInstance;
+  let report: jest.Mock;
 
   /** Runs the filter and returns the envelope it handed to the HTTP adapter. */
   function capture(exception: unknown): {
@@ -54,7 +55,8 @@ describe('AllExceptionsFilter', () => {
     const adapterHost = {
       httpAdapter: { reply },
     } as unknown as HttpAdapterHost;
-    filter = new AllExceptionsFilter(adapterHost);
+    report = jest.fn();
+    filter = new AllExceptionsFilter(adapterHost, { report });
 
     const req = { id: REQUEST_ID, method: 'POST', url: '/api/v1/orders' };
     host = {
@@ -265,6 +267,34 @@ describe('AllExceptionsFilter', () => {
 
       expect(logError).toHaveBeenCalled();
       expect(logWarn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('error reporting', () => {
+    it('reports an unplanned failure with the request it came from', () => {
+      const boom = new Error('boom');
+
+      capture(boom);
+
+      expect(report).toHaveBeenCalledTimes(1);
+      expect(report).toHaveBeenCalledWith(boom, {
+        requestId: REQUEST_ID,
+        method: 'POST',
+        route: 'unmatched',
+      });
+    });
+
+    it('does not report a client error', () => {
+      capture(new NotFoundException());
+
+      expect(report).not.toHaveBeenCalled();
+    });
+
+    // Its outage has an alert of its own; one report per refused request would bury real faults.
+    it('does not report a deliberate 503', () => {
+      capture(new DependencyUnavailableError('Redis is down.'));
+
+      expect(report).not.toHaveBeenCalled();
     });
   });
 

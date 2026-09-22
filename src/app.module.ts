@@ -18,6 +18,7 @@ import { KdsModule } from './kds/kds.module';
 import { BoardModule } from './board/board.module';
 import { ReportingModule } from './reporting/reporting.module';
 import { MetricsModule } from './observability/metrics/metrics.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { StateGaugesModule } from './observability/metrics/state-gauges.module';
 import { RetentionModule } from './retention/retention.module';
 
@@ -38,6 +39,7 @@ import { RetentionModule } from './retention/retention.module';
      */
     ScheduleModule.forRoot(),
     MetricsModule,
+    ObservabilityModule,
     DatabaseModule,
     RedisModule,
     StorageModule,

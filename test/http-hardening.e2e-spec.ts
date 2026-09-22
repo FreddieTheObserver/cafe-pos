@@ -4,7 +4,12 @@ import request from 'supertest';
 import { configureApp } from '../src/bootstrap';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import { MetricsModule } from '../src/observability/metrics/metrics.module';
-import { ProbeModule, StubbedHealthModule } from './fixtures/probe.module';
+import {
+  ProbeModule,
+  RecordingErrorReportingModule,
+  StubbedHealthModule,
+  recordingReporter,
+} from './fixtures/probe.module';
 
 const ALLOWED_ORIGIN = 'https://kds.cafe.test';
 
@@ -13,7 +18,12 @@ describe('HTTP hardening (e2e)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      imports: [ProbeModule, StubbedHealthModule, MetricsModule],
+      imports: [
+        ProbeModule,
+        StubbedHealthModule,
+        MetricsModule,
+        RecordingErrorReportingModule,
+      ],
     }).compile();
 
     app = moduleRef.createNestApplication<NestExpressApplication>({
@@ -162,6 +172,42 @@ describe('HTTP hardening (e2e)', () => {
 
       expect(res.status).toBe(201);
       expect(res.body).toEqual({ name: 'Latte', quantity: 2 });
+    });
+  });
+
+  describe('error reporting', () => {
+    beforeEach(() => {
+      recordingReporter.reports.length = 0;
+    });
+
+    it('reports an unplanned failure once, with the request it came from', async () => {
+      const res = await request(app.getHttpServer()).get('/api/v1/probe/fault');
+
+      expect(res.status).toBe(500);
+      expect(recordingReporter.reports).toHaveLength(1);
+      expect(recordingReporter.reports[0].error).toBeInstanceOf(Error);
+      expect(recordingReporter.reports[0].context).toEqual({
+        // The same id the client was given, so a support call can find the report.
+        requestId: (res.body as ProblemDetails).requestId,
+        method: 'GET',
+        route: '/api/v1/probe/fault',
+      });
+    });
+
+    // A dependency outage has its own alert; paging Sentry per request would bury real faults.
+    it('does not report a deliberate 503', async () => {
+      const res = await request(app.getHttpServer()).get(
+        '/api/v1/probe/unavailable',
+      );
+
+      expect(res.status).toBe(503);
+      expect(recordingReporter.reports).toHaveLength(0);
+    });
+
+    it('does not report a client error', async () => {
+      await request(app.getHttpServer()).post('/api/v1/probe/echo').send({});
+
+      expect(recordingReporter.reports).toHaveLength(0);
     });
   });
 });

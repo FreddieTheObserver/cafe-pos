@@ -123,6 +123,7 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `STRIPE_MODE` | `test` | `test` or `live`. The key must match it; `live` is refused outside `NODE_ENV=production` and with `STRIPE_API_BASE` set, so live and test keys cannot cross (§16). |
 | `STRIPE_WEBHOOK_SECRETS` | - | Required. Comma-separated signing secrets, newest first, for the 24-hour rotation window (§10.5). |
 | `STRIPE_API_BASE` | unset | Points the Stripe client elsewhere; CI sets it to stripe-mock. Leave unset otherwise. |
+| `SENTRY_DSN` | unset | Where unplanned 5xx failures are reported. Unset, they are only logged. |
 
 `.env` is for local development only. Real secrets (production database URL, JWT signing keys, object-storage credentials, Stripe keys) come from the platform secret store and are never committed.
 
@@ -187,6 +188,14 @@ pnpm start:dev
 ```
 
 Prometheus is on http://localhost:9090, scraping the app on the host and evaluating the rules, and Grafana is on http://localhost:3001 with the CafePOS dashboard provisioned. Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's `severity` label.
+
+## Tracing and error reporting
+
+Tracing is OpenTelemetry, started by `src/instrument.ts`, which `main.ts` imports before anything else so the HTTP server, Express, Nest, Postgres and Redis are patched before they load. It is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, samples 10% of traces by default (`OTEL_TRACES_SAMPLER_ARG`), and skips the health probes and `/metrics`. Keeping every erroring trace, as `DESIGN.md` §13 asks, is a tail-sampling decision for the collector, since only it sees a trace once it has finished.
+
+Locally, `docker compose --profile observability up -d` also starts Jaeger; run the app with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and open http://localhost:16686.
+
+Unplanned failures (a 5xx other than a deliberate 503) are reported to Sentry when `SENTRY_DSN` is set, tagged with the route pattern and request id and without request bodies or personal data. `test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
 
 ## Data retention
 

@@ -1,3 +1,5 @@
+// First, before anything it instruments is loaded.
+import './instrument';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';

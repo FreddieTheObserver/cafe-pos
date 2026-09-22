@@ -1,9 +1,15 @@
-import { Body, Controller, Module, Post } from '@nestjs/common';
+import { Body, Controller, Get, Global, Module, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { CommonModule } from '../../src/common/common.module';
+import { DependencyUnavailableError } from '../../src/common/errors/dependency-unavailable.error';
 import { createZodDto } from '../../src/common/validation/zod-dto';
 import { HealthController } from '../../src/health/health.controller';
 import { HealthService } from '../../src/health/health.service';
+import {
+  ERROR_REPORTER,
+  type ErrorContext,
+  type ErrorReporter,
+} from '../../src/observability/errors/error-reporter';
 import { ShutdownDrain } from '../../src/health/shutdown-drain';
 
 const EchoSchema = z.object({
@@ -24,6 +30,18 @@ export class ProbeController {
   @Post('echo')
   echo(@Body() body: EchoDto): EchoDto {
     return body;
+  }
+
+  /** An unplanned failure: the kind a human is asked to look at. */
+  @Get('fault')
+  fault(): never {
+    throw new Error('the probe fell over');
+  }
+
+  /** A dependency outage: a 5xx raised on purpose, which is a condition, not a fault. */
+  @Get('unavailable')
+  unavailable(): never {
+    throw new DependencyUnavailableError('The probe dependency is down.');
   }
 
   /** Unvalidated on purpose — used to exercise the body-size limit. */
@@ -58,3 +76,21 @@ export class ProbeModule {}
   ],
 })
 export class StubbedHealthModule {}
+
+/** Records what the exception filter would have sent to Sentry. */
+export class RecordingErrorReporter implements ErrorReporter {
+  readonly reports: { error: unknown; context: ErrorContext }[] = [];
+
+  report(error: unknown, context: ErrorContext): void {
+    this.reports.push({ error, context });
+  }
+}
+
+export const recordingReporter = new RecordingErrorReporter();
+
+@Global()
+@Module({
+  providers: [{ provide: ERROR_REPORTER, useValue: recordingReporter }],
+  exports: [ERROR_REPORTER],
+})
+export class RecordingErrorReportingModule {}
