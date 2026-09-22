@@ -145,6 +145,35 @@ describe('The API with Redis unreachable (e2e)', () => {
   });
 
   describe('the metrics it serves', () => {
+    const uncounted = async (policy: 'allow' | 'refuse') =>
+      (await sampleOf(
+        harness.app.get(Metrics),
+        'rate_limit_backend_unavailable_total',
+        { policy },
+      )) ?? 0;
+
+    it('counts a request served uncounted', async () => {
+      const before = await uncounted('allow');
+
+      await harness
+        .http()
+        .get('/api/v1/categories')
+        .set('Authorization', `Bearer ${staffToken}`);
+
+      expect(await uncounted('allow')).toBe(before + 1);
+    });
+
+    it('counts a request refused because it could not be counted', async () => {
+      const before = await uncounted('refuse');
+
+      await harness
+        .http()
+        .post('/api/v1/devices/activate')
+        .send({ pairingCode: 'ZZZZ9999' });
+
+      expect(await uncounted('refuse')).toBe(before + 1);
+    });
+
     it('reports Redis as down and Postgres as up', async () => {
       const metrics = harness.app.get(Metrics);
 

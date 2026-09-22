@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Counter, Histogram, Registry } from 'prom-client';
 import type { Namespace } from 'socket.io';
 import { orderChannels } from '../../database/schema/enums';
+import { RATE_LIMIT_RULE_LABELS } from '../../identity/rate-limit/rate-limits';
 import { ScrapedGauge, type Read } from './scraped-gauge';
 
 export type SocketNamespace = 'kds' | 'kiosk' | 'board';
@@ -82,6 +83,20 @@ export class Metrics {
     registers: [this.registry],
   });
 
+  readonly rateLimitRejections = new Counter({
+    name: 'rate_limit_rejections_total',
+    help: 'Requests refused for exceeding a rate limit, by rule. loginAccount is the per-account lockout.',
+    labelNames: ['rule'] as const,
+    registers: [this.registry],
+  });
+
+  readonly rateLimitBackendUnavailable = new Counter({
+    name: 'rate_limit_backend_unavailable_total',
+    help: 'Requests met while the rate limiter was unreachable, by the outage policy applied.',
+    labelNames: ['policy'] as const,
+    registers: [this.registry],
+  });
+
   private reconciliationDelta: number | null = null;
   private readonly namespaces = new Map<SocketNamespace, Namespace>();
 
@@ -94,6 +109,12 @@ export class Metrics {
     }
     for (const outcome of ['agreed', 'delta', 'failed'] as const) {
       this.reconciliationRuns.inc({ outcome }, 0);
+    }
+    for (const rule of RATE_LIMIT_RULE_LABELS) {
+      this.rateLimitRejections.inc({ rule }, 0);
+    }
+    for (const policy of ['allow', 'refuse'] as const) {
+      this.rateLimitBackendUnavailable.inc({ policy }, 0);
     }
 
     this.scraped(

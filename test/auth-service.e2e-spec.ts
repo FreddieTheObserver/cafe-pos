@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
 import { RateLimitedError } from '../src/common/errors/rate-limited.error';
 import { LoginAttemptLimiter } from '../src/identity/rate-limit/login-attempt.limiter';
+import { Metrics } from '../src/observability/metrics/metrics';
 import * as schema from '../src/database/schema';
 import { AccessTokenService } from '../src/identity/auth/access-token.service';
 import { AuthService } from '../src/identity/auth/auth.service';
@@ -90,7 +91,7 @@ describe('AuthService (integration)', () => {
       ),
       hasher,
       new ConfigService({ REFRESH_TOKEN_TTL_SECONDS: REFRESH_TTL_SECONDS }),
-      new LoginAttemptLimiter(redis),
+      new LoginAttemptLimiter(redis, new Metrics()),
       // Real, against the same Redis: logout now denies the access token by
       // `jti`, and a stub here would prove the call compiles rather than that
       // the key lands where the gateway looks for it.
