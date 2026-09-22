@@ -97,6 +97,7 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. Selects pretty vs JSON logs and the log level. |
 | `PORT` | `3000` | HTTP listen port. Coerced to a number. |
 | `METRICS_PORT` | `9464` | Serves `GET /metrics` for Prometheus, and nothing else. Keep it off the load balancer; only `PORT` is public. Must differ from `PORT`. |
+| `SHUTDOWN_DRAIN_SECONDS` | `0` | On SIGTERM, how long `/readyz` answers 503 before the listeners close, so the load balancer moves traffic away first. Set it to the load balancer's readiness interval; at most 30. |
 | `DATABASE_URL` | — | Required. Postgres connection string; note host port `5433` for the local stack. |
 | `REDIS_URL` | — | Required. Redis connection string. |
 | `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API (KDS, public board). Empty leaves CORS **off** — native kiosk clients are not browsers and need no CORS, so the permissive case must be opted into per environment. |
@@ -157,7 +158,7 @@ Both probes sit at the **root**, outside the API prefix, so platform orchestrato
 | Endpoint | Meaning |
 |---|---|
 | `GET /healthz` | Liveness. Returns `{"status":"ok"}` if the process is up. Deliberately checks no dependencies: a slow database must not get the container killed. |
-| `GET /readyz` | Readiness. Pings Postgres and Redis with a 2-second timeout each. `200` when both are up, `503` otherwise. |
+| `GET /readyz` | Readiness. Pings Postgres and Redis with a 2-second timeout each. `200` when both are up, `503` otherwise, and `503` with `{"status":"draining"}` once the process has been told to stop. |
 
 `/readyz` reports per-dependency status, so a failure says which one broke:
 

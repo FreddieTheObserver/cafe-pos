@@ -12,8 +12,11 @@ import {
 } from '../../src/payments/provider/payment-provider';
 import { REDIS } from '../../src/redis/redis.constants';
 import { uuidv7 } from 'uuidv7';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/bootstrap';
+import type { Env } from '../../src/config/env.validation';
+import { ShutdownDrain } from '../../src/health/shutdown-drain';
 import type { Database } from '../../src/database/database.module';
 import { DRIZZLE } from '../../src/database/drizzle.constants';
 import * as schema from '../../src/database/schema';
@@ -50,6 +53,7 @@ export class IdentityHarness {
   static async boot({
     redis,
     paymentProvider,
+    shutdownDrainSeconds,
   }: {
     redis?: Redis;
     /**
@@ -60,11 +64,24 @@ export class IdentityHarness {
      * from a test. Every other suite leaves it alone and gets the real adapter.
      */
     paymentProvider?: Partial<PaymentProvider>;
+    /**
+     * The drain a stopping instance waits out. The environment variable cannot
+     * be set from a test: ConfigModule validates it when AppModule is loaded.
+     */
+    shutdownDrainSeconds?: number;
   } = {}): Promise<IdentityHarness> {
     const builder = Test.createTestingModule({ imports: [AppModule] });
     if (redis) builder.overrideProvider(REDIS).useValue(redis);
     if (paymentProvider) {
       builder.overrideProvider(PAYMENT_PROVIDER).useValue(paymentProvider);
+    }
+    if (shutdownDrainSeconds !== undefined) {
+      const config = {
+        get: () => shutdownDrainSeconds,
+      } as unknown as ConfigService<Env, true>;
+      builder
+        .overrideProvider(ShutdownDrain)
+        .useValue(new ShutdownDrain(config));
     }
     const moduleRef = await builder.compile();
 

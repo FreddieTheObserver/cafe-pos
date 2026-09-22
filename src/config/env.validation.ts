@@ -60,6 +60,12 @@ export const envSchema = z.object({
    * load balancer, which routes PORT, never exposes it.
    */
   METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9464),
+  /**
+   * How long a stopping instance reports itself unready before it closes its
+   * listeners, so the load balancer moves traffic away first. Set it to the
+   * load balancer's readiness interval; at most 30 s, the usual grace period.
+   */
+  SHUTDOWN_DRAIN_SECONDS: z.coerce.number().int().min(0).max(30).default(0),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   /**

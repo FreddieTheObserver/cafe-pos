@@ -3,6 +3,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { Public } from '../identity/decorators/public.decorator';
 import { HealthService } from './health.service';
+import { ShutdownDrain } from './shutdown-drain';
 
 /**
  * Platform probes (§16). `configureApp` excludes these two paths from the
@@ -20,7 +21,10 @@ import { HealthService } from './health.service';
 @SkipThrottle()
 @Controller()
 export class HealthController {
-  constructor(private readonly health: HealthService) {}
+  constructor(
+    private readonly health: HealthService,
+    private readonly drain: ShutdownDrain,
+  ) {}
 
   /** Liveness: is the process up? No dependency checks — a slow DB must not trigger a kill. */
   @Get('healthz')
@@ -31,6 +35,12 @@ export class HealthController {
   /** Readiness: can we actually serve? Fails (503) if DB or Redis is unreachable. */
   @Get('readyz')
   async readiness(@Res({ passthrough: true }) res: Response) {
+    // Stopping, so the load balancer should route elsewhere whatever the dependencies say.
+    if (this.drain.isDraining) {
+      res.status(503);
+      return { status: 'draining' };
+    }
+
     const result = await this.health.checkReadiness();
     res.status(result.ok ? 200 : 503);
     return { status: result.ok ? 'ok' : 'unavailable', checks: result.checks };
