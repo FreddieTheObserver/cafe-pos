@@ -1,7 +1,12 @@
+import { ConfigService } from '@nestjs/config';
 import { inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
+import type { Env } from '../src/config/env.validation';
 import * as schema from '../src/database/schema';
 import type { PaymentStatus } from '../src/database/schema/enums';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
+import { businessDayOf } from '../src/orders/business-day';
 import { ReconciliationService } from '../src/payments/reconciliation/reconciliation.service';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -253,5 +258,63 @@ describe('Reconciliation (e2e)', () => {
     await expect(reconciliation.reconcile(day)).rejects.toThrow();
     // The nightly wrapper turns that into a logged failure, not a report.
     expect(await reconciliation.reconcileYesterday()).toBeNull();
+  });
+
+  describe("the nightly job's metrics", () => {
+    const read = (name: string, labels?: Record<string, string>) =>
+      sampleOf(harness.app.get(Metrics), name, labels);
+
+    // The same clock and settings `reconcileYesterday` uses.
+    const yesterday = (): string => {
+      const config: ConfigService<Env, true> = harness.app.get(ConfigService);
+      return businessDayOf(
+        new Date(Date.now() - 24 * 60 * 60 * 1000),
+        config.get('BUSINESS_TIMEZONE', { infer: true }),
+        config.get('BUSINESS_DAY_START_HOUR', { infer: true }),
+      );
+    };
+
+    it('publishes the delta it found, and counts the run', async () => {
+      // Every other contribution is at most zero, so ours makes the total strictly negative.
+      await givenStripePayment({
+        businessDay: yesterday(),
+        amountMinor: 10_000,
+        gatewaySays: 9_000,
+      });
+      const before =
+        (await read('reconciliation_runs_total', { outcome: 'delta' })) ?? 0;
+
+      const report = await reconciliation.reconcileYesterday();
+
+      expect(report?.deltaMinor).toBeLessThan(0);
+      expect(await read('reconciliation_delta_minor')).toBe(report?.deltaMinor);
+      expect(
+        await read('reconciliation_runs_total', { outcome: 'delta' }),
+      ).toBe(before + 1);
+    });
+
+    it('leaves the delta alone when a day is reconciled on demand, as the Z-report does', async () => {
+      await reconciliation.reconcileYesterday();
+      const published = await read('reconciliation_delta_minor');
+      await givenStripePayment({ amountMinor: 10_000, gatewaySays: 1_000 });
+
+      await reconciliation.reconcile(day);
+
+      expect(await read('reconciliation_delta_minor')).toBe(published);
+    });
+
+    it('clears the delta and counts a failure when it could not check', async () => {
+      await reconciliation.reconcileYesterday();
+      gatewayReachable = false;
+      const before =
+        (await read('reconciliation_runs_total', { outcome: 'failed' })) ?? 0;
+
+      await reconciliation.reconcileYesterday();
+
+      expect(await read('reconciliation_delta_minor')).toBeUndefined();
+      expect(
+        await read('reconciliation_runs_total', { outcome: 'failed' }),
+      ).toBe(before + 1);
+    });
   });
 });

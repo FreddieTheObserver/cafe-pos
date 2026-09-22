@@ -7,6 +7,7 @@ import type { Env } from '../../config/env.validation';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, paymentEvents, payments } from '../../database/schema';
+import { Metrics } from '../../observability/metrics/metrics';
 import { businessDayOf } from '../../orders/business-day';
 import {
   PAYMENT_PROVIDER,
@@ -49,6 +50,7 @@ export class ReconciliationService {
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly config: ConfigService<Env, true>,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -66,6 +68,7 @@ export class ReconciliationService {
 
     try {
       const report = await this.reconcile(day);
+      this.metrics.recordReconciliation(report.deltaMinor);
 
       if (report.deltaMinor !== 0) {
         // §11.3 routes this to a page, not a notify: the gateway and the books
@@ -81,6 +84,7 @@ export class ReconciliationService {
 
       return report;
     } catch (error) {
+      this.metrics.recordReconciliationFailure();
       /**
        * Reported as a failed reconciliation, never as a delta of zero. "We
        * could not check" and "we checked and it agrees" are opposite facts, and

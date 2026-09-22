@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { Counter, Histogram, Registry } from 'prom-client';
+import type { Namespace } from 'socket.io';
 import { orderChannels } from '../../database/schema/enums';
 import { ScrapedGauge, type Read } from './scraped-gauge';
+
+export type SocketNamespace = 'kds' | 'kiosk' | 'board';
 
 /** Every (provider, status) the app can end a payment in. Cash is born SUCCEEDED. */
 const TERMINAL_PAYMENTS = [
@@ -72,6 +75,16 @@ export class Metrics {
     registers: [this.registry],
   });
 
+  readonly reconciliationRuns = new Counter({
+    name: 'reconciliation_runs_total',
+    help: 'Nightly reconciliation runs, by what they found.',
+    labelNames: ['outcome'] as const,
+    registers: [this.registry],
+  });
+
+  private reconciliationDelta: number | null = null;
+  private readonly namespaces = new Map<SocketNamespace, Namespace>();
+
   constructor() {
     for (const channel of orderChannels) {
       this.ordersCreated.inc({ channel }, 0);
@@ -79,6 +92,49 @@ export class Metrics {
     for (const [provider, status] of TERMINAL_PAYMENTS) {
       this.payments.inc({ provider, status }, 0);
     }
+    for (const outcome of ['agreed', 'delta', 'failed'] as const) {
+      this.reconciliationRuns.inc({ outcome }, 0);
+    }
+
+    this.scraped(
+      {
+        name: 'reconciliation_delta_minor',
+        help: 'Gateway minus books for the day the last nightly run checked, in minor units. Absent until a run has checked.',
+      },
+      () =>
+        this.reconciliationDelta === null
+          ? []
+          : [{ labels: {}, value: this.reconciliationDelta }],
+    );
+
+    this.scraped(
+      {
+        name: 'ws_connected',
+        help: 'Sockets this instance holds, by namespace.',
+        labelNames: ['namespace'] as const,
+      },
+      () =>
+        [...this.namespaces].map(([namespace, server]) => ({
+          labels: { namespace },
+          value: server.sockets.size,
+        })),
+    );
+  }
+
+  trackNamespace(name: SocketNamespace, server: Namespace): void {
+    this.namespaces.set(name, server);
+  }
+
+  recordReconciliation(deltaMinor: number): void {
+    this.reconciliationDelta = deltaMinor;
+    this.reconciliationRuns.inc({
+      outcome: deltaMinor === 0 ? 'agreed' : 'delta',
+    });
+  }
+
+  recordReconciliationFailure(): void {
+    this.reconciliationDelta = null;
+    this.reconciliationRuns.inc({ outcome: 'failed' });
   }
 
   scraped<T extends string>(

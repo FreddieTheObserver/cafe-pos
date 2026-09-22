@@ -1,16 +1,34 @@
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { eq, inArray } from 'drizzle-orm';
+import { io } from 'socket.io-client';
 import request from 'supertest';
 import { uuidv7 } from 'uuidv7';
 import type { Env } from '../src/config/env.validation';
 import * as schema from '../src/database/schema';
 import type { OrderStatus } from '../src/database/schema/enums';
 import { isOpenAt } from '../src/orders/business-hours';
+import { NAMESPACES } from '../src/realtime/realtime.constants';
 import { Metrics } from '../src/observability/metrics/metrics';
 import { MetricsServer } from '../src/observability/metrics/metrics-server';
 import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
+
+async function eventually(
+  assertion: () => Promise<void>,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
 
 /**
  * The metrics endpoint against the real app. Later sections of this file
@@ -337,6 +355,37 @@ describe('Metrics (e2e)', () => {
 
       expect(res.status).toBe(409);
       expect(await kioskOrders()).toBe(before);
+    });
+  });
+
+  describe('connected screens', () => {
+    const connected = (namespace: string) =>
+      sampleOf(harness.app.get(Metrics), 'ws_connected', { namespace });
+
+    // Present at zero, not absent: KitchenBlind's sum() over nothing would never fire.
+    it('exports every namespace, even with nothing connected', async () => {
+      expect(await connected('kds')).toBe(0);
+      expect(await connected('kiosk')).toBe(0);
+      expect(await connected('board')).toBe(0);
+    });
+
+    it('counts a kitchen screen while it is connected', async () => {
+      const socket = io(`${harness.url()}${NAMESPACES.kds}`, {
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: await harness.tokenFor('BARISTA') },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', () => resolve());
+        socket.once('connect_error', reject);
+      });
+
+      expect(await connected('kds')).toBe(1);
+
+      socket.disconnect();
+      await eventually(async () => {
+        expect(await connected('kds')).toBe(0);
+      });
     });
   });
 });
