@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import { WebhookSignatureInvalidError } from '../errors/payments.errors';
 import { StripePaymentProvider } from './stripe-payment.provider';
 
@@ -424,6 +425,62 @@ describe('StripePaymentProvider', () => {
       );
 
       await expect(provider.resolveMethod('pi_1')).resolves.toBeNull();
+    });
+  });
+
+  /**
+   * A gateway outage is a condition, not a fault: the kiosk should hear "try
+   * again", the counter keeps taking cash, and nobody should be paged once per
+   * customer. A real SDK against a closed port, so the error is the one Stripe
+   * actually raises rather than one this file invented.
+   */
+  describe('when Stripe cannot be reached', () => {
+    const unreachable = new Stripe('sk_test_notarealkey', {
+      apiVersion: '2026-07-29.dahlia',
+      host: '127.0.0.1',
+      port: 1,
+      protocol: 'http',
+      maxNetworkRetries: 0,
+      timeout: 2000,
+    });
+
+    it('refuses to open an intent as a dependency outage', async () => {
+      await expect(
+        providerWith([NEW_SECRET], unreachable).createIntent({
+          amountMinor: 12_500,
+          currency: 'THB',
+          metadata: { orderId: 'order-1' },
+        }),
+      ).rejects.toBeInstanceOf(DependencyUnavailableError);
+    });
+
+    it('refuses to read a client secret the same way', async () => {
+      await expect(
+        providerWith([NEW_SECRET], unreachable).clientSecretFor('pi_1'),
+      ).rejects.toBeInstanceOf(DependencyUnavailableError);
+    });
+
+    // Stripe answering "no" is our bug to see, not an outage to wait out.
+    it('still raises a refused request as the fault it is', async () => {
+      const refusing = {
+        paymentIntents: {
+          create: () =>
+            Promise.reject(
+              new Stripe.errors.StripeInvalidRequestError({
+                message: 'Invalid currency',
+                type: 'invalid_request_error',
+              }),
+            ),
+        },
+      } as unknown as Stripe;
+
+      await expect(
+        providerWith([NEW_SECRET], refusing).createIntent({
+          amountMinor: 12_500,
+          currency: 'THB',
+          metadata: { orderId: 'order-1' },
+        }),
+      ).rejects.toBeInstanceOf(Stripe.errors.StripeInvalidRequestError);
     });
   });
 });
