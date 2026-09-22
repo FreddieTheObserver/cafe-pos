@@ -366,6 +366,19 @@ tests:
         alertname: OrdersSilent
         exp_alerts: []
 
+  # A fresh deploy three minutes ago: every sample it has says open, but it has
+  # not been watching for fifteen minutes, so it cannot say the cafe went quiet.
+  - interval: 1m
+    input_series:
+      - series: 'orders_created_total{instance="a:9464",channel="KIOSK"}'
+        values: '_x16 0x4'
+      - series: 'business_open{instance="a:9464"}'
+        values: '_x16 1x4'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OrdersSilent
+        exp_alerts: []
+
   # Open and trading.
   - interval: 1m
     input_series:

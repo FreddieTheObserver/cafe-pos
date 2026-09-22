@@ -114,9 +114,14 @@ groups:
         annotations:
           summary: "No kitchen screen is connected while the cafe is open."
 
-      # Open for the whole window, so the first 15 minutes after opening cannot fire it.
+      # Open for the whole window, and watched for the whole window: min_over_time
+      # only sees the samples a series has, so a deploy three minutes old would
+      # otherwise pass it, and the first 15 minutes after opening would too.
       - alert: OrdersSilent
-        expr: sum(increase(orders_created_total[15m])) == 0 and on() min_over_time(max(business_open)[15m:1m]) == 1
+        expr: |
+          sum(increase(orders_created_total[15m])) == 0
+          and on() min_over_time(max(business_open)[15m:1m]) == 1
+          and on() count_over_time(max(business_open)[15m:1m]) >= 15
         labels:
           severity: notify
         annotations:
