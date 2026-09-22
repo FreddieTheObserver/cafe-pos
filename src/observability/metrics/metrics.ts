@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Counter, Histogram, Registry } from 'prom-client';
+import { Counter, Histogram, Registry } from '@prometheus-io/client';
 import type { Namespace } from 'socket.io';
 import { orderChannels } from '../../database/schema/enums';
 import { RATE_LIMIT_RULE_LABELS } from '../../identity/rate-limit/rate-limits';
@@ -25,7 +25,7 @@ export interface ScrapedGaugeConfig<T extends string> {
 /**
  * Every instrument the app exports, on a registry of its own.
  *
- * Per app rather than prom-client's global registry: the two-instance suite
+ * Per app rather than the client's global registry: the two-instance suite
  * boots two `AppModule`s in one process, and a shared registry would either
  * refuse the second boot or let two instances count into one series.
  */

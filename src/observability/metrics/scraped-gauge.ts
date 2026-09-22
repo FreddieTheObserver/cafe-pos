@@ -1,5 +1,10 @@
 import { Logger } from '@nestjs/common';
-import { Gauge, type Counter, type GaugeConfiguration } from 'prom-client';
+import {
+  Gauge,
+  type Counter,
+  type GaugeConfiguration,
+  type MetricValue,
+} from '@prometheus-io/client';
 import { describeError } from '../../common/errors/describe-error';
 import { LogThrottle } from '../../common/logging/log-throttle';
 
@@ -19,7 +24,7 @@ const FAILURE_LOG_INTERVAL_MS = 60_000;
  * A gauge read at scrape time that exports nothing, never a stale value and
  * never zero, when its read fails.
  *
- * prom-client's `reset()` puts an unlabelled gauge back to 0, so its own
+ * The client's `reset()` puts an unlabelled gauge back to 0, so its own
  * `collect` hook cannot say "unknown": a failed read would publish a zero
  * nobody measured. Overriding `get()` bypasses the stored values entirely, so
  * what is exported is exactly what this scrape read.
@@ -42,7 +47,10 @@ export class ScrapedGauge<T extends string = string> extends Gauge<T> {
 
   override async get() {
     const metric = await super.get();
-    return { ...metric, values: await this.readOrNothing() };
+    // The client types an unlabelled gauge's labels as `never` (its conditional
+    // distributes over never), so no value satisfies them; ours are `{}`.
+    const values = (await this.readOrNothing()) as MetricValue<T>[];
+    return { ...metric, values };
   }
 
   private async readOrNothing(): Promise<Sample<T>[]> {

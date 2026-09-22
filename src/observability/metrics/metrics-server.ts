@@ -6,7 +6,7 @@ import {
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Injectable, Logger, type OnApplicationShutdown } from '@nestjs/common';
-import { collectDefaultMetrics } from 'prom-client';
+import { collectDefaultMetrics } from '@prometheus-io/client';
 import { describeError } from '../../common/errors/describe-error';
 import { Metrics } from './metrics';
 

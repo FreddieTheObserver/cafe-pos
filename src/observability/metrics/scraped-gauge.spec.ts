@@ -1,4 +1,4 @@
-import { Counter, Registry } from 'prom-client';
+import { Counter, Registry } from '@prometheus-io/client';
 import { ScrapedGauge } from './scraped-gauge';
 
 const setup = () => {
@@ -52,7 +52,7 @@ describe('ScrapedGauge', () => {
     ]);
   });
 
-  // prom-client's reset() would have exported 0 here, a number nobody measured.
+  // The client's reset() would have exported 0 here, a number nobody measured.
   it('exports no value, not zero, when the read throws', async () => {
     const { registry, failures } = setup();
     new ScrapedGauge(

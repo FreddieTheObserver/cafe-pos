@@ -90,6 +90,9 @@ Nothing is lost by this, because the transaction rolled back and the row is re-r
 OpenTelemetry metrics with a Prometheus exporter were rejected for this slice.
 `prom-client` is smaller and the de facto standard, and §13's OTel is for tracing, which can adopt it independently later.
 
+`prom-client` was deprecated while this slice was built, in favour of `@prometheus-io/client`: the same library, continued under the Prometheus organisation.
+The slice moved to it; the only difference it met is that the client types an unlabelled metric's labels as `never`, so `ScrapedGauge` converts its samples at the one place it hands them back.
+
 Node's default metrics (event loop lag, heap, GC) are registered only when `MetricsServer` starts.
 They attach process-wide observers that are never released, and Phase 5 showed that per-boot leaks in a test run starve the suites that run last.
 
