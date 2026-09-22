@@ -1,7 +1,7 @@
 # Phase 7, slice 1 - metrics and alert rules
 
 **Date:** 2026-09-22
-**Status:** design, not yet implemented
+**Status:** implemented on `phase7-metrics`
 **Branch:** `phase7-metrics`
 **Scope:** a Prometheus `/metrics` endpoint on its own port, the §13 metrics plus the few this design adds, the §13 alerts as tested Prometheus rules, and a local Prometheus and Grafana in docker-compose.
 **Depends on:** Phases 0-6 and PR #18, all on `main` at `5c61628`.

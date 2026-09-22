@@ -96,6 +96,7 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 |---|---|---|
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. Selects pretty vs JSON logs and the log level. |
 | `PORT` | `3000` | HTTP listen port. Coerced to a number. |
+| `METRICS_PORT` | `9464` | Serves `GET /metrics` for Prometheus, and nothing else. Keep it off the load balancer; only `PORT` is public. Must differ from `PORT`. |
 | `DATABASE_URL` | — | Required. Postgres connection string; note host port `5433` for the local stack. |
 | `REDIS_URL` | — | Required. Redis connection string. |
 | `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API (KDS, public board). Empty leaves CORS **off** — native kiosk clients are not browsers and need no CORS, so the permissive case must be opted into per environment. |
@@ -108,6 +109,8 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `VAT_BASIS_POINTS` | `700` | VAT **extracted** from a VAT-inclusive price, never added to it (§3.3). 700 is Thailand's 7%. Basis points rather than a float rate so the arithmetic stays integral until one rounding. Set `0` if the cafe is below the registration threshold. |
 | `CURRENCY` | `THB` | ISO 4217 code stamped on every order. Single-currency by design (§3.5); upper-cased to match the `char(3)` column. |
 | `ORDER_EXPIRY_SECONDS` | `600` | How long an unpaid order holds its queue number before the expiry job reclaims it (FR-10). |
+| `BUSINESS_OPEN_TIME` | `07:00` | When the cafe opens, `HH:MM` in `BUSINESS_TIMEZONE`. Read only by the alerts that mean nothing overnight. |
+| `BUSINESS_CLOSE_TIME` | `20:00` | When it closes. A close earlier than the open wraps past midnight; equal times are refused. |
 | `S3_BUCKET` | — | Required. Bucket holding item images. |
 | `S3_REGION` | `us-east-1` | Region passed to the S3 client. MinIO ignores it; AWS does not. |
 | `S3_ACCESS_KEY_ID` | — | Required. Object-storage access key. |
@@ -160,6 +163,25 @@ Both probes sit at the **root**, outside the API prefix, so platform orchestrato
   "checks": { "db": { "status": "up" }, "redis": { "status": "up" } }
 }
 ```
+
+## Metrics and alerts
+
+`GET /metrics` is served on `METRICS_PORT` (9464), a listener of its own that the load balancer never routes. It exports the metrics `DESIGN.md` §13 lists: request timing by route, orders and payments, webhook lag and failures, the reconciliation delta, connected screens, kiosk ages, dependency status, and rate-limit refusals.
+
+The alert rules are `ops/prometheus/alerts.yml`, tested by `alerts.test.yml`. CI runs them; to run them locally (Docker required, from PowerShell):
+
+```powershell
+docker run --rm --entrypoint promtool -v "${PWD}/ops/prometheus:/etc/prometheus:ro" prom/prometheus:v3.14.0 test rules /etc/prometheus/alerts.test.yml
+```
+
+To watch everything locally, start the monitoring profile alongside the app:
+
+```bash
+docker compose --profile observability up -d
+pnpm start:dev
+```
+
+Prometheus is on http://localhost:9090, scraping the app on the host and evaluating the rules, and Grafana is on http://localhost:3001 with the CafePOS dashboard provisioned. Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's `severity` label.
 
 ## API
 
