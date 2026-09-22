@@ -96,17 +96,29 @@ export const refunds = pgTable(
 );
 
 /** Append-only webhook inbox: store every event before processing (dedupe + replay, §4.2). */
-export const paymentEvents = pgTable('payment_events', {
-  id: primaryId(),
-  providerEventId: text('provider_event_id').notNull().unique(),
-  eventType: text('event_type').notNull(),
-  paymentId: uuidRef('payment_id').references(() => payments.id),
-  payload: jsonb('payload').notNull(),
-  receivedAt: timestamp('received_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  processedAt: timestamp('processed_at', { withTimezone: true }),
-});
+export const paymentEvents = pgTable(
+  'payment_events',
+  {
+    id: primaryId(),
+    providerEventId: text('provider_event_id').notNull().unique(),
+    eventType: text('event_type').notNull(),
+    paymentId: uuidRef('payment_id').references(() => payments.id),
+    payload: jsonb('payload').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    /** When §7.5's retention job cut the payload down to its identifiers. */
+    payloadTrimmedAt: timestamp('payload_trimmed_at', { withTimezone: true }),
+  },
+  (t) => [
+    // The retention job and its gauge both look for old rows not yet trimmed;
+    // without this they would scan an inbox that grows for five years.
+    index('payment_events_untrimmed_received_at_idx')
+      .on(t.receivedAt)
+      .where(sql`${t.payloadTrimmedAt} is null`),
+  ],
+);
 
 /**
  * Stores (key, request hash, response) so money-mutating retries replay safely
