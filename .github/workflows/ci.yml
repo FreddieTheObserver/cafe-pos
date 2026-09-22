@@ -79,15 +79,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Not a `services:` entry: minio/minio needs `server /data` as its
+      # Not a `services:` entry: MinIO needs `server /data` as its
       # command, and service containers cannot override one. The tag is pinned
-      # to the same release as docker-compose, so CI and local dev cannot drift.
+      # to the same release as docker-compose, so CI and local dev cannot drift,
+      # and comes from quay.io because Docker Hub no longer has minio/minio.
       - name: Start MinIO
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=cafepos \
             -e MINIO_ROOT_PASSWORD=cafepos_dev_secret \
-            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:9000/minio/health/live; then exit 0; fi
             sleep 1
