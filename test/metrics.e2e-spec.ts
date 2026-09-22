@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { eq, inArray } from 'drizzle-orm';
+import { load } from 'js-yaml';
 import { io } from 'socket.io-client';
 import request from 'supertest';
 import { uuidv7 } from 'uuidv7';
@@ -13,6 +16,7 @@ import { Metrics } from '../src/observability/metrics/metrics';
 import { MetricsServer } from '../src/observability/metrics/metrics-server';
 import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
+import { metricNamesIn } from './fixtures/promql';
 
 async function eventually(
   assertion: () => Promise<void>,
@@ -386,6 +390,72 @@ describe('Metrics (e2e)', () => {
       await eventually(async () => {
         expect(await connected('kds')).toBe(0);
       });
+    });
+  });
+
+  /**
+   * A renamed metric leaves every rule and panel that names it evaluating
+   * nothing, silently: the config-invisible-to-tests failure PR #5 taught.
+   */
+  describe('the alert rules and the dashboard', () => {
+    const OPS = join(__dirname, '..', 'ops');
+
+    const ruleExpressions = (): string[] => {
+      const file = load(
+        readFileSync(join(OPS, 'prometheus', 'alerts.yml'), 'utf8'),
+      ) as { groups: { rules: { expr: string }[] }[] };
+      return file.groups.flatMap((group) =>
+        group.rules.map((rule) => rule.expr),
+      );
+    };
+
+    const dashboardExpressions = (): string[] => {
+      const dashboard = JSON.parse(
+        readFileSync(
+          join(OPS, 'grafana', 'dashboards', 'cafepos.json'),
+          'utf8',
+        ),
+      ) as { panels: { targets?: { expr: string }[] }[] };
+      return dashboard.panels.flatMap((panel) =>
+        (panel.targets ?? []).map((target) => target.expr),
+      );
+    };
+
+    const exposedIn = (text: string): Set<string> => {
+      const names = new Set<string>();
+      for (const [, name, type] of text.matchAll(/^# TYPE (\S+) (\S+)$/gm)) {
+        names.add(name);
+        if (type === 'histogram' || type === 'summary') {
+          for (const suffix of ['_bucket', '_sum', '_count']) {
+            names.add(`${name}${suffix}`);
+          }
+        }
+      }
+      return names;
+    };
+
+    it('only query metrics the app exports', async () => {
+      const referenced = new Set(
+        [...ruleExpressions(), ...dashboardExpressions()].flatMap(
+          metricNamesIn,
+        ),
+      );
+      // Guards the extractor: had it found nothing, the check below would pass vacuously.
+      expect([...referenced]).toEqual(
+        expect.arrayContaining([
+          'orders_created_total',
+          'reconciliation_delta_minor',
+          'http_request_duration_seconds_bucket',
+          'business_open',
+        ]),
+      );
+
+      const exposed = exposedIn(await scrape());
+      // `up` is written by Prometheus itself, per target.
+      const missing = [...referenced].filter(
+        (name) => name !== 'up' && !exposed.has(name),
+      );
+      expect(missing).toEqual([]);
     });
   });
 });

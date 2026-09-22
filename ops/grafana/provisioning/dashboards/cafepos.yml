@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: cafepos
+    folder: CafePOS
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

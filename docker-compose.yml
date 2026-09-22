@@ -67,6 +67,43 @@ services:
     ports:
       - '12111:12111'
 
+  # Watches the API running on the host (METRICS_PORT 9464) and evaluates
+  # ops/prometheus/alerts.yml against it, so a rule can be watched firing
+  # before it is trusted to page anyone. Behind a profile, so a plain
+  # `docker compose up -d` still starts only what the tests need:
+  #   docker compose --profile observability up -d
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: cafepos-prometheus
+    restart: unless-stopped
+    profiles: [observability]
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./ops/prometheus:/etc/prometheus:ro
+      - cafepos_prometheusdata:/prometheus
+    # Docker Desktop resolves host.docker.internal by itself; this makes a Linux engine do the same.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+  grafana:
+    image: grafana/grafana:13.2.2
+    container_name: cafepos-grafana
+    restart: unless-stopped
+    profiles: [observability]
+    depends_on: [prometheus]
+    ports:
+      # 3000 is the API.
+      - '3001:3000'
+    environment:
+      # Local only: no login screen between a developer and the dashboard.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
 volumes:
   cafepos_pgdata:
   cafepos_miniodata:
+  cafepos_prometheusdata:
