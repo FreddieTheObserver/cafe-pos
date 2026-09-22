@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { Public } from '../../identity/decorators/public.decorator';
+import { Metrics } from '../../observability/metrics/metrics';
 import { WebhookSignatureInvalidError } from '../errors/payments.errors';
 import {
   PAYMENT_PROVIDER,
@@ -38,6 +39,7 @@ export class StripeWebhookController {
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly inbox: WebhookInboxService,
     private readonly processor: PaymentEventProcessor,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -91,7 +93,12 @@ export class StripeWebhookController {
      * this promise, so the sweep is the backstop rather than this being
      * fire-and-forget in the careless sense.
      */
-    if (eventRowId !== null) void this.processor.processEvent(eventRowId);
+    if (eventRowId !== null) {
+      this.metrics.webhookLag.observe(
+        Math.max(0, (Date.now() - event.createdAt.getTime()) / 1000),
+      );
+      void this.processor.processEvent(eventRowId);
+    }
 
     return { received: true };
   }

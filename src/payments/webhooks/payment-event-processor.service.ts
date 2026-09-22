@@ -8,7 +8,10 @@ import { orders, paymentEvents, payments } from '../../database/schema';
 import type { PaymentMethod, PaymentStatus } from '../../database/schema/enums';
 import type { Transaction } from '../../orders/idempotency/idempotency.store';
 import { Metrics } from '../../observability/metrics/metrics';
-import { transitionOrder } from '../../orders/state/transition-order';
+import {
+  isLostRace,
+  transitionOrder,
+} from '../../orders/state/transition-order';
 import { AfterCommit } from '../../realtime/events/after-commit.service';
 import {
   PAYMENT_PROVIDER,
@@ -85,6 +88,7 @@ export class PaymentEventProcessor {
       }
     } catch (error) {
       // A sweep that cannot read the inbox is not a sweep that found nothing.
+      this.metrics.webhookProcessingFailures.inc();
       this.logger.error(
         `Could not drain the payment inbox. ${describeError(error)}`,
       );
@@ -104,6 +108,19 @@ export class PaymentEventProcessor {
     try {
       return await this.apply(eventId);
     } catch (error) {
+      /**
+       * Two instances can apply the same event at once; the second's guarded
+       * transition then throws. The transaction rolled back and the next sweep
+       * re-reads the row, where the inbox gauge notices if it never settles.
+       */
+      if (isLostRace(error)) {
+        this.logger.debug(
+          `Payment event ${eventId} was applied elsewhere first. ${describeError(error)}`,
+        );
+        return false;
+      }
+
+      this.metrics.webhookProcessingFailures.inc();
       this.logger.error(
         `Failed to process payment event ${eventId}; leaving it for the sweep. ${describeError(error)}`,
       );

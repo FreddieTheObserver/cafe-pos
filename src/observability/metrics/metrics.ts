@@ -59,6 +59,19 @@ export class Metrics {
     registers: [this.registry],
   });
 
+  readonly webhookProcessingFailures = new Counter({
+    name: 'webhook_processing_failures_total',
+    help: 'Inbox events whose processing threw, excluding a lost race with another instance.',
+    registers: [this.registry],
+  });
+
+  readonly webhookLag = new Histogram({
+    name: 'webhook_lag_seconds',
+    help: 'Time from the gateway creating an event to this system first storing it.',
+    buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300, 900, 3600],
+    registers: [this.registry],
+  });
+
   constructor() {
     for (const channel of orderChannels) {
       this.ordersCreated.inc({ channel }, 0);

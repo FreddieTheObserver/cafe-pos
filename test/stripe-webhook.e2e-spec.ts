@@ -4,6 +4,8 @@ import { uuidv7 } from 'uuidv7';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import * as schema from '../src/database/schema';
 import { STRIPE_WEBHOOK_SECRETS } from '../src/payments/payments.constants';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 const ENDPOINT = '/api/v1/webhooks/stripe';
@@ -179,5 +181,18 @@ describe('Stripe webhook endpoint (e2e)', () => {
 
     expect(response.status).not.toBe(401);
     expect(response.status).toBe(200);
+  });
+
+  it('times the first delivery of an event and not its redelivery', async () => {
+    const metrics = harness.app.get(Metrics);
+    const lagCount = async () =>
+      (await sampleOf(metrics, 'webhook_lag_seconds_count')) ?? 0;
+    const body = eventBody(nextEventId());
+    const before = await lagCount();
+
+    await post(body, sign(body));
+    await post(body, sign(body));
+
+    expect(await lagCount()).toBe(before + 1);
   });
 });

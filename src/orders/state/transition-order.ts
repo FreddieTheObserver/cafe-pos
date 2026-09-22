@@ -95,3 +95,13 @@ async function explainFailure(
     ? new ResourceNotFoundError('order', orderId)
     : new OrderInvalidTransitionError(current.status, requested);
 }
+
+/**
+ * Whether a transition failed because something else moved the order first:
+ * it is no longer in `from`, or it is gone. Both are the guard doing its job,
+ * not a fault. Exported so callers can tell that apart from a real failure on
+ * real exception instances, rather than by reading a log line.
+ */
+export const isLostRace = (error: unknown): boolean =>
+  error instanceof OrderInvalidTransitionError ||
+  error instanceof ResourceNotFoundError;

@@ -2,8 +2,6 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { and, eq, inArray, lt } from 'drizzle-orm';
 import { describeError } from '../../common/errors/describe-error';
-import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
-import { OrderInvalidTransitionError } from '../errors/orders.errors';
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, payments } from '../../database/schema';
@@ -13,7 +11,7 @@ import {
   type PaymentProvider,
 } from '../../payments/provider/payment-provider';
 import { Metrics } from '../../observability/metrics/metrics';
-import { transitionOrder } from '../state/transition-order';
+import { isLostRace, transitionOrder } from '../state/transition-order';
 
 /** The statuses `one_live_payment` treats as live — an intent still in flight. */
 const LIVE: readonly PaymentStatus[] = ['PENDING', 'PROCESSING'];
@@ -28,20 +26,6 @@ const LIVE: readonly PaymentStatus[] = ['PENDING', 'PROCESSING'];
  * the cafe is trying to trade. Whatever is left is taken on the next tick.
  */
 const MAX_PER_TICK = 200;
-
-/**
- * Whether this failure is the sweep losing a race it was always going to lose
- * sometimes, rather than something being wrong.
- *
- * Exactly two outcomes qualify, and both are the guard doing its job in the
- * window between the scan and the update: the order moved on (paid, cancelled)
- * so `WHERE status = 'PENDING_PAYMENT'` matched nothing, or it was deleted
- * outright. Exported so the discrimination is testable on real exception
- * instances instead of inferred from a log line.
- */
-export const isLostRace = (error: unknown): boolean =>
-  error instanceof OrderInvalidTransitionError ||
-  error instanceof ResourceNotFoundError;
 
 /**
  * Expiring unpaid orders (FR-10, §4.4).
