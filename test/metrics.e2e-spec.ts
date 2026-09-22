@@ -241,4 +241,102 @@ describe('Metrics (e2e)', () => {
       expect([before, expected()]).toContain(reading);
     });
   });
+
+  describe('orders', () => {
+    let kioskToken: string;
+    let croissantId: string;
+    const categoryIds: string[] = [];
+    const itemIds: string[] = [];
+    const keys: string[] = [];
+
+    beforeAll(async () => {
+      const adminToken = await harness.tokenFor('ADMIN');
+      const post = async (path: string, body: object): Promise<string> => {
+        const res = await harness
+          .http()
+          .post(path)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send(body);
+        if (res.status !== 201) {
+          throw new Error(`fixture ${path} failed with ${res.status}`);
+        }
+        return (res.body as { id: string }).id;
+      };
+
+      const categoryId = await post('/api/v1/categories', {
+        name: `Metrics pastries ${uuidv7()}`,
+        sortOrder: 0,
+      });
+      categoryIds.push(categoryId);
+      croissantId = await post('/api/v1/items', {
+        categoryId,
+        name: `Metrics croissant ${uuidv7()}`,
+        basePriceMinor: 2000,
+        sortOrder: 0,
+      });
+      itemIds.push(croissantId);
+      kioskToken = (await harness.createDevice('ACTIVE')).token;
+    });
+
+    afterAll(async () => {
+      await harness.purgeOrders();
+      if (keys.length > 0) {
+        await harness.db
+          .delete(schema.idempotencyKeys)
+          .where(inArray(schema.idempotencyKeys.key, keys));
+      }
+      if (itemIds.length > 0) {
+        await harness.db
+          .delete(schema.menuItems)
+          .where(inArray(schema.menuItems.id, itemIds));
+      }
+      if (categoryIds.length > 0) {
+        await harness.db
+          .delete(schema.categories)
+          .where(inArray(schema.categories.id, categoryIds));
+      }
+    });
+
+    const placeOrder = (key: string, extra: object = {}) => {
+      keys.push(key);
+      return harness
+        .http()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${kioskToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          channel: 'KIOSK',
+          items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
+          ...extra,
+        });
+    };
+
+    const kioskOrders = async () =>
+      (await sampleOf(harness.app.get(Metrics), 'orders_created_total', {
+        channel: 'KIOSK',
+      })) ?? 0;
+
+    it('counts an order once, however many times the kiosk retries it', async () => {
+      const before = await kioskOrders();
+      const key = `metrics-${uuidv7()}`;
+
+      const first = await placeOrder(key);
+      const retry = await placeOrder(key);
+
+      expect(first.status).toBe(201);
+      expect(retry.headers['idempotency-replayed']).toBe('true');
+      expect(await kioskOrders()).toBe(before + 1);
+    });
+
+    it('does not count an order it refused', async () => {
+      const before = await kioskOrders();
+
+      const res = await placeOrder(`metrics-${uuidv7()}`, {
+        expectedTotalMinor: 1,
+      });
+
+      expect(res.status).toBe(409);
+      expect(await kioskOrders()).toBe(before);
+    });
+  });
 });

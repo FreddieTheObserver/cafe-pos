@@ -1,6 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { Counter, Histogram, Registry } from 'prom-client';
+import { orderChannels } from '../../database/schema/enums';
 import { ScrapedGauge, type Read } from './scraped-gauge';
+
+/** Every (provider, status) the app can end a payment in. Cash is born SUCCEEDED. */
+const TERMINAL_PAYMENTS = [
+  ['STRIPE', 'SUCCEEDED'],
+  ['STRIPE', 'FAILED'],
+  ['STRIPE', 'CANCELLED'],
+  ['CASH', 'SUCCEEDED'],
+] as const;
 
 export interface ScrapedGaugeConfig<T extends string> {
   name: string;
@@ -35,6 +44,29 @@ export class Metrics {
     buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 1, 2.5, 5, 10],
     registers: [this.registry],
   });
+
+  readonly ordersCreated = new Counter({
+    name: 'orders_created_total',
+    help: 'Orders committed, by channel. An idempotent replay is not a new order.',
+    labelNames: ['channel'] as const,
+    registers: [this.registry],
+  });
+
+  readonly payments = new Counter({
+    name: 'payments_total',
+    help: 'Payments reaching a terminal status, counted once the guarded write has landed.',
+    labelNames: ['provider', 'status'] as const,
+    registers: [this.registry],
+  });
+
+  constructor() {
+    for (const channel of orderChannels) {
+      this.ordersCreated.inc({ channel }, 0);
+    }
+    for (const [provider, status] of TERMINAL_PAYMENTS) {
+      this.payments.inc({ provider, status }, 0);
+    }
+  }
 
   scraped<T extends string>(
     config: ScrapedGaugeConfig<T>,

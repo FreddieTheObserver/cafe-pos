@@ -3,6 +3,8 @@ import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
 import { OrderExpiryService } from '../src/orders/expiry/order-expiry.service';
 import type { CancelIntentOutcome } from '../src/payments/provider/payment-provider';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 /**
@@ -38,6 +40,12 @@ describe('Order expiry cancels the intent (e2e)', () => {
 
   let harness: IdentityHarness;
   let cashierId: string;
+
+  const cancelledPayments = async () =>
+    (await sampleOf(harness.app.get(Metrics), 'payments_total', {
+      provider: 'STRIPE',
+      status: 'CANCELLED',
+    })) ?? 0;
 
   async function givenOverdueOrder(): Promise<{
     orderId: string;
@@ -124,6 +132,8 @@ describe('Order expiry cancels the intent (e2e)', () => {
 
   it('cancels the intent behind an order it reclaims', async () => {
     const { orderId, paymentId, intentId } = await givenOverdueOrder();
+    const before = await cancelledPayments();
+    const cancelledBefore = cancelled.length;
 
     await harness.app.get(OrderExpiryService).expireOverdue();
 
@@ -131,6 +141,10 @@ describe('Order expiry cancels the intent (e2e)', () => {
     expect(await orderStatusOf(orderId)).toBe('EXPIRED');
     // Not left live, or B4 would block the customer from ever ordering again.
     expect(await paymentStatusOf(paymentId)).toBe('CANCELLED');
+    // The sweep takes every overdue order in the database, so count what it cancelled.
+    expect(await cancelledPayments()).toBe(
+      before + (cancelled.length - cancelledBefore),
+    );
   });
 
   /**
@@ -141,6 +155,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
   it('leaves an order alone when its payment already succeeded', async () => {
     const { orderId, paymentId, intentId } = await givenOverdueOrder();
     cancelOutcome = 'ALREADY_SUCCEEDED';
+    const before = await cancelledPayments();
 
     await harness.app.get(OrderExpiryService).expireOverdue();
 
@@ -148,6 +163,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
     expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
     // Still live: the webhook is about to settle it.
     expect(await paymentStatusOf(paymentId)).toBe('PENDING');
+    expect(await cancelledPayments()).toBe(before);
   });
 
   /**
@@ -168,6 +184,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
 
     it('cancels the intent behind the order it is cancelling', async () => {
       const { orderId, paymentId, intentId } = await givenOverdueOrder();
+      const before = await cancelledPayments();
 
       const res = await cancel(orderId);
 
@@ -175,6 +192,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
       expect(cancelled).toContain(intentId);
       expect(await orderStatusOf(orderId)).toBe('CANCELLED');
       expect(await paymentStatusOf(paymentId)).toBe('CANCELLED');
+      expect(await cancelledPayments()).toBe(before + 1);
     });
 
     /**
@@ -190,6 +208,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
     it('refuses to cancel when the gateway cannot be reached', async () => {
       const { orderId, paymentId } = await givenOverdueOrder();
       gatewayReachable = false;
+      const before = await cancelledPayments();
 
       const res = await cancel(orderId);
 
@@ -199,6 +218,7 @@ describe('Order expiry cancels the intent (e2e)', () => {
       );
       expect(await orderStatusOf(orderId)).toBe('PENDING_PAYMENT');
       expect(await paymentStatusOf(paymentId)).toBe('PENDING');
+      expect(await cancelledPayments()).toBe(before);
     });
 
     /** Lost the race: the customer confirmed while the cancel was in flight. */

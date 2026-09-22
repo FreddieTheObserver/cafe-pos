@@ -3434,7 +3434,8 @@ tests:
         alertname: KioskOffline
         exp_alerts: []
 
-  # Orders is slow with traffic; the Z-report is slow and excluded; users is slow on one request.
+  # Orders is slow with traffic; the Z-report is slow and excluded; users is slow but quiet,
+  # one request every two minutes, below the floor for the whole window.
   - interval: 1m
     input_series:
       - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/orders",status_class="2xx",le="0.3"}'
@@ -3456,11 +3457,11 @@ tests:
       - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="0.3"}'
         values: '0x20'
       - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="1"}'
-        values: '0x11 1x9'
+        values: '0+0.5x20'
       - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="+Inf"}'
-        values: '0x11 1x9'
+        values: '0+0.5x20'
       - series: 'http_request_duration_seconds_count{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx"}'
-        values: '0x11 1x9'
+        values: '0+0.5x20'
     alert_rule_test:
       - eval_time: 15m
         alertname: LatencyP95High
@@ -3991,3 +3992,15 @@ git commit -m "Say what the metrics slice shipped"
 - [ ] Every falsification step was run and went red, except the one Task 5 names as unfalsified. List them in the hand-over.
 - [ ] `git log --format=%B main..HEAD` contains no `Co-Authored-By` line and no em dash.
 - [ ] Nothing is pushed. The user decides when to push and open the PR.
+
+---
+
+## Execution notes
+
+Where running the plan corrected it. Each was found by a test or a falsification step, not by reading.
+
+- **Task 1.** The prescribed `failuresOf` read the failure counter through the registry, which is itself a scrape: it re-ran the failing read and counted two failures for one. It now reads the `Counter` directly. A never-settling promise needed `Promise<never>`. The registry falsification hangs without `--forceExit`, because the failed second boot leaves the first app open.
+- **Task 2.** An unknown path does not leave `req.route` empty: nestjs-pino mounts its request logger as a route on `/api/v1/{*path}`, so an unmatched request was labelled with the logger's pattern. `routeLabelOf` reads any wildcard pattern as `unmatched`.
+- **Task 5, cash.** A sequential retry is answered from the stored response before `takeCash` runs, so the prescribed replay test could not reach the `!result.replayed` guard; falsifying it stayed green. Only a retry that races the original reaches it. Added "counts a cash payment once when a retry races the original", which fires the pair together and went red against the unguarded variant in 8 of 8 probe rounds.
+- **Task 5, webhook.** A real defect, found the same way. The `MARK_PAYMENT` guard refuses only overwriting `SUCCEEDED`, so two processors applying one failure event at once both landed `FAILED` and counted it twice (6 of 6 probe rounds). `markProcessed` now reports whether it stamped the row, and only the processor that stamped the event counts it. Added "counts a declined payment once when two processors apply it together". The stale-decision half of the guard remains the one increment no deterministic test reaches.
+- **Task 9.** The `LatencyP95High` quiet-route case could not fail: a single request holds its p95 high for under the rule's `for: 5m`, so removing the traffic floor left the test green. The quiet route now carries one slow request every two minutes for the whole window.

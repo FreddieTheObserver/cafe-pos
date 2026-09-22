@@ -12,6 +12,7 @@ import {
   PAYMENT_PROVIDER,
   type PaymentProvider,
 } from '../../payments/provider/payment-provider';
+import { Metrics } from '../../observability/metrics/metrics';
 import { transitionOrder } from '../state/transition-order';
 
 /** The statuses `one_live_payment` treats as live — an intent still in flight. */
@@ -57,6 +58,7 @@ export class OrderExpiryService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -165,6 +167,10 @@ export class OrderExpiryService {
             .where(eq(payments.id, live.id));
         }
       });
+
+      if (live !== undefined) {
+        this.metrics.payments.inc({ provider: 'STRIPE', status: 'CANCELLED' });
+      }
       return true;
     } catch (error) {
       /**

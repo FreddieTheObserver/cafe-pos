@@ -5,6 +5,8 @@ import * as schema from '../src/database/schema';
 import type { OrderStatus } from '../src/database/schema/enums';
 import { STRIPE_WEBHOOK_SECRETS } from '../src/payments/payments.constants';
 import { PaymentEventProcessor } from '../src/payments/webhooks/payment-event-processor.service';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 const ENDPOINT = '/api/v1/webhooks/stripe';
@@ -102,6 +104,36 @@ describe('Payment inbox processing (e2e)', () => {
         providerEventId,
         eventType: 'payment_intent.succeeded',
         payload: JSON.parse(eventBody(providerEventId, intentId, amount)),
+      })
+      .returning({ id: schema.paymentEvents.id });
+
+    return row.id;
+  }
+
+  const stripePayments = async (status: 'SUCCEEDED' | 'FAILED') =>
+    (await sampleOf(harness.app.get(Metrics), 'payments_total', {
+      provider: 'STRIPE',
+      status,
+    })) ?? 0;
+
+  /** A declined card, as Stripe sends it. */
+  async function givenFailureEvent(intentId: string): Promise<string> {
+    const providerEventId = `evt_e2e_${uuidv7()}`;
+    eventIds.push(providerEventId);
+
+    const [row] = await harness.db
+      .insert(schema.paymentEvents)
+      .values({
+        providerEventId,
+        eventType: 'payment_intent.payment_failed',
+        payload: {
+          id: providerEventId,
+          object: 'event',
+          type: 'payment_intent.payment_failed',
+          api_version: '2026-07-29.dahlia',
+          created: 1_785_829_150,
+          data: { object: { id: intentId, last_payment_error: null } },
+        },
       })
       .returning({ id: schema.paymentEvents.id });
 
@@ -233,6 +265,7 @@ describe('Payment inbox processing (e2e)', () => {
   it('changes nothing when the same row is processed again', async () => {
     const { orderId, intentId } = await givenOrderAwaitingPayment();
     const rowId = await givenInboxEvent(intentId);
+    const before = await stripePayments('SUCCEEDED');
 
     expect(await processor.processEvent(rowId)).toBe(true);
     expect(await processor.processEvent(rowId)).toBe(false);
@@ -244,6 +277,40 @@ describe('Payment inbox processing (e2e)', () => {
       .from(schema.orderStatusHistory)
       .where(eq(schema.orderStatusHistory.orderId, orderId));
     expect(history).toHaveLength(1);
+    expect(await stripePayments('SUCCEEDED')).toBe(before + 1);
+  });
+
+  // Rules out counting every processed event: the second is decided SKIP and writes nothing.
+  it('counts nothing for a success it has already applied', async () => {
+    const { intentId } = await givenOrderAwaitingPayment();
+    await processor.processEvent(await givenInboxEvent(intentId));
+    const before = await stripePayments('SUCCEEDED');
+
+    await processor.processEvent(await givenInboxEvent(intentId));
+
+    expect(await stripePayments('SUCCEEDED')).toBe(before);
+  });
+
+  it('counts a declined payment once', async () => {
+    const { paymentId, intentId } = await givenOrderAwaitingPayment();
+    const rowId = await givenFailureEvent(intentId);
+    const before = await stripePayments('FAILED');
+
+    await processor.processEvent(rowId);
+    await processor.processEvent(rowId);
+
+    expect((await paymentRow(paymentId))?.status).toBe('FAILED');
+    expect(await stripePayments('FAILED')).toBe(before + 1);
+  });
+
+  // A refused event changed nothing, so it is not a payment outcome.
+  it('counts nothing for an event it refused', async () => {
+    const { intentId } = await givenOrderAwaitingPayment();
+    const before = await stripePayments('SUCCEEDED');
+
+    await processor.processEvent(await givenInboxEvent(intentId, 1));
+
+    expect(await stripePayments('SUCCEEDED')).toBe(before);
   });
 
   /** The sweep is the backstop for anything the webhook's kick did not finish. */
@@ -285,5 +352,22 @@ describe('Payment inbox processing (e2e)', () => {
     }
 
     expect(await orderStatusOf(orderId)).toBe('PAID');
+  });
+  /**
+   * Two processors can apply one event at once: the webhook kick and the other
+   * instance's sweep. The status guard lets FAILED over FAILED through, so both
+   * writes land; only the one that stamps the event may count it.
+   */
+  it('counts a declined payment once when two processors apply it together', async () => {
+    const { intentId } = await givenOrderAwaitingPayment();
+    const rowId = await givenFailureEvent(intentId);
+    const before = await stripePayments('FAILED');
+
+    await Promise.all([
+      processor.processEvent(rowId),
+      processor.processEvent(rowId),
+    ]);
+
+    expect(await stripePayments('FAILED')).toBe(before + 1);
   });
 });
