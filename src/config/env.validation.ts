@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CLOCK_TIME } from '../orders/business-hours';
 
 /**
  * Item images are served straight to kiosk and board clients, so a plaintext
@@ -39,6 +40,8 @@ function isKnownTimeZone(value: string): boolean {
     return false;
   }
 }
+
+const clockTime = z.string().regex(CLOCK_TIME, 'must be a 24-hour HH:MM time');
 
 /**
  * The single source of truth for the environment this app needs.
@@ -153,6 +156,13 @@ export const envSchema = z.object({
     .int()
     .positive()
     .default(10 * 60),
+  /**
+   * When the cafe opens and closes, `HH:MM` in BUSINESS_TIMEZONE. Read only by
+   * the alerts that mean nothing overnight: no orders, no kitchen screen, a
+   * kiosk offline. A close earlier than the open wraps past midnight.
+   */
+  BUSINESS_OPEN_TIME: clockTime.default('07:00'),
+  BUSINESS_CLOSE_TIME: clockTime.default('20:00'),
   /**
    * Object storage for item images (§10, §12.4).
    *
@@ -307,6 +317,11 @@ function conflictsIn(env: Env): string[] {
   if (env.METRICS_PORT === env.PORT) {
     conflicts.push(
       'METRICS_PORT: must differ from PORT, or /metrics and the API would contend for one listener',
+    );
+  }
+  if (env.BUSINESS_OPEN_TIME === env.BUSINESS_CLOSE_TIME) {
+    conflicts.push(
+      'BUSINESS_CLOSE_TIME: must differ from BUSINESS_OPEN_TIME; a window that opens and closes on the same minute has no single meaning',
     );
   }
   return conflicts;
