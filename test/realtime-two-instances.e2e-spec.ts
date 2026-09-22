@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { io, type Socket } from 'socket.io-client';
 import * as schema from '../src/database/schema';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { NAMESPACES } from '../src/realtime/realtime.constants';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -268,5 +270,21 @@ describe('Realtime across two instances (e2e)', () => {
     expect(res.status).toBe(200);
 
     await expect(dropped).resolves.toBe(true);
+  });
+
+  // A shared registry would merge the two instances' counts into one series.
+  it("keeps each instance's metrics to itself", async () => {
+    const mine = writer.app.get(Metrics);
+    const theirs = reader.app.get(Metrics);
+    const collector = 'isolation-probe';
+
+    mine.collectorFailures.inc({ collector });
+
+    expect(
+      await sampleOf(mine, 'metrics_collector_failures_total', { collector }),
+    ).toBe(1);
+    expect(
+      await sampleOf(theirs, 'metrics_collector_failures_total', { collector }),
+    ).toBeUndefined();
   });
 });

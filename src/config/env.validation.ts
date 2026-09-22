@@ -52,6 +52,11 @@ export const envSchema = z.object({
     .enum(['development', 'production', 'test'])
     .default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
+  /**
+   * The second listener, serving only `GET /metrics`. A port of its own so the
+   * load balancer, which routes PORT, never exposes it.
+   */
+  METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9464),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   /**
@@ -277,12 +282,37 @@ export type Env = z.infer<typeof envSchema>;
 export function validateEnv(config: Record<string, unknown>): Env {
   const result = envSchema.safeParse(config);
   if (!result.success) {
-    const details = result.error.issues
-      .map(
-        (issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`,
-      )
-      .join('\n');
-    throw new Error(`Invalid environment variables:\n${details}`);
+    throw invalidEnv(
+      result.error.issues.map(
+        (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,
+      ),
+    );
   }
+
+  const conflicts = conflictsIn(result.data);
+  if (conflicts.length > 0) throw invalidEnv(conflicts);
+
   return result.data;
+}
+
+/**
+ * Rules that span two variables, checked once both have parsed.
+ *
+ * Kept off the schema: `ConfigService` infers its types from the schema's
+ * shape, and this file has already lost that inference once to a refinement
+ * placed where it changed the shape.
+ */
+function conflictsIn(env: Env): string[] {
+  const conflicts: string[] = [];
+  if (env.METRICS_PORT === env.PORT) {
+    conflicts.push(
+      'METRICS_PORT: must differ from PORT, or /metrics and the API would contend for one listener',
+    );
+  }
+  return conflicts;
+}
+
+function invalidEnv(lines: string[]): Error {
+  const details = lines.map((line) => `  - ${line}`).join('\n');
+  return new Error(`Invalid environment variables:\n${details}`);
 }

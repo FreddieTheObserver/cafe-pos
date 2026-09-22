@@ -38,6 +38,24 @@ describe('validateEnv', () => {
     );
   });
 
+  describe('METRICS_PORT', () => {
+    it('defaults to a port of its own', () => {
+      expect(validateEnv({ ...REQUIRED }).METRICS_PORT).toBe(9464);
+    });
+
+    it('refuses to share the API port', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, PORT: '9000', METRICS_PORT: '9000' }),
+      ).toThrow(/METRICS_PORT/);
+    });
+
+    it('rejects a port outside the TCP range', () => {
+      expect(() => validateEnv({ ...REQUIRED, METRICS_PORT: '70000' })).toThrow(
+        /METRICS_PORT/,
+      );
+    });
+  });
+
   describe('JWT_SECRET', () => {
     it('rejects a secret short enough to brute-force', () => {
       expect(() =>

@@ -17,6 +17,7 @@ import { RealtimeModule } from './realtime/realtime.module';
 import { KdsModule } from './kds/kds.module';
 import { BoardModule } from './board/board.module';
 import { ReportingModule } from './reporting/reporting.module';
+import { MetricsModule } from './observability/metrics/metrics.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { ReportingModule } from './reporting/reporting.module';
      * process-wide plumbing: one scheduler, whatever declares work for it.
      */
     ScheduleModule.forRoot(),
+    MetricsModule,
     DatabaseModule,
     RedisModule,
     StorageModule,
