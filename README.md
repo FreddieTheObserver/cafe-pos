@@ -118,6 +118,10 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `S3_ENDPOINT` | unset | Overrides the AWS endpoint so the same client can address MinIO. Leave unset in production, where the SDK resolves the real regional endpoint. Setting it also switches the client to path-style addressing, which MinIO requires. |
 | `S3_PUBLIC_BASE_URL` | — | Required. Public origin images are served from — the CDN in front of the bucket. Must be `https` anywhere but localhost: kiosks render these URLs, and a plaintext image source is both tamperable and mixed content. Trailing slashes are stripped. |
 | `S3_AUTO_CREATE_BUCKET` | `false` | Creates the bucket at boot when missing, and marks it publicly readable. For MinIO and CI only. Off in production, where a bucket the app can conjure is a deployment pointed at the wrong account that nobody notices. |
+| `STRIPE_SECRET_KEY` | - | Required. A restricted (`rk_`) key is preferred, scoped to PaymentIntents write and Charges read; `sk_` is accepted, `pk_` refused. |
+| `STRIPE_MODE` | `test` | `test` or `live`. The key must match it; `live` is refused outside `NODE_ENV=production` and with `STRIPE_API_BASE` set, so live and test keys cannot cross (§16). |
+| `STRIPE_WEBHOOK_SECRETS` | - | Required. Comma-separated signing secrets, newest first, for the 24-hour rotation window (§10.5). |
+| `STRIPE_API_BASE` | unset | Points the Stripe client elsewhere; CI sets it to stripe-mock. Leave unset otherwise. |
 
 `.env` is for local development only. Real secrets (production database URL, JWT signing keys, object-storage credentials, Stripe keys) come from the platform secret store and are never committed.
 

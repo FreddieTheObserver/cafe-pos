@@ -324,10 +324,10 @@ describe('validateEnv', () => {
       it('accepts a restricted key, which is the one to prefer', () => {
         const env = validateEnv({
           ...REQUIRED,
-          STRIPE_SECRET_KEY: 'rk_live_abc123',
+          STRIPE_SECRET_KEY: 'rk_test_abc123',
         });
 
-        expect(env.STRIPE_SECRET_KEY).toBe('rk_live_abc123');
+        expect(env.STRIPE_SECRET_KEY).toBe('rk_test_abc123');
       });
 
       it('still accepts a full secret key, so a first spike is not blocked', () => {
@@ -356,6 +356,54 @@ describe('validateEnv', () => {
         expect(() =>
           validateEnv({ ...REQUIRED, STRIPE_SECRET_KEY: 'rk_abc123' }),
         ).toThrow(/STRIPE_SECRET_KEY/);
+      });
+    });
+
+    /**
+     * §16: live and test keys cannot cross. The mode is declared, not inferred
+     * from the key, so a live key pasted into a test deployment, or a test key
+     * into production, stops the boot instead of taking or faking real money.
+     */
+    describe('STRIPE_MODE', () => {
+      const LIVE = {
+        ...REQUIRED,
+        NODE_ENV: 'production',
+        STRIPE_MODE: 'live',
+        STRIPE_SECRET_KEY: 'rk_live_abc123',
+      };
+
+      it('defaults to test mode, where a test key boots', () => {
+        expect(validateEnv({ ...REQUIRED }).STRIPE_MODE).toBe('test');
+      });
+
+      it('refuses a live key in test mode', () => {
+        expect(() =>
+          validateEnv({ ...REQUIRED, STRIPE_SECRET_KEY: 'rk_live_abc123' }),
+        ).toThrow(/STRIPE_SECRET_KEY/);
+      });
+
+      it('refuses a test key in live mode', () => {
+        expect(() =>
+          validateEnv({ ...LIVE, STRIPE_SECRET_KEY: 'sk_test_abc123' }),
+        ).toThrow(/STRIPE_SECRET_KEY/);
+      });
+
+      it('boots a live key in live mode in production', () => {
+        expect(validateEnv(LIVE).STRIPE_MODE).toBe('live');
+      });
+
+      // A live key belongs to a production deployment, never to a laptop or a test run.
+      it('refuses live mode outside production', () => {
+        expect(() => validateEnv({ ...LIVE, NODE_ENV: 'development' })).toThrow(
+          /STRIPE_MODE/,
+        );
+      });
+
+      // A live key sent anywhere but Stripe is a live key leaked.
+      it('refuses to point a live key anywhere but Stripe', () => {
+        expect(() =>
+          validateEnv({ ...LIVE, STRIPE_API_BASE: 'http://localhost:12111' }),
+        ).toThrow(/STRIPE_API_BASE/);
       });
     });
 
