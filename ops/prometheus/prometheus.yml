@@ -1,0 +1,14 @@
+# Local development: scrapes the API running on the host (pnpm start:dev) and
+# evaluates the alert rules against it. A deployment scrapes each instance's
+# METRICS_PORT with a configuration of its own; the rules expect job="cafepos".
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: cafepos
+    static_configs:
+      - targets: ['host.docker.internal:9464']

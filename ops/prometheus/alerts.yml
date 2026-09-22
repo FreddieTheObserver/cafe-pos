@@ -1,0 +1,142 @@
+# The §13 alerts, evaluated against what the app exports on METRICS_PORT.
+#
+# Every rule carries severity "page" (wake someone) or "notify" (business
+# hours). Routing on that label belongs to the deployment's Alertmanager.
+# Counters are summed across instances. Gauges read from the database are
+# reported identically by every instance and are read with max.
+#
+# Tested by alerts.test.yml, which CI runs with promtool.
+groups:
+  - name: cafepos-availability
+    rules:
+      - alert: ApiDown
+        expr: sum(up{job="cafepos"}) == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "No CafePOS instance is answering, so no kiosk can take an order."
+
+      - alert: InstanceDown
+        expr: up{job="cafepos"} == 0
+        for: 2m
+        labels:
+          severity: notify
+        annotations:
+          summary: "A CafePOS instance is not answering scrapes."
+
+      - alert: DatabaseDown
+        expr: max(dependency_up{dependency="postgres"}) == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "No instance can reach Postgres."
+
+      - alert: RedisDown
+        expr: max(dependency_up{dependency="redis"}) == 0
+        for: 2m
+        labels:
+          severity: notify
+        annotations:
+          summary: "No instance can reach Redis. Logins and kiosk pairing are refused until it is back."
+
+  - name: cafepos-money
+    rules:
+      - alert: ReconciliationDelta
+        expr: max(abs(reconciliation_delta_minor)) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "The gateway and the books disagree about yesterday's takings."
+
+      # Both instances run the nightly job; one failing while the other checked is not an unchecked night.
+      - alert: ReconciliationFailed
+        expr: |
+          sum(increase(reconciliation_runs_total{outcome="failed"}[1d])) > 0
+          unless
+          sum(increase(reconciliation_runs_total{outcome=~"agreed|delta"}[1d])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "No instance could check yesterday's takings against the gateway."
+
+      - alert: WebhookProcessingFailures
+        expr: sum(increase(webhook_processing_failures_total[10m])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "A payment webhook failed to process."
+
+      - alert: PaymentInboxStuck
+        expr: max(payment_inbox_oldest_unprocessed_age_seconds) > 120
+        labels:
+          severity: page
+        annotations:
+          summary: "A payment event has sat unprocessed for over two minutes."
+
+      - alert: WebhookLagHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(webhook_lag_seconds_bucket[10m]))) > 60
+        labels:
+          severity: notify
+        annotations:
+          summary: "Stripe events are reaching us more than a minute late."
+
+      # Five attempts: at 07:00 one declined card in three payments is a customer, not an incident.
+      - alert: PaymentFailureRatio
+        expr: |
+          (
+            sum(increase(payments_total{provider="STRIPE",status="FAILED"}[10m]))
+            /
+            sum(increase(payments_total{provider="STRIPE",status=~"SUCCEEDED|FAILED"}[10m]))
+          ) > 0.1
+          and
+          sum(increase(payments_total{provider="STRIPE",status=~"SUCCEEDED|FAILED"}[10m])) >= 5
+        labels:
+          severity: notify
+        annotations:
+          summary: "More than 10% of card and PromptPay payments are failing."
+
+      - alert: PendingPaymentOverdue
+        expr: max(orders_pending_payment_overdue_seconds) > 300
+        labels:
+          severity: notify
+        annotations:
+          summary: "An unpaid order is five minutes past its expiry. Is the expiry job running?"
+
+  - name: cafepos-trading
+    rules:
+      - alert: KitchenBlind
+        expr: sum(ws_connected{namespace="kds"}) == 0 and on() max(business_open) == 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "No kitchen screen is connected while the cafe is open."
+
+      # Open for the whole window, so the first 15 minutes after opening cannot fire it.
+      - alert: OrdersSilent
+        expr: sum(increase(orders_created_total[15m])) == 0 and on() min_over_time(max(business_open)[15m:1m]) == 1
+        labels:
+          severity: notify
+        annotations:
+          summary: "No orders for 15 minutes while the cafe is open."
+
+      - alert: KioskOffline
+        expr: max by (device) (kiosk_last_seen_age_seconds) > 120 and on() max(business_open) == 1
+        labels:
+          severity: notify
+        annotations:
+          summary: "A kiosk has not been heard from for two minutes while the cafe is open."
+
+      # Reports call the gateway once per payment, and a quiet route's p95 is one request.
+      - alert: LatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route!~"/api/v1/reports/.*|unmatched"}[5m]))) > 0.3
+          and on(route)
+          sum by (route) (rate(http_request_duration_seconds_count{route!~"/api/v1/reports/.*|unmatched"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: notify
+        annotations:
+          summary: "A route's p95 response time is above 300 ms."

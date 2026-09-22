@@ -79,6 +79,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The alert rules are code, and promtool runs their tests. Pinned to the
+      # release docker-compose runs, so they are tested against the Prometheus
+      # that evaluates them.
+      - name: Test alert rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/ops/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.14.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/ops/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.14.0 test rules /etc/prometheus/alerts.test.yml
+
       # Not a `services:` entry: minio/minio needs `server /data` as its
       # command, and service containers cannot override one. The tag is pinned
       # to the same release as docker-compose, so CI and local dev cannot drift.
