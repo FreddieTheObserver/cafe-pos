@@ -87,8 +87,10 @@ const valuesOf = async (registry: Registry, name: string) =>
   (await registry.getMetricsAsJSON()).find((metric) => metric.name === name)
     ?.values ?? [];
 
-const failuresOf = async (registry: Registry, collector: string) =>
-  (await valuesOf(registry, 'metrics_collector_failures_total')).find(
+// Read off the counter itself: going through the registry would scrape again,
+// re-run the failing read, and count one failure more than the test caused.
+const failuresOf = async (failures: Counter<'collector'>, collector: string) =>
+  (await failures.get()).values.find(
     (value) => value.labels.collector === collector,
   )?.value;
 
@@ -131,20 +133,20 @@ describe('ScrapedGauge', () => {
     );
 
     expect(await valuesOf(registry, 'broken')).toEqual([]);
-    expect(await failuresOf(registry, 'broken')).toBe(1);
+    expect(await failuresOf(failures, 'broken')).toBe(1);
   });
 
   it('exports no value when the read outlives its deadline', async () => {
     const { registry, failures } = setup();
     new ScrapedGauge(
       { name: 'slow', help: 'test', registers: [registry] },
-      () => new Promise(() => {}),
+      () => new Promise<never>(() => {}),
       failures,
       20,
     );
 
     expect(await valuesOf(registry, 'slow')).toEqual([]);
-    expect(await failuresOf(registry, 'slow')).toBe(1);
+    expect(await failuresOf(failures, 'slow')).toBe(1);
   });
 
   it('does not fall back to the last value it read', async () => {
@@ -193,7 +195,7 @@ describe('ScrapedGauge', () => {
       failures,
     );
 
-    expect(await failuresOf(registry, 'healthy')).toBe(0);
+    expect(await failuresOf(failures, 'healthy')).toBe(0);
   });
 });
 ```
@@ -675,7 +677,7 @@ Expected: PASS.
 
 - [ ] **Step 8: Falsify the registry isolation**
 
-In `metrics.ts`, temporarily replace `new Registry()` with prom-client's global `register` (import `register` from `prom-client` and use `readonly registry = register;`). Run the two-instance suite. Expected: RED, the second boot throws `A metric with the name metrics_collector_failures_total has already been registered`. Restore `new Registry()`, re-run, green.
+In `metrics.ts`, temporarily replace `new Registry()` with prom-client's global `register` (import `register` from `prom-client` and use `readonly registry = register;`). Run the two-instance suite **with `--forceExit`**: the failed second boot leaves the first app open, and without the flag Jest never exits. Expected: RED, the second boot throws `A metric with the name metrics_collector_failures_total has already been registered`. Restore `new Registry()`, re-run, green.
 
 - [ ] **Step 9: Verify and commit**
 
