@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { eq, inArray } from 'drizzle-orm';
-import { load } from 'js-yaml';
+import { parse } from 'yaml';
 import { io } from 'socket.io-client';
 import request from 'supertest';
 import { uuidv7 } from 'uuidv7';
@@ -401,7 +401,7 @@ describe('Metrics (e2e)', () => {
     const OPS = join(__dirname, '..', 'ops');
 
     const ruleExpressions = (): string[] => {
-      const file = load(
+      const file = parse(
         readFileSync(join(OPS, 'prometheus', 'alerts.yml'), 'utf8'),
       ) as { groups: { rules: { expr: string }[] }[] };
       return file.groups.flatMap((group) =>
