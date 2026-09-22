@@ -461,3 +461,25 @@ tests:
               route: /api/v1/orders
             exp_annotations:
               summary: "A route's p95 response time is above 300 ms."
+
+  # Names past their window for over an hour, reported by both instances: one alert.
+  - interval: 1m
+    input_series:
+      - series: 'retention_overdue_rows{instance="a:9464",data="customer_names"}'
+        values: '3x70'
+      - series: 'retention_overdue_rows{instance="b:9464",data="customer_names"}'
+        values: '3x70'
+      - series: 'retention_overdue_rows{instance="a:9464",data="idempotency_keys"}'
+        values: '0x70'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: RetentionBehind
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: RetentionBehind
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+              data: customer_names
+            exp_annotations:
+              summary: "A retention job is not keeping up, so data is being kept past its window."

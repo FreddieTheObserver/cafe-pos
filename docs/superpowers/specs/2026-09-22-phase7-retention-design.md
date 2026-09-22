@@ -1,7 +1,7 @@
 # Phase 7, slice 2 - retention jobs
 
 **Date:** 2026-09-22
-**Status:** design
+**Status:** implemented on `phase7-retention`
 **Branch:** `phase7-retention`, stacked on `phase7-metrics`
 **Scope:** the four §7.5 retention jobs, a gauge that shows whether each is keeping up, and the alert on it.
 

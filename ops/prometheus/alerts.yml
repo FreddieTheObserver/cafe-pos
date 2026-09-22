@@ -145,3 +145,14 @@ groups:
           severity: notify
         annotations:
           summary: "A route's p95 response time is above 300 ms."
+
+  - name: cafepos-data
+    rules:
+      # Measured from the data, not from whether a job ran, so a restart cannot hide it.
+      - alert: RetentionBehind
+        expr: max by (data) (retention_overdue_rows) > 0
+        for: 1h
+        labels:
+          severity: notify
+        annotations:
+          summary: "A retention job is not keeping up, so data is being kept past its window."
