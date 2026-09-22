@@ -1,5 +1,8 @@
 import request from 'supertest';
+import { uuidv7 } from 'uuidv7';
+import { Metrics } from '../src/observability/metrics/metrics';
 import { MetricsServer } from '../src/observability/metrics/metrics-server';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 /**
@@ -52,6 +55,48 @@ describe('Metrics (e2e)', () => {
       expect(await scrape()).toContain(
         '# TYPE nodejs_eventloop_lag_p99_seconds gauge',
       );
+    });
+  });
+
+  describe('request timing', () => {
+    const countOf = (labels: Record<string, string>) =>
+      sampleOf(
+        harness.app.get(Metrics),
+        'http_request_duration_seconds_count',
+        labels,
+      );
+
+    // Unauthenticated, so each answers 401. The route still matched: guards run inside it.
+    it('labels a request by the route it matched, not the path it asked for', async () => {
+      const series = {
+        method: 'GET',
+        route: '/api/v1/orders/:id',
+        status_class: '4xx',
+      };
+      const before = (await countOf(series)) ?? 0;
+
+      await harness.http().get(`/api/v1/orders/${uuidv7()}`);
+      await harness.http().get(`/api/v1/orders/${uuidv7()}`);
+
+      expect(await countOf(series)).toBe(before + 2);
+      expect(await scrape()).not.toMatch(
+        /route="\/api\/v1\/orders\/[0-9a-f]{8}-/,
+      );
+    });
+
+    it('labels a request that matched no route as unmatched', async () => {
+      const series = { method: 'GET', route: 'unmatched', status_class: '4xx' };
+      const before = (await countOf(series)) ?? 0;
+
+      await harness.http().get(`/api/v1/no-such-route-${uuidv7()}`);
+
+      expect(await countOf(series)).toBe(before + 1);
+    });
+
+    it('does not time the health probes', async () => {
+      await harness.http().get('/healthz');
+
+      expect(await scrape()).not.toContain('route="/healthz"');
     });
   });
 });
