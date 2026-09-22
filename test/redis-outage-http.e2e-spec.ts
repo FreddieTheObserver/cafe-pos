@@ -1,6 +1,8 @@
 import type Redis from 'ioredis';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import { AccessTokenService } from '../src/identity/auth/access-token.service';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { deadRedisClient } from './fixtures/dead-redis';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -139,6 +141,19 @@ describe('The API with Redis unreachable (e2e)', () => {
         status: 'unavailable',
         checks: { db: { status: 'up' }, redis: { status: 'down' } },
       });
+    });
+  });
+
+  describe('the metrics it serves', () => {
+    it('reports Redis as down and Postgres as up', async () => {
+      const metrics = harness.app.get(Metrics);
+
+      expect(
+        await sampleOf(metrics, 'dependency_up', { dependency: 'redis' }),
+      ).toBe(0);
+      expect(
+        await sampleOf(metrics, 'dependency_up', { dependency: 'postgres' }),
+      ).toBe(1);
     });
   });
 

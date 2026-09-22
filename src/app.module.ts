@@ -18,6 +18,7 @@ import { KdsModule } from './kds/kds.module';
 import { BoardModule } from './board/board.module';
 import { ReportingModule } from './reporting/reporting.module';
 import { MetricsModule } from './observability/metrics/metrics.module';
+import { StateGaugesModule } from './observability/metrics/state-gauges.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { MetricsModule } from './observability/metrics/metrics.module';
     RealtimeModule,
     CommonModule,
     HealthModule,
+    StateGaugesModule,
     IdentityModule,
     CatalogModule,
     /**
