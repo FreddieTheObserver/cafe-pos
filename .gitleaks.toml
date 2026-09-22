@@ -1,0 +1,22 @@
+# Secret scanning (§16: none in the repo). Extends gitleaks' built-in rules.
+#
+# Every value allowlisted below is a placeholder or a test fixture that is not,
+# and never was, a working credential. They are listed by value rather than by
+# path, so a real secret added to a test file is still caught.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and CI placeholders, not credentials"
+regexTarget = "match"
+regexes = [
+  '''sk_test_notarealkey''',
+  '''rk_test_notarealkey''',
+  '''rk_test_ciplaceholdernotarealkey''',
+  '''(sk|rk|pk)_(test|live)_abc123''',
+  '''integration-secret-at-least-32-characters''',
+  '''ZGV2aWNlLXRva2VuLXdpdGhvdXQtYW55LWRvdHM''',
+  '''0197f3aa-8e1c-7c3a-9f2b-2a1d4c6e8f01''',
+  # The Nest starter README's CircleCI badge, in the first commit.
+  '''token=abc123def456''',
+]
