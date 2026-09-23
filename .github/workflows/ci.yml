@@ -77,7 +77,7 @@ jobs:
       STRIPE_API_BASE: http://localhost:12111
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The secret scan reads every commit, not just the tip.
           fetch-depth: 0
