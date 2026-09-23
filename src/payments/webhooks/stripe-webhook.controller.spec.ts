@@ -1,6 +1,8 @@
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import Stripe from 'stripe';
+import { Metrics } from '../../observability/metrics/metrics';
+import { sampleOf } from '../../observability/metrics/sample-of';
 import { WebhookSignatureInvalidError } from '../errors/payments.errors';
 import type { GatewayEvent } from '../provider/payment-provider';
 import { StripePaymentProvider } from '../provider/stripe-payment.provider';
@@ -75,11 +77,13 @@ class RecordingProcessor {
 function controllerWith(
   inbox: RecordingInbox,
   processor: RecordingProcessor = new RecordingProcessor(),
+  metrics: Metrics = new Metrics(),
 ): StripeWebhookController {
   return new StripeWebhookController(
     new StripePaymentProvider(stripe, [SECRET]),
     inbox as unknown as WebhookInboxService,
     processor as unknown as PaymentEventProcessor,
+    metrics,
   );
 }
 
@@ -194,5 +198,40 @@ describe('StripeWebhookController', () => {
     ).rejects.toThrow(/raw body/i);
 
     expect(inbox.recorded).toHaveLength(0);
+  });
+
+  describe('webhook lag', () => {
+    const lagCount = (metrics: Metrics) =>
+      sampleOf(metrics, 'webhook_lag_seconds_count');
+
+    it('times an event the first time it is stored', async () => {
+      const metrics = new Metrics();
+      const body = eventBody();
+
+      await controllerWith(new RecordingInbox(), undefined, metrics).receive(
+        requestWith(Buffer.from(body)),
+        sign(body),
+      );
+
+      expect(await lagCount(metrics)).toBe(1);
+      // created is 2026-07-31, so the observed lag is at least the weeks since.
+      expect(
+        await sampleOf(metrics, 'webhook_lag_seconds_sum'),
+      ).toBeGreaterThan(Date.now() / 1000 - 1_785_829_150 - 60);
+    });
+
+    // A redelivery is Stripe retrying an event we already hold; its age says nothing about us.
+    it('does not time a redelivery', async () => {
+      const metrics = new Metrics();
+      const body = eventBody();
+
+      await controllerWith(
+        new RecordingInbox(null),
+        undefined,
+        metrics,
+      ).receive(requestWith(Buffer.from(body)), sign(body));
+
+      expect(await lagCount(metrics)).toBe(0);
+    });
   });
 });

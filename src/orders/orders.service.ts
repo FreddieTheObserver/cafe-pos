@@ -15,6 +15,7 @@ import {
 import type { OrderChannel, OrderStatus } from '../database/schema/enums';
 import { DevicePausedError } from '../identity/errors/identity.errors';
 import type { Principal } from '../identity/principal';
+import { Metrics } from '../observability/metrics/metrics';
 import { businessDayOf } from './business-day';
 import {
   OrderChannelMismatchError,
@@ -84,6 +85,7 @@ export class OrdersService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly config: ConfigService<Env, true>,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -119,6 +121,8 @@ export class OrdersService {
         return view;
       });
 
+      // Committed by now. The replay branch below returns an order counted when it was made.
+      this.metrics.ordersCreated.inc({ channel: order.channel });
       return { order, replayed: false };
     } catch (error) {
       if (!isKeyAlreadyReserved(error)) throw error;

@@ -145,7 +145,7 @@ Secondary problems solved: verbal order relay → structured KDS tickets; end-of
 |---|---|---|
 | **Performance** | p95 < 300 ms for all REST endpoints; menu read p95 < 100 ms (cached) | Kiosk UX: customers abandon slow kiosks |
 | **Realtime latency** | Order events on KDS/status board < 2 s end-to-end | Baristas work from it live |
-| **Availability** | 99.5% during business hours (07:00–20:00) ≈ ≤ 2 min downtime/day | A down backend = kiosks dead = cafe degraded to cash-only counter |
+| **Availability** | 99.5% during business hours (07:00–20:00) ≈ ≤ 2 min downtime/day. Configurable as `BUSINESS_OPEN_TIME` and `BUSINESS_CLOSE_TIME` | A down backend = kiosks dead = cafe degraded to cash-only counter |
 | **Payment correctness** | Zero tolerance: no order marked PAID without a gateway-confirmed payment; no double charge from retries | This is the property the design is built around |
 | **Scalability** | Comfortable at 10× assumed peak (≈ 30 orders/min) with no redesign | §11 shows the math |
 | **Security** | Kiosk compromise must not expose staff functions or other orders; PCI scope = SAQ-A (gateway-hosted card entry) | Kiosks are physically accessible to the public |
@@ -1180,20 +1180,28 @@ A system taking money unattended must be observable enough that *silent* failure
 
 | Metric | Type | Alert when |
 |---|---|---|
-| `http_request_duration_seconds{route}` | histogram | p95 > 300 ms for 5 min |
-| `orders_created_total{channel}` | counter | == 0 during business hours for 15 min (the cafe went silent — something's wrong even if no error fired) |
-| `payments_total{status}` | counter | failure ratio > 10% over 10 min |
-| `webhook_processing_failures_total` | counter | > 0 (every one matters) |
-| `webhook_lag_seconds` (received − Stripe event time) | histogram | p95 > 60 s |
-| `orders_pending_payment_age_seconds` | gauge | max > 15 min (expiry job dead?) |
-| `reconciliation_delta_minor` (nightly job) | gauge | ≠ 0 — gateway and DB disagree about money: page a human |
-| `ws_connected{room}` | gauge | kds == 0 during business hours (the kitchen is blind) |
-| `kiosk_last_seen_age_seconds{device}` | gauge | > 120 s (kiosk down) |
-| DB/Redis: connections, replication, disk | — | platform defaults |
+| `http_request_duration_seconds{method,route,status_class}` | histogram | a route's p95 > 300 ms for 5 min, on at least 3 requests a minute (reports and unmatched paths excluded) |
+| `orders_created_total{channel}` | counter | == 0 during business hours for 15 min (the cafe went silent, so something is wrong even if no error fired) |
+| `payments_total{provider,status}` | counter | Stripe failure ratio > 10% over 10 min, on at least 5 attempts |
+| `webhook_processing_failures_total` | counter | > 0 (every one matters; a lost race with the other instance is not a failure) |
+| `webhook_lag_seconds` (first storage minus Stripe event time) | histogram | p95 > 60 s |
+| `payment_inbox_oldest_unprocessed_age_seconds` | gauge | > 120 s (a money event is sitting unhandled: refused, crashed, or a dead sweep) |
+| `orders_pending_payment_overdue_seconds` | gauge | max > 5 min past expiry (expiry job dead?). Measured past expiry rather than as age, so it holds at any `ORDER_EXPIRY_SECONDS` |
+| `reconciliation_delta_minor` (nightly job) | gauge | != 0: gateway and DB disagree about money, page a human. Absent until a run has checked, and cleared when one could not |
+| `reconciliation_runs_total{outcome}` | counter | a `failed` run in a day in which no instance completed one |
+| `ws_connected{namespace}` | gauge | kds == 0 during business hours (the kitchen is blind) |
+| `kiosk_last_seen_age_seconds{device}` | gauge | > 120 s during business hours (kiosk down) |
+| `dependency_up{dependency}` | gauge | postgres == 0 on every instance (DB down); redis == 0 on every instance |
+| `business_open` | gauge | none; gates the business-hours alerts, from `BUSINESS_OPEN_TIME` and `BUSINESS_CLOSE_TIME` |
+| `rate_limit_rejections_total{rule}`, `rate_limit_backend_unavailable_total{policy}` | counter | none; section 16's rate limits observed in metrics |
+| `metrics_collector_failures_total{collector}` | counter | none; a gauge that could not be read exports no value rather than a stale one |
+| DB/Redis: connections, replication, disk | - | platform defaults |
+
+`/metrics` is served on a port of its own (`METRICS_PORT`, default 9464) that the load balancer never routes. The alert rules live in `ops/prometheus/alerts.yml` with `promtool` tests in `alerts.test.yml`, run in CI; each carries `severity: page` or `severity: notify`.
 
 **Tracing.** OTel auto-instrumentation (HTTP, the `pg` driver, Redis, Stripe SDK; Drizzle queries are traced via the driver instrumentation plus a query logger); 10% sampling, 100% for requests that error. The trace that matters most: webhook → DB transaction → WS emit, because that's where "customer paid but nothing happened" hides.
 
-**Alerting routes.** Page (immediately): reconciliation delta, webhook failures, API down, DB down. Notify (business hours): kiosk offline, p95 breach, failure-ratio breach. Weekly review: slow-query log, error budget, top 422s (kiosk UX bugs show up here first).
+**Alerting routes.** Page (immediately): reconciliation delta, a night no instance could reconcile, webhook failures, a stuck payment inbox, API down, DB down, and the kitchen blind during business hours. Notify (business hours): kiosk offline, p95 breach, failure-ratio breach, webhook lag, an unpaid order past its expiry, orders silent, one instance down, Redis down. Weekly review: slow-query log, error budget, top 422s (kiosk UX bugs show up here first).
 
 ---
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CLOCK_TIME } from '../orders/business-hours';
 
 /**
  * Item images are served straight to kiosk and board clients, so a plaintext
@@ -40,6 +41,8 @@ function isKnownTimeZone(value: string): boolean {
   }
 }
 
+const clockTime = z.string().regex(CLOCK_TIME, 'must be a 24-hour HH:MM time');
+
 /**
  * The single source of truth for the environment this app needs.
  *
@@ -52,6 +55,11 @@ export const envSchema = z.object({
     .enum(['development', 'production', 'test'])
     .default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
+  /**
+   * The second listener, serving only `GET /metrics`. A port of its own so the
+   * load balancer, which routes PORT, never exposes it.
+   */
+  METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9464),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   /**
@@ -148,6 +156,13 @@ export const envSchema = z.object({
     .int()
     .positive()
     .default(10 * 60),
+  /**
+   * When the cafe opens and closes, `HH:MM` in BUSINESS_TIMEZONE. Read only by
+   * the alerts that mean nothing overnight: no orders, no kitchen screen, a
+   * kiosk offline. A close earlier than the open wraps past midnight.
+   */
+  BUSINESS_OPEN_TIME: clockTime.default('07:00'),
+  BUSINESS_CLOSE_TIME: clockTime.default('20:00'),
   /**
    * Object storage for item images (§10, §12.4).
    *
@@ -277,12 +292,42 @@ export type Env = z.infer<typeof envSchema>;
 export function validateEnv(config: Record<string, unknown>): Env {
   const result = envSchema.safeParse(config);
   if (!result.success) {
-    const details = result.error.issues
-      .map(
-        (issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`,
-      )
-      .join('\n');
-    throw new Error(`Invalid environment variables:\n${details}`);
+    throw invalidEnv(
+      result.error.issues.map(
+        (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,
+      ),
+    );
   }
+
+  const conflicts = conflictsIn(result.data);
+  if (conflicts.length > 0) throw invalidEnv(conflicts);
+
   return result.data;
+}
+
+/**
+ * Rules that span two variables, checked once both have parsed.
+ *
+ * Kept off the schema: `ConfigService` infers its types from the schema's
+ * shape, and this file has already lost that inference once to a refinement
+ * placed where it changed the shape.
+ */
+function conflictsIn(env: Env): string[] {
+  const conflicts: string[] = [];
+  if (env.METRICS_PORT === env.PORT) {
+    conflicts.push(
+      'METRICS_PORT: must differ from PORT, or /metrics and the API would contend for one listener',
+    );
+  }
+  if (env.BUSINESS_OPEN_TIME === env.BUSINESS_CLOSE_TIME) {
+    conflicts.push(
+      'BUSINESS_CLOSE_TIME: must differ from BUSINESS_OPEN_TIME; a window that opens and closes on the same minute has no single meaning',
+    );
+  }
+  return conflicts;
+}
+
+function invalidEnv(lines: string[]): Error {
+  const details = lines.map((line) => `  - ${line}`).join('\n');
+  return new Error(`Invalid environment variables:\n${details}`);
 }

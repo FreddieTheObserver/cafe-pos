@@ -1,5 +1,10 @@
-import { WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import {
+  WebSocketGateway,
+  WebSocketServer,
+  type OnGatewayInit,
+} from '@nestjs/websockets';
 import type { Namespace } from 'socket.io';
+import { Metrics } from '../observability/metrics/metrics';
 import { NAMESPACES } from './realtime.constants';
 
 /**
@@ -17,8 +22,14 @@ import { NAMESPACES } from './realtime.constants';
  * that could be taken away.
  */
 @WebSocketGateway({ namespace: NAMESPACES.board })
-export class BoardGateway {
+export class BoardGateway implements OnGatewayInit {
   @WebSocketServer() private readonly server!: Namespace;
+
+  constructor(private readonly metrics: Metrics) {}
+
+  afterInit(server: Namespace): void {
+    this.metrics.trackNamespace('board', server);
+  }
 
   /**
    * Pushes the whole board, not a delta.

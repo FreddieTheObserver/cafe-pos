@@ -1,0 +1,463 @@
+# `promtool test rules alerts.test.yml`. Every alert has a case that must fire
+# and a case that must not; the must-not cases are the conditions that would
+# otherwise make it noisy.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Every instance down: the API is down, and each instance is down.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="cafepos",instance="a:9464"}'
+        values: '0x5'
+      - series: 'up{job="cafepos",instance="b:9464"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ApiDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No CafePOS instance is answering, so no kiosk can take an order."
+      - eval_time: 3m
+        alertname: InstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+              job: cafepos
+              instance: 'a:9464'
+            exp_annotations:
+              summary: "A CafePOS instance is not answering scrapes."
+          - exp_labels:
+              severity: notify
+              job: cafepos
+              instance: 'b:9464'
+            exp_annotations:
+              summary: "A CafePOS instance is not answering scrapes."
+
+  # One instance down: the API is still up.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="cafepos",instance="a:9464"}'
+        values: '1x5'
+      - series: 'up{job="cafepos",instance="b:9464"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ApiDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: InstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+              job: cafepos
+              instance: 'b:9464'
+            exp_annotations:
+              summary: "A CafePOS instance is not answering scrapes."
+
+  # No instance reaches either dependency.
+  - interval: 1m
+    input_series:
+      - series: 'dependency_up{instance="a:9464",dependency="postgres"}'
+        values: '0x5'
+      - series: 'dependency_up{instance="b:9464",dependency="postgres"}'
+        values: '0x5'
+      - series: 'dependency_up{instance="a:9464",dependency="redis"}'
+        values: '0x5'
+      - series: 'dependency_up{instance="b:9464",dependency="redis"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DatabaseDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No instance can reach Postgres."
+      - eval_time: 3m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+            exp_annotations:
+              summary: "No instance can reach Redis. Logins and kiosk pairing are refused until it is back."
+
+  # One instance still reaches both: that instance is the problem, not the dependency.
+  - interval: 1m
+    input_series:
+      - series: 'dependency_up{instance="a:9464",dependency="postgres"}'
+        values: '0x5'
+      - series: 'dependency_up{instance="b:9464",dependency="postgres"}'
+        values: '1x5'
+      - series: 'dependency_up{instance="a:9464",dependency="redis"}'
+        values: '0x5'
+      - series: 'dependency_up{instance="b:9464",dependency="redis"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DatabaseDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: RedisDown
+        exp_alerts: []
+
+  # A delta pages; a zero does not.
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_delta_minor{instance="a:9464"}'
+        values: '-1000 -1000 -1000'
+      - series: 'reconciliation_delta_minor{instance="b:9464"}'
+        values: '0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ReconciliationDelta
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "The gateway and the books disagree about yesterday's takings."
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_delta_minor{instance="a:9464"}'
+        values: '0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ReconciliationDelta
+        exp_alerts: []
+
+  # The only run failed.
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_runs_total{instance="a:9464",outcome="failed"}'
+        values: '0x4 1x10'
+      - series: 'reconciliation_runs_total{instance="a:9464",outcome="agreed"}'
+        values: '0x14'
+      - series: 'reconciliation_runs_total{instance="a:9464",outcome="delta"}'
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ReconciliationFailed
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No instance could check yesterday's takings against the gateway."
+
+  # One instance failed, the other checked the books the same night.
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_runs_total{instance="a:9464",outcome="failed"}'
+        values: '0x4 1x10'
+      - series: 'reconciliation_runs_total{instance="b:9464",outcome="agreed"}'
+        values: '0x4 1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ReconciliationFailed
+        exp_alerts: []
+
+  # A processing failure pages; a quiet counter does not.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_processing_failures_total{instance="a:9464"}'
+        values: '0x4 1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WebhookProcessingFailures
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: WebhookProcessingFailures
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "A payment webhook failed to process."
+
+  # Thirty seconds is a sweep in progress; three minutes is stuck.
+  - interval: 1m
+    input_series:
+      - series: 'payment_inbox_oldest_unprocessed_age_seconds{instance="a:9464"}'
+        values: '30 180'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: PaymentInboxStuck
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: PaymentInboxStuck
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "A payment event has sat unprocessed for over two minutes."
+
+  # Every event arrives between one and five minutes late.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="1"}'
+        values: '0x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="60"}'
+        values: '0x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="300"}'
+        values: '0+1x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="+Inf"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WebhookLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+            exp_annotations:
+              summary: "Stripe events are reaching us more than a minute late."
+
+  # Every event arrives within a second.
+  - interval: 1m
+    input_series:
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="1"}'
+        values: '0+1x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="60"}'
+        values: '0+1x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="300"}'
+        values: '0+1x15'
+      - series: 'webhook_lag_seconds_bucket{instance="a:9464",le="+Inf"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WebhookLagHigh
+        exp_alerts: []
+
+  # Half of Stripe payments fail. The cash volume must not dilute that.
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="FAILED"}'
+        values: '0+1x15'
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="SUCCEEDED"}'
+        values: '0+1x15'
+      - series: 'payments_total{instance="a:9464",provider="CASH",status="SUCCEEDED"}'
+        values: '0+100x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PaymentFailureRatio
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+            exp_annotations:
+              summary: "More than 10% of card and PromptPay payments are failing."
+
+  # One failure in three payments: a high ratio on too few attempts to mean anything.
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="FAILED"}'
+        values: '0x10 1x5'
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="SUCCEEDED"}'
+        values: '0x10 2x5'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PaymentFailureRatio
+        exp_alerts: []
+
+  # Busy and healthy.
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="FAILED"}'
+        values: '0x15'
+      - series: 'payments_total{instance="a:9464",provider="STRIPE",status="SUCCEEDED"}'
+        values: '0+2x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PaymentFailureRatio
+        exp_alerts: []
+
+  # A minute past expiry is the sweep's own granularity; ten minutes is a dead sweep.
+  - interval: 1m
+    input_series:
+      - series: 'orders_pending_payment_overdue_seconds{instance="a:9464"}'
+        values: '60 600'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: PendingPaymentOverdue
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: PendingPaymentOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+            exp_annotations:
+              summary: "An unpaid order is five minutes past its expiry. Is the expiry job running?"
+
+  # Open, no kitchen screen on either instance. Board sockets are not kitchen screens.
+  - interval: 1m
+    input_series:
+      - series: 'ws_connected{instance="a:9464",namespace="kds"}'
+        values: '0x5'
+      - series: 'ws_connected{instance="b:9464",namespace="kds"}'
+        values: '0x5'
+      - series: 'ws_connected{instance="a:9464",namespace="board"}'
+        values: '3x5'
+      - series: 'business_open{instance="a:9464"}'
+        values: '1x5'
+      - series: 'business_open{instance="b:9464"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KitchenBlind
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No kitchen screen is connected while the cafe is open."
+
+  # Closed, no kitchen screen: nobody is cooking.
+  - interval: 1m
+    input_series:
+      - series: 'ws_connected{instance="a:9464",namespace="kds"}'
+        values: '0x5'
+      - series: 'business_open{instance="a:9464"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KitchenBlind
+        exp_alerts: []
+
+  # Open, one screen connected to the other instance.
+  - interval: 1m
+    input_series:
+      - series: 'ws_connected{instance="a:9464",namespace="kds"}'
+        values: '0x5'
+      - series: 'ws_connected{instance="b:9464",namespace="kds"}'
+        values: '1x5'
+      - series: 'business_open{instance="a:9464"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KitchenBlind
+        exp_alerts: []
+
+  # Open all window, no orders on either channel.
+  - interval: 1m
+    input_series:
+      - series: 'orders_created_total{instance="a:9464",channel="KIOSK"}'
+        values: '40x20'
+      - series: 'orders_created_total{instance="a:9464",channel="COUNTER"}'
+        values: '12x20'
+      - series: 'business_open{instance="a:9464"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OrdersSilent
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+            exp_annotations:
+              summary: "No orders for 15 minutes while the cafe is open."
+
+  # Opened ten minutes ago: the quiet stretch includes time the cafe was closed.
+  - interval: 1m
+    input_series:
+      - series: 'orders_created_total{instance="a:9464",channel="KIOSK"}'
+        values: '40x20'
+      - series: 'business_open{instance="a:9464"}'
+        values: '0x9 1x11'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OrdersSilent
+        exp_alerts: []
+
+  # A fresh deploy three minutes ago: every sample it has says open, but it has
+  # not been watching for fifteen minutes, so it cannot say the cafe went quiet.
+  - interval: 1m
+    input_series:
+      - series: 'orders_created_total{instance="a:9464",channel="KIOSK"}'
+        values: '_x16 0x4'
+      - series: 'business_open{instance="a:9464"}'
+        values: '_x16 1x4'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OrdersSilent
+        exp_alerts: []
+
+  # Open and trading.
+  - interval: 1m
+    input_series:
+      - series: 'orders_created_total{instance="a:9464",channel="KIOSK"}'
+        values: '0+1x20'
+      - series: 'business_open{instance="a:9464"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OrdersSilent
+        exp_alerts: []
+
+  # One kiosk silent, reported by both instances: one alert, not two.
+  - interval: 1m
+    input_series:
+      - series: 'kiosk_last_seen_age_seconds{instance="a:9464",device="k1"}'
+        values: '300x3'
+      - series: 'kiosk_last_seen_age_seconds{instance="b:9464",device="k1"}'
+        values: '300x3'
+      - series: 'kiosk_last_seen_age_seconds{instance="a:9464",device="k2"}'
+        values: '30x3'
+      - series: 'business_open{instance="a:9464"}'
+        values: '1x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KioskOffline
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+              device: k1
+            exp_annotations:
+              summary: "A kiosk has not been heard from for two minutes while the cafe is open."
+
+  # The same kiosk overnight: switched off, as it should be.
+  - interval: 1m
+    input_series:
+      - series: 'kiosk_last_seen_age_seconds{instance="a:9464",device="k1"}'
+        values: '300x3'
+      - series: 'business_open{instance="a:9464"}'
+        values: '0x3'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KioskOffline
+        exp_alerts: []
+
+  # Orders is slow with traffic; the Z-report is slow and excluded; users is slow but quiet,
+  # one request every two minutes, below the floor for the whole window.
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/orders",status_class="2xx",le="0.3"}'
+        values: '0x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/orders",status_class="2xx",le="1"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/orders",status_class="2xx",le="+Inf"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_count{instance="a:9464",method="GET",route="/api/v1/orders",status_class="2xx"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/reports/z-report",status_class="2xx",le="0.3"}'
+        values: '0x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/reports/z-report",status_class="2xx",le="1"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/reports/z-report",status_class="2xx",le="+Inf"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_count{instance="a:9464",method="GET",route="/api/v1/reports/z-report",status_class="2xx"}'
+        values: '0+10x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="0.3"}'
+        values: '0x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="1"}'
+        values: '0+0.5x20'
+      - series: 'http_request_duration_seconds_bucket{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx",le="+Inf"}'
+        values: '0+0.5x20'
+      - series: 'http_request_duration_seconds_count{instance="a:9464",method="GET",route="/api/v1/users",status_class="2xx"}'
+        values: '0+0.5x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LatencyP95High
+        exp_alerts:
+          - exp_labels:
+              severity: notify
+              route: /api/v1/orders
+            exp_annotations:
+              summary: "A route's p95 response time is above 300 ms."

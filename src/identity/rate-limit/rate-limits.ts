@@ -17,6 +17,9 @@ export type BackendFailurePolicy = 'allow' | 'refuse';
 /** Reflector key carrying a route's {@link BackendFailurePolicy}. */
 export const RATE_LIMIT_BACKEND_POLICY = 'rate-limit:backend-failure';
 
+/** Reflector key carrying the name of the rule a route runs on. */
+export const RATE_LIMIT_RULE = 'rate-limit:rule';
+
 export interface RateLimitRule {
   limit: number;
   ttl: number;
@@ -84,15 +87,28 @@ export const RATE_LIMITS = {
   },
 } as const satisfies Record<string, RateLimitRule>;
 
+export type RateLimitRuleName = keyof typeof RATE_LIMITS;
+
+/** The per-account half of login limiting, enforced by `LoginAttemptLimiter` outside the throttler. */
+export const LOCKOUT_RULE = 'loginAccount';
+
+export const RATE_LIMIT_RULE_LABELS: readonly string[] = [
+  ...(Object.keys(RATE_LIMITS) as RateLimitRuleName[]),
+  LOCKOUT_RULE,
+];
+
 /**
  * Overrides the global limit for one route (§10.2).
  *
  * The outage policy rides along with the limit rather than being a second
  * decorator, so a route cannot end up with one and not the other — the pair is
- * the rule.
+ * the rule. Takes the rule's name so the guard can file a refusal under it.
  */
-export const RateLimit = (rule: RateLimitRule) =>
-  applyDecorators(
+export const RateLimit = (name: RateLimitRuleName) => {
+  const rule: RateLimitRule = RATE_LIMITS[name];
+  return applyDecorators(
     Throttle({ default: rule }),
     SetMetadata(RATE_LIMIT_BACKEND_POLICY, rule.onBackendFailure),
+    SetMetadata(RATE_LIMIT_RULE, name),
   );
+};

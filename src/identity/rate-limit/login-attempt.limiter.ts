@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type Redis from 'ioredis';
 import { RateLimitedError } from '../../common/errors/rate-limited.error';
+import { Metrics } from '../../observability/metrics/metrics';
+import { LOCKOUT_RULE } from './rate-limits';
 import { REDIS } from '../../redis/redis.constants';
 
 /** §6.1: 5 failures / 15 min per account, then a temporary lockout. */
@@ -45,7 +47,10 @@ return failures
  */
 @Injectable()
 export class LoginAttemptLimiter {
-  constructor(@Inject(REDIS) private readonly redis: Redis) {}
+  constructor(
+    @Inject(REDIS) private readonly redis: Redis,
+    private readonly metrics: Metrics,
+  ) {}
 
   /**
    * Keyed case-insensitively because `users.email` is CITEXT (§7.2) — a
@@ -75,6 +80,7 @@ export class LoginAttemptLimiter {
     )) as [number, number];
 
     if (failures < MAX_FAILURES) return;
+    this.metrics.rateLimitRejections.inc({ rule: LOCKOUT_RULE });
 
     // A counter at the limit with no expiry (-1) would be a lockout nothing
     // can end — no request clears it and Redis never drops it. `recordFailure`

@@ -66,6 +66,8 @@ export interface GatewayEvent {
   eventId: string;
   /** The gateway's own type string, stored verbatim for the audit trail. */
   type: string;
+  /** When the gateway created the event: where `webhook_lag_seconds` starts. */
+  createdAt: Date;
   payload: unknown;
   outcome: GatewayOutcome;
 }

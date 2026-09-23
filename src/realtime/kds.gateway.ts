@@ -10,6 +10,7 @@ import { describeError } from '../common/errors/describe-error';
 import { AccessTokenService } from '../identity/auth/access-token.service';
 import type { StaffPrincipal } from '../identity/principal';
 import { RevocationService } from '../identity/revocation/revocation.service';
+import { Metrics } from '../observability/metrics/metrics';
 import { NAMESPACES } from './realtime.constants';
 import { RevocationSubscriber } from './revocation-subscriber.service';
 
@@ -52,6 +53,7 @@ export class KdsGateway
     private readonly accessTokens: AccessTokenService,
     private readonly revocations: RevocationService,
     private readonly revocationFeed: RevocationSubscriber,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -69,6 +71,7 @@ export class KdsGateway
    * between "log in again" and "the network blipped, retry".
    */
   afterInit(server: Namespace): void {
+    this.metrics.trackNamespace('kds', server);
     server.use((socket, next) => {
       this.authenticate(socket as KdsSocket)
         .then(() => next())

@@ -1,6 +1,8 @@
 import Redis from 'ioredis';
 import { uuidv7 } from 'uuidv7';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 /**
@@ -75,6 +77,13 @@ describe('Rate limiting (e2e)', () => {
   describe('POST /devices/activate', () => {
     // §10.2: 5 per hour per IP — a much tighter budget than login's.
     it('runs out far sooner than the login budget does', async () => {
+      const refusals = async () =>
+        (await sampleOf(
+          harness.app.get(Metrics),
+          'rate_limit_rejections_total',
+          { rule: 'deviceActivation' },
+        )) ?? 0;
+      const before = await refusals();
       const statuses: number[] = [];
       for (let attempt = 0; attempt < 6; attempt += 1) {
         statuses.push(
@@ -89,6 +98,8 @@ describe('Rate limiting (e2e)', () => {
 
       expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
       expect(statuses[5]).toBe(429);
+      // Filed under the route's own rule, not the global backstop.
+      expect(await refusals()).toBe(before + 1);
     });
   });
 

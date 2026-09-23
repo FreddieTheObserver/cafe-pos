@@ -1,7 +1,7 @@
 import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import { ResourceNotFoundError } from '../../common/errors/resource-not-found.error';
 import { OrderInvalidTransitionError } from '../errors/orders.errors';
-import { isLostRace } from './order-expiry.service';
+import { isLostRace } from '../state/transition-order';
 
 /**
  * The sweep swallows a lost race on purpose — the customer paid, or a cashier

@@ -1,4 +1,9 @@
-import { Injectable, Logger, type ExecutionContext } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type ExecutionContext,
+} from '@nestjs/common';
 import {
   ThrottlerGuard,
   type ThrottlerLimitDetail,
@@ -9,12 +14,15 @@ import { DependencyUnavailableError } from '../../common/errors/dependency-unava
 import { describeError } from '../../common/errors/describe-error';
 import { LogThrottle } from '../../common/logging/log-throttle';
 import { RateLimitedError } from '../../common/errors/rate-limited.error';
+import { Metrics } from '../../observability/metrics/metrics';
 import type { Principal } from '../principal';
 import { RateLimitBackendUnavailableError } from './rate-limit-backend.error';
 import {
   RATE_LIMITS,
   RATE_LIMIT_BACKEND_POLICY,
+  RATE_LIMIT_RULE,
   type BackendFailurePolicy,
+  type RateLimitRuleName,
 } from './rate-limits';
 
 /**
@@ -50,6 +58,9 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
    * are the security-relevant half, and they would otherwise be crowded out by
    * the much larger volume of requests being served uncounted.
    */
+  // Property injection: ThrottlerGuard's constructor takes decorated tokens a subclass would have to repeat.
+  @Inject(Metrics) private readonly metrics!: Metrics;
+
   private readonly refusals = new LogThrottle(OUTAGE_LOG_INTERVAL_MS);
   private readonly uncounted = new LogThrottle(OUTAGE_LOG_INTERVAL_MS);
 
@@ -82,6 +93,7 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
         RATE_LIMIT_BACKEND_POLICY,
         [context.getHandler(), context.getClass()],
       ) ?? RATE_LIMITS.staffGeneral.onBackendFailure;
+    this.metrics.rateLimitBackendUnavailable.inc({ policy });
 
     /**
      * Built only when the line is actually going to be written. Everything here
@@ -146,6 +158,7 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
     context: ExecutionContext,
     detail: ThrottlerLimitDetail,
   ): Promise<never> {
+    this.metrics.rateLimitRejections.inc({ rule: this.ruleOf(context) });
     const retryAfterSeconds = detail.timeToBlockExpire || detail.timeToExpire;
 
     // The header as well as the body: §10.2 asks for `Retry-After`, and HTTP
@@ -154,5 +167,14 @@ export class IdentityThrottlerGuard extends ThrottlerGuard {
     (res as Response).setHeader('Retry-After', String(retryAfterSeconds));
 
     return Promise.reject(new RateLimitedError(retryAfterSeconds));
+  }
+
+  private ruleOf(context: ExecutionContext): RateLimitRuleName {
+    return (
+      this.reflector.getAllAndOverride<RateLimitRuleName | undefined>(
+        RATE_LIMIT_RULE,
+        [context.getHandler(), context.getClass()],
+      ) ?? 'staffGeneral'
+    );
   }
 }

@@ -15,6 +15,7 @@ import {
   replayKey,
   reserveKey,
 } from '../../orders/idempotency/idempotency.store';
+import { Metrics } from '../../observability/metrics/metrics';
 import { hashRequest } from '../../orders/idempotency/request-hash';
 import { transitionOrder } from '../../orders/state/transition-order';
 import {
@@ -90,6 +91,7 @@ export class CreatePaymentService {
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly afterCommit: AfterCommit,
+    private readonly metrics: Metrics,
   ) {}
 
   async create(
@@ -210,46 +212,56 @@ export class CreatePaymentService {
       throw new CashTenderInsufficientError(tendered ?? 0, order.totalMinor);
     }
 
-    return this.write(idempotencyKey, requestHash, async (tx, emit) => {
-      const paymentId = await this.insertPayment(tx, order.id, {
-        orderId: order.id,
-        provider: 'CASH',
-        method: 'CASH',
-        status: 'SUCCEEDED',
-        amountMinor: order.totalMinor,
-        currency: order.currency,
-        cashTenderedMinor: tendered,
-        idempotencyKey: idempotencyKey ?? null,
-      });
+    const result = await this.write(
+      idempotencyKey,
+      requestHash,
+      async (tx, emit) => {
+        const paymentId = await this.insertPayment(tx, order.id, {
+          orderId: order.id,
+          provider: 'CASH',
+          method: 'CASH',
+          status: 'SUCCEEDED',
+          amountMinor: order.totalMinor,
+          currency: order.currency,
+          cashTenderedMinor: tendered,
+          idempotencyKey: idempotencyKey ?? null,
+        });
 
-      const updated = await transitionOrder(tx, {
-        orderId: order.id,
-        from: 'PENDING_PAYMENT',
-        to: 'PAID',
-        actor: { actorType: 'USER', actorId: principal.userId },
-      });
+        const updated = await transitionOrder(tx, {
+          orderId: order.id,
+          from: 'PENDING_PAYMENT',
+          to: 'PAID',
+          actor: { actorType: 'USER', actorId: principal.userId },
+        });
 
-      /**
-       * The same event the webhook raises, because the KDS cannot tell the
-       * difference and should not have to: a paid order is a ticket to make,
-       * whether the money arrived through Stripe or across the counter.
-       */
-      emit({
-        kind: 'order.paid',
-        orderId: order.id,
-        deviceId: updated.kioskDeviceId,
-      });
+        /**
+         * The same event the webhook raises, because the KDS cannot tell the
+         * difference and should not have to: a paid order is a ticket to make,
+         * whether the money arrived through Stripe or across the counter.
+         */
+        emit({
+          kind: 'order.paid',
+          orderId: order.id,
+          deviceId: updated.kioskDeviceId,
+        });
 
-      return {
-        id: paymentId,
-        status: 'SUCCEEDED' as const,
-        method: 'CASH' as const,
-        amountMinor: order.totalMinor,
-        currency: order.currency,
-        provider: 'CASH' as const,
-        clientAction: null,
-      };
-    });
+        return {
+          id: paymentId,
+          status: 'SUCCEEDED' as const,
+          method: 'CASH' as const,
+          amountMinor: order.totalMinor,
+          currency: order.currency,
+          provider: 'CASH' as const,
+          clientAction: null,
+        };
+      },
+    );
+
+    // A replay hands back the payment the first request already counted.
+    if (!result.replayed) {
+      this.metrics.payments.inc({ provider: 'CASH', status: 'SUCCEEDED' });
+    }
+    return result;
   }
 
   /**

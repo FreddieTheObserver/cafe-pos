@@ -131,6 +131,7 @@ export class StripePaymentProvider implements PaymentProvider {
     return {
       eventId: event.id,
       type: event.type,
+      createdAt: new Date(event.created * 1000),
       // Stored whole, before anything is interpreted (§4.2's inbox).
       payload: event,
       outcome: this.interpret(event),

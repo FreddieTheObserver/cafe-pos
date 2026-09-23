@@ -1,6 +1,8 @@
 import { RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
+import { timeHttpRequests } from './observability/metrics/http-metrics';
+import { Metrics } from './observability/metrics/metrics';
 
 export interface AppHardeningOptions {
   /** Browser origins allowed to call the API; empty disables CORS entirely. */
@@ -60,6 +62,9 @@ export function configureApp(
   app: NestExpressApplication,
   options: AppHardeningOptions,
 ): void {
+  // First, so a request any later layer refuses (an oversized body, say) is still timed.
+  app.use(timeHttpRequests(app.get(Metrics)));
+
   app.setGlobalPrefix(API_PREFIX, { exclude: UNPREFIXED_ROUTES });
 
   // Removes X-Powered-By and sets the standard defensive headers. The API only

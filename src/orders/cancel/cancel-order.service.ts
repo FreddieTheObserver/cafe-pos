@@ -17,6 +17,7 @@ import {
 import { OrderInvalidTransitionError } from '../errors/orders.errors';
 import type { OrderSummary } from '../query/orders-read.service';
 import { toOrderSummary } from '../query/orders-read.service';
+import { Metrics } from '../../observability/metrics/metrics';
 import { transitionOrder } from '../state/transition-order';
 import { AfterCommit } from '../../realtime/events/after-commit.service';
 
@@ -54,6 +55,7 @@ export class CancelOrderService {
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly afterCommit: AfterCommit,
+    private readonly metrics: Metrics,
   ) {}
 
   async cancel(
@@ -142,7 +144,8 @@ export class CancelOrderService {
       if (outcome === 'ALREADY_SUCCEEDED') throw new OrderAlreadyPaidError();
     }
 
-    return this.afterCommit.run(async (tx, emit) => {
+    let cancelledPayment = false;
+    const summary = await this.afterCommit.run(async (tx, emit) => {
       const updated = await transitionOrder(tx, {
         orderId,
         from: current.status,
@@ -164,7 +167,7 @@ export class CancelOrderService {
        * that let a stale decision overwrite a settled payment.
        */
       if (live !== undefined) {
-        await tx
+        const [cancelled] = await tx
           .update(payments)
           .set({ status: 'CANCELLED' })
           .where(
@@ -172,7 +175,9 @@ export class CancelOrderService {
               eq(payments.id, live.id),
               notInArray(payments.status, ['SUCCEEDED']),
             ),
-          );
+          )
+          .returning({ id: payments.id });
+        cancelledPayment = cancelled !== undefined;
       }
 
       /**
@@ -190,5 +195,10 @@ export class CancelOrderService {
 
       return toOrderSummary(updated);
     });
+
+    if (cancelledPayment) {
+      this.metrics.payments.inc({ provider: 'STRIPE', status: 'CANCELLED' });
+    }
+    return summary;
   }
 }

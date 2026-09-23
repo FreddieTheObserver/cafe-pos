@@ -7,7 +7,11 @@ import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, paymentEvents, payments } from '../../database/schema';
 import type { PaymentMethod, PaymentStatus } from '../../database/schema/enums';
 import type { Transaction } from '../../orders/idempotency/idempotency.store';
-import { transitionOrder } from '../../orders/state/transition-order';
+import { Metrics } from '../../observability/metrics/metrics';
+import {
+  isLostRace,
+  transitionOrder,
+} from '../../orders/state/transition-order';
 import { AfterCommit } from '../../realtime/events/after-commit.service';
 import {
   PAYMENT_PROVIDER,
@@ -56,6 +60,7 @@ export class PaymentEventProcessor {
     @Inject(DRIZZLE) private readonly db: Database,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly afterCommit: AfterCommit,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -83,6 +88,7 @@ export class PaymentEventProcessor {
       }
     } catch (error) {
       // A sweep that cannot read the inbox is not a sweep that found nothing.
+      this.metrics.webhookProcessingFailures.inc();
       this.logger.error(
         `Could not drain the payment inbox. ${describeError(error)}`,
       );
@@ -102,6 +108,19 @@ export class PaymentEventProcessor {
     try {
       return await this.apply(eventId);
     } catch (error) {
+      /**
+       * Two instances can apply the same event at once; the second's guarded
+       * transition then throws. The transaction rolled back and the next sweep
+       * re-reads the row, where the inbox gauge notices if it never settles.
+       */
+      if (isLostRace(error)) {
+        this.logger.debug(
+          `Payment event ${eventId} was applied elsewhere first. ${describeError(error)}`,
+        );
+        return false;
+      }
+
+      this.metrics.webhookProcessingFailures.inc();
       this.logger.error(
         `Failed to process payment event ${eventId}; leaving it for the sweep. ${describeError(error)}`,
       );
@@ -142,8 +161,8 @@ export class PaymentEventProcessor {
         await this.markProcessed(eventId, payment?.id ?? null);
         return false;
 
-      case 'MARK_PAYMENT':
-        await this.afterCommit.run(async (tx, emit) => {
+      case 'MARK_PAYMENT': {
+        const landed = await this.afterCommit.run(async (tx, emit) => {
           /**
            * Guarded on the status, not just the id — the same shape
            * `transitionOrder` uses on `orders.status`, and for the same reason.
@@ -168,7 +187,11 @@ export class PaymentEventProcessor {
               ),
             )
             .returning({ orderId: payments.orderId });
-          await this.markProcessed(eventId, decision.paymentId, tx);
+          const stamped = await this.markProcessed(
+            eventId,
+            decision.paymentId,
+            tx,
+          );
 
           /**
            * Told to the kiosk, and only on a write that actually landed — the
@@ -194,8 +217,24 @@ export class PaymentEventProcessor {
               });
             }
           }
+
+          return settled !== undefined && stamped;
         });
+
+        /**
+         * Counted once per event. The status guard lets a repeat of the same
+         * outcome through (FAILED over FAILED), so a second processor applying
+         * this event at the same moment would land its write too; what it
+         * cannot do is stamp the row, because the first one already has.
+         */
+        if (landed) {
+          this.metrics.payments.inc({
+            provider: 'STRIPE',
+            status: decision.status,
+          });
+        }
         return true;
+      }
 
       case 'MARK_PAID':
         return this.markPaid(eventId, decision);
@@ -260,6 +299,7 @@ export class PaymentEventProcessor {
       });
     });
 
+    this.metrics.payments.inc({ provider: 'STRIPE', status: 'SUCCEEDED' });
     return true;
   }
 
@@ -311,8 +351,8 @@ export class PaymentEventProcessor {
     eventId: string,
     paymentId: string | null,
     tx: Database | Transaction = this.db,
-  ): Promise<void> {
-    await tx
+  ): Promise<boolean> {
+    const stamped = await tx
       .update(paymentEvents)
       .set({
         processedAt: new Date(),
@@ -320,6 +360,8 @@ export class PaymentEventProcessor {
       })
       .where(
         and(eq(paymentEvents.id, eventId), isNull(paymentEvents.processedAt)),
-      );
+      )
+      .returning({ id: paymentEvents.id });
+    return stamped.length > 0;
   }
 }

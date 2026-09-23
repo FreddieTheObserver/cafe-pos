@@ -1,6 +1,8 @@
 import type Redis from 'ioredis';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import { AccessTokenService } from '../src/identity/auth/access-token.service';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { deadRedisClient } from './fixtures/dead-redis';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
@@ -139,6 +141,48 @@ describe('The API with Redis unreachable (e2e)', () => {
         status: 'unavailable',
         checks: { db: { status: 'up' }, redis: { status: 'down' } },
       });
+    });
+  });
+
+  describe('the metrics it serves', () => {
+    const uncounted = async (policy: 'allow' | 'refuse') =>
+      (await sampleOf(
+        harness.app.get(Metrics),
+        'rate_limit_backend_unavailable_total',
+        { policy },
+      )) ?? 0;
+
+    it('counts a request served uncounted', async () => {
+      const before = await uncounted('allow');
+
+      await harness
+        .http()
+        .get('/api/v1/categories')
+        .set('Authorization', `Bearer ${staffToken}`);
+
+      expect(await uncounted('allow')).toBe(before + 1);
+    });
+
+    it('counts a request refused because it could not be counted', async () => {
+      const before = await uncounted('refuse');
+
+      await harness
+        .http()
+        .post('/api/v1/devices/activate')
+        .send({ pairingCode: 'ZZZZ9999' });
+
+      expect(await uncounted('refuse')).toBe(before + 1);
+    });
+
+    it('reports Redis as down and Postgres as up', async () => {
+      const metrics = harness.app.get(Metrics);
+
+      expect(
+        await sampleOf(metrics, 'dependency_up', { dependency: 'redis' }),
+      ).toBe(0);
+      expect(
+        await sampleOf(metrics, 'dependency_up', { dependency: 'postgres' }),
+      ).toBe(1);
     });
   });
 

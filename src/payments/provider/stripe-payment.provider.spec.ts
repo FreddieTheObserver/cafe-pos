@@ -48,6 +48,17 @@ function providerWith(
 
 describe('StripePaymentProvider', () => {
   describe('parseWebhook signature verification', () => {
+    it('carries the time the gateway created the event', () => {
+      const body = eventBody('payment_intent.canceled', { id: 'pi_1' });
+
+      const event = providerWith([NEW_SECRET]).parseWebhook(
+        Buffer.from(body),
+        sign(body, NEW_SECRET),
+      );
+
+      expect(event.createdAt).toEqual(new Date(1_785_829_150 * 1000));
+    });
+
     it('accepts a body signed with the current secret', () => {
       const body = eventBody('payment_intent.canceled', { id: 'pi_1' });
       const provider = providerWith([NEW_SECRET]);

@@ -5,6 +5,7 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { configureApp } from './bootstrap';
 import { Env } from './config/env.validation';
+import { MetricsServer } from './observability/metrics/metrics-server';
 import { RedisIoAdapter } from './realtime/socket-io.adapter';
 
 async function bootstrap() {
@@ -37,5 +38,8 @@ async function bootstrap() {
   app.useWebSocketAdapter(new RedisIoAdapter(app, corsOrigins));
 
   await app.listen(config.get('PORT', { infer: true }));
+  await app
+    .get(MetricsServer)
+    .listen(config.get('METRICS_PORT', { infer: true }));
 }
 void bootstrap();

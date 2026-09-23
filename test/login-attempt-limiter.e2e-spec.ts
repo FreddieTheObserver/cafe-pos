@@ -2,6 +2,8 @@ import Redis from 'ioredis';
 import { uuidv7 } from 'uuidv7';
 import { RateLimitedError } from '../src/common/errors/rate-limited.error';
 import { LoginAttemptLimiter } from '../src/identity/rate-limit/login-attempt.limiter';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 
 /**
  * §6.1/§10.2: 5 failures per 15 minutes *per account*. This counts failures,
@@ -11,6 +13,7 @@ import { LoginAttemptLimiter } from '../src/identity/rate-limit/login-attempt.li
 describe('LoginAttemptLimiter (integration)', () => {
   let redis: Redis;
   let limiter: LoginAttemptLimiter;
+  let metrics: Metrics;
 
   const FAILURES_ALLOWED = 5;
   const freshEmail = () => `lockout-${uuidv7()}@cafepos.test`;
@@ -21,7 +24,8 @@ describe('LoginAttemptLimiter (integration)', () => {
 
   beforeAll(() => {
     redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
-    limiter = new LoginAttemptLimiter(redis);
+    metrics = new Metrics();
+    limiter = new LoginAttemptLimiter(redis, metrics);
   });
 
   afterAll(async () => {
@@ -39,6 +43,25 @@ describe('LoginAttemptLimiter (integration)', () => {
     await failTimes(email, FAILURES_ALLOWED - 1);
 
     await expect(limiter.assertNotLockedOut(email)).resolves.toBeUndefined();
+  });
+
+  it('counts each attempt it refuses, and none it allows', async () => {
+    const lockouts = async () =>
+      (await sampleOf(metrics, 'rate_limit_rejections_total', {
+        rule: 'loginAccount',
+      })) ?? 0;
+    const email = freshEmail();
+    await failTimes(email, FAILURES_ALLOWED - 1);
+    const before = await lockouts();
+
+    await limiter.assertNotLockedOut(email);
+    expect(await lockouts()).toBe(before);
+
+    await limiter.recordFailure(email);
+    await expect(limiter.assertNotLockedOut(email)).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    expect(await lockouts()).toBe(before + 1);
   });
 
   it('locks the account out once the failures run out', async () => {

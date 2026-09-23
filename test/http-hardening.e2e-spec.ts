@@ -3,6 +3,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { configureApp } from '../src/bootstrap';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
+import { MetricsModule } from '../src/observability/metrics/metrics.module';
 import { ProbeModule, StubbedHealthModule } from './fixtures/probe.module';
 
 const ALLOWED_ORIGIN = 'https://kds.cafe.test';
@@ -12,7 +13,7 @@ describe('HTTP hardening (e2e)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      imports: [ProbeModule, StubbedHealthModule],
+      imports: [ProbeModule, StubbedHealthModule, MetricsModule],
     }).compile();
 
     app = moduleRef.createNestApplication<NestExpressApplication>({

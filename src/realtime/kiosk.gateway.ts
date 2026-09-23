@@ -10,6 +10,7 @@ import type { Namespace, Socket } from 'socket.io';
 import { describeError } from '../common/errors/describe-error';
 import { DeviceTokenService } from '../identity/devices/device-token.service';
 import type { DevicePrincipal } from '../identity/principal';
+import { Metrics } from '../observability/metrics/metrics';
 import { deviceRoom, NAMESPACES } from './realtime.constants';
 import { RevocationSubscriber } from './revocation-subscriber.service';
 
@@ -43,6 +44,7 @@ export class KioskGateway
   constructor(
     private readonly deviceTokens: DeviceTokenService,
     private readonly revocationFeed: RevocationSubscriber,
+    private readonly metrics: Metrics,
   ) {}
 
   /**
@@ -55,6 +57,7 @@ export class KioskGateway
    * source of truth. Only an *already open* socket needs the kill channel.
    */
   afterInit(server: Namespace): void {
+    this.metrics.trackNamespace('kiosk', server);
     server.use((socket, next) => {
       this.authenticate(socket as KioskSocket)
         .then(() => next())

@@ -1,0 +1,461 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ConfigService } from '@nestjs/config';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { eq, inArray } from 'drizzle-orm';
+import { load } from 'js-yaml';
+import { io } from 'socket.io-client';
+import request from 'supertest';
+import { uuidv7 } from 'uuidv7';
+import type { Env } from '../src/config/env.validation';
+import * as schema from '../src/database/schema';
+import type { OrderStatus } from '../src/database/schema/enums';
+import { isOpenAt } from '../src/orders/business-hours';
+import { NAMESPACES } from '../src/realtime/realtime.constants';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { MetricsServer } from '../src/observability/metrics/metrics-server';
+import { sampleOf } from '../src/observability/metrics/sample-of';
+import { IdentityHarness } from './fixtures/identity-fixtures';
+import { metricNamesIn } from './fixtures/promql';
+
+async function eventually(
+  assertion: () => Promise<void>,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+/**
+ * The metrics endpoint against the real app. Later sections of this file
+ * cover each family of metrics where no other suite already produces the
+ * event being counted.
+ */
+describe('Metrics (e2e)', () => {
+  let harness: IdentityHarness;
+  let metricsUrl: string;
+
+  const scrape = async (): Promise<string> => {
+    const res = await request(metricsUrl).get('/metrics');
+    expect(res.status).toBe(200);
+    return res.text;
+  };
+
+  beforeAll(async () => {
+    harness = await IdentityHarness.boot();
+    const port = await harness.app.get(MetricsServer).listen(0);
+    metricsUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await harness.close();
+  });
+
+  describe('the endpoint', () => {
+    it('serves the Prometheus text format on its own port', async () => {
+      const res = await request(metricsUrl).get('/metrics');
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^text\/plain/);
+      expect(res.text).toContain(
+        '# TYPE metrics_collector_failures_total counter',
+      );
+    });
+
+    it('serves nothing else on that port', async () => {
+      expect((await request(metricsUrl).get('/')).status).toBe(404);
+      expect((await request(metricsUrl).post('/metrics')).status).toBe(404);
+    });
+
+    it('is not reachable through the API port', async () => {
+      expect((await harness.http().get('/metrics')).status).toBe(404);
+      expect((await harness.http().get('/api/v1/metrics')).status).toBe(404);
+    });
+
+    it('exports the Node process metrics alongside its own', async () => {
+      expect(await scrape()).toContain(
+        '# TYPE nodejs_eventloop_lag_p99_seconds gauge',
+      );
+    });
+  });
+
+  describe('request timing', () => {
+    const countOf = (labels: Record<string, string>) =>
+      sampleOf(
+        harness.app.get(Metrics),
+        'http_request_duration_seconds_count',
+        labels,
+      );
+
+    // Unauthenticated, so each answers 401. The route still matched: guards run inside it.
+    it('labels a request by the route it matched, not the path it asked for', async () => {
+      const series = {
+        method: 'GET',
+        route: '/api/v1/orders/:id',
+        status_class: '4xx',
+      };
+      const before = (await countOf(series)) ?? 0;
+
+      await harness.http().get(`/api/v1/orders/${uuidv7()}`);
+      await harness.http().get(`/api/v1/orders/${uuidv7()}`);
+
+      expect(await countOf(series)).toBe(before + 2);
+      expect(await scrape()).not.toMatch(
+        /route="\/api\/v1\/orders\/[0-9a-f]{8}-/,
+      );
+    });
+
+    it('labels a request that matched no route as unmatched', async () => {
+      const series = { method: 'GET', route: 'unmatched', status_class: '4xx' };
+      const before = (await countOf(series)) ?? 0;
+
+      await harness.http().get(`/api/v1/no-such-route-${uuidv7()}`);
+
+      expect(await countOf(series)).toBe(before + 1);
+    });
+
+    it('does not time the health probes', async () => {
+      await harness.http().get('/healthz');
+
+      expect(await scrape()).not.toContain('route="/healthz"');
+    });
+  });
+
+  describe('state read at scrape time', () => {
+    // Older than any row this project has written, so in a shared database
+    // nothing else can outrank a fixture and each reading can be pinned exactly.
+    const DAYS = 400;
+    const DAY_SECONDS = 86_400;
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * DAY_SECONDS * 1000);
+    const read = (name: string, labels?: Record<string, string>) =>
+      sampleOf(harness.app.get(Metrics), name, labels);
+
+    const eventIds: string[] = [];
+    let cashierId: string;
+
+    beforeAll(async () => {
+      // Both jobs would act on the fixtures below between the insert and the scrape.
+      const scheduler = harness.app.get(SchedulerRegistry);
+      await scheduler.getCronJob('expire-pending-orders').stop();
+      await scheduler.getCronJob('drain-payment-inbox').stop();
+      cashierId = (await harness.createStaff('CASHIER')).id;
+    });
+
+    afterAll(async () => {
+      if (eventIds.length > 0) {
+        await harness.db
+          .delete(schema.paymentEvents)
+          .where(inArray(schema.paymentEvents.providerEventId, eventIds));
+      }
+      await harness.purgeOrders();
+    });
+
+    it('reads the oldest unprocessed inbox event, and ignores processed ones', async () => {
+      const unprocessed = `evt_metrics_${uuidv7()}`;
+      const processed = `evt_metrics_${uuidv7()}`;
+      eventIds.push(unprocessed, processed);
+      await harness.db.insert(schema.paymentEvents).values([
+        {
+          providerEventId: unprocessed,
+          eventType: 'payment_intent.succeeded',
+          payload: {},
+          receivedAt: daysAgo(DAYS),
+        },
+        {
+          providerEventId: processed,
+          eventType: 'payment_intent.succeeded',
+          payload: {},
+          receivedAt: daysAgo(2 * DAYS),
+          processedAt: daysAgo(2 * DAYS),
+        },
+      ]);
+
+      const age = await read('payment_inbox_oldest_unprocessed_age_seconds');
+      expect(age).toBeGreaterThanOrEqual(DAYS * DAY_SECONDS);
+      expect(age).toBeLessThan((DAYS + 1) * DAY_SECONDS);
+
+      await harness.db
+        .update(schema.paymentEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(schema.paymentEvents.providerEventId, unprocessed));
+
+      expect(
+        await read('payment_inbox_oldest_unprocessed_age_seconds'),
+      ).toBeLessThan(DAYS * DAY_SECONDS);
+    });
+
+    it('reads how far the most overdue unpaid order is past its expiry', async () => {
+      const order = (status: OrderStatus, expiresAt: Date) => ({
+        id: uuidv7(),
+        businessDay: '2025-08-01',
+        channel: 'COUNTER' as const,
+        createdByUserId: cashierId,
+        status,
+        subtotalMinor: 1000,
+        vatMinor: 0,
+        totalMinor: 1000,
+        currency: 'THB',
+        expiresAt,
+      });
+      const unpaid = order('PENDING_PAYMENT', daysAgo(DAYS));
+      await harness.db
+        .insert(schema.orders)
+        .values([unpaid, order('EXPIRED', daysAgo(2 * DAYS))]);
+
+      const overdue = await read('orders_pending_payment_overdue_seconds');
+      expect(overdue).toBeGreaterThanOrEqual(DAYS * DAY_SECONDS);
+      expect(overdue).toBeLessThan((DAYS + 1) * DAY_SECONDS);
+
+      await harness.db
+        .update(schema.orders)
+        .set({ status: 'CANCELLED' })
+        .where(eq(schema.orders.id, unpaid.id));
+
+      expect(await read('orders_pending_payment_overdue_seconds')).toBeLessThan(
+        DAYS * DAY_SECONDS,
+      );
+    });
+
+    it("reports each active kiosk's age, and leaves revoked ones out", async () => {
+      const active = await harness.createDevice('ACTIVE');
+      const revoked = await harness.createDevice('REVOKED');
+      await harness.db
+        .update(schema.kioskDevices)
+        .set({ lastSeenAt: daysAgo(DAYS) })
+        .where(inArray(schema.kioskDevices.id, [active.id, revoked.id]));
+
+      const age = await read('kiosk_last_seen_age_seconds', {
+        device: active.id,
+      });
+      expect(age).toBeGreaterThanOrEqual(DAYS * DAY_SECONDS);
+      expect(age).toBeLessThan((DAYS + 1) * DAY_SECONDS);
+      expect(
+        await read('kiosk_last_seen_age_seconds', { device: revoked.id }),
+      ).toBeUndefined();
+    });
+
+    it('reports the dependencies it can reach as up', async () => {
+      expect(await read('dependency_up', { dependency: 'postgres' })).toBe(1);
+      expect(await read('dependency_up', { dependency: 'redis' })).toBe(1);
+    });
+
+    it('reports whether the cafe is inside its opening hours', async () => {
+      const config: ConfigService<Env, true> = harness.app.get(ConfigService);
+      const hours = {
+        timeZone: config.get('BUSINESS_TIMEZONE', { infer: true }),
+        open: config.get('BUSINESS_OPEN_TIME', { infer: true }),
+        close: config.get('BUSINESS_CLOSE_TIME', { infer: true }),
+      };
+      const expected = () => (isOpenAt(new Date(), hours) ? 1 : 0);
+
+      // Computed either side of the scrape, so an opening or closing minute cannot split them.
+      const before = expected();
+      const reading = await read('business_open');
+      expect([before, expected()]).toContain(reading);
+    });
+  });
+
+  describe('orders', () => {
+    let kioskToken: string;
+    let croissantId: string;
+    const categoryIds: string[] = [];
+    const itemIds: string[] = [];
+    const keys: string[] = [];
+
+    beforeAll(async () => {
+      const adminToken = await harness.tokenFor('ADMIN');
+      const post = async (path: string, body: object): Promise<string> => {
+        const res = await harness
+          .http()
+          .post(path)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send(body);
+        if (res.status !== 201) {
+          throw new Error(`fixture ${path} failed with ${res.status}`);
+        }
+        return (res.body as { id: string }).id;
+      };
+
+      const categoryId = await post('/api/v1/categories', {
+        name: `Metrics pastries ${uuidv7()}`,
+        sortOrder: 0,
+      });
+      categoryIds.push(categoryId);
+      croissantId = await post('/api/v1/items', {
+        categoryId,
+        name: `Metrics croissant ${uuidv7()}`,
+        basePriceMinor: 2000,
+        sortOrder: 0,
+      });
+      itemIds.push(croissantId);
+      kioskToken = (await harness.createDevice('ACTIVE')).token;
+    });
+
+    afterAll(async () => {
+      await harness.purgeOrders();
+      if (keys.length > 0) {
+        await harness.db
+          .delete(schema.idempotencyKeys)
+          .where(inArray(schema.idempotencyKeys.key, keys));
+      }
+      if (itemIds.length > 0) {
+        await harness.db
+          .delete(schema.menuItems)
+          .where(inArray(schema.menuItems.id, itemIds));
+      }
+      if (categoryIds.length > 0) {
+        await harness.db
+          .delete(schema.categories)
+          .where(inArray(schema.categories.id, categoryIds));
+      }
+    });
+
+    const placeOrder = (key: string, extra: object = {}) => {
+      keys.push(key);
+      return harness
+        .http()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${kioskToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          channel: 'KIOSK',
+          items: [{ menuItemId: croissantId, quantity: 1, optionIds: [] }],
+          ...extra,
+        });
+    };
+
+    const kioskOrders = async () =>
+      (await sampleOf(harness.app.get(Metrics), 'orders_created_total', {
+        channel: 'KIOSK',
+      })) ?? 0;
+
+    it('counts an order once, however many times the kiosk retries it', async () => {
+      const before = await kioskOrders();
+      const key = `metrics-${uuidv7()}`;
+
+      const first = await placeOrder(key);
+      const retry = await placeOrder(key);
+
+      expect(first.status).toBe(201);
+      expect(retry.headers['idempotency-replayed']).toBe('true');
+      expect(await kioskOrders()).toBe(before + 1);
+    });
+
+    it('does not count an order it refused', async () => {
+      const before = await kioskOrders();
+
+      const res = await placeOrder(`metrics-${uuidv7()}`, {
+        expectedTotalMinor: 1,
+      });
+
+      expect(res.status).toBe(409);
+      expect(await kioskOrders()).toBe(before);
+    });
+  });
+
+  describe('connected screens', () => {
+    const connected = (namespace: string) =>
+      sampleOf(harness.app.get(Metrics), 'ws_connected', { namespace });
+
+    // Present at zero, not absent: KitchenBlind's sum() over nothing would never fire.
+    it('exports every namespace, even with nothing connected', async () => {
+      expect(await connected('kds')).toBe(0);
+      expect(await connected('kiosk')).toBe(0);
+      expect(await connected('board')).toBe(0);
+    });
+
+    it('counts a kitchen screen while it is connected', async () => {
+      const socket = io(`${harness.url()}${NAMESPACES.kds}`, {
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: await harness.tokenFor('BARISTA') },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', () => resolve());
+        socket.once('connect_error', reject);
+      });
+
+      expect(await connected('kds')).toBe(1);
+
+      socket.disconnect();
+      await eventually(async () => {
+        expect(await connected('kds')).toBe(0);
+      });
+    });
+  });
+
+  /**
+   * A renamed metric leaves every rule and panel that names it evaluating
+   * nothing, silently: the config-invisible-to-tests failure PR #5 taught.
+   */
+  describe('the alert rules and the dashboard', () => {
+    const OPS = join(__dirname, '..', 'ops');
+
+    const ruleExpressions = (): string[] => {
+      const file = load(
+        readFileSync(join(OPS, 'prometheus', 'alerts.yml'), 'utf8'),
+      ) as { groups: { rules: { expr: string }[] }[] };
+      return file.groups.flatMap((group) =>
+        group.rules.map((rule) => rule.expr),
+      );
+    };
+
+    const dashboardExpressions = (): string[] => {
+      const dashboard = JSON.parse(
+        readFileSync(
+          join(OPS, 'grafana', 'dashboards', 'cafepos.json'),
+          'utf8',
+        ),
+      ) as { panels: { targets?: { expr: string }[] }[] };
+      return dashboard.panels.flatMap((panel) =>
+        (panel.targets ?? []).map((target) => target.expr),
+      );
+    };
+
+    const exposedIn = (text: string): Set<string> => {
+      const names = new Set<string>();
+      for (const [, name, type] of text.matchAll(/^# TYPE (\S+) (\S+)$/gm)) {
+        names.add(name);
+        if (type === 'histogram' || type === 'summary') {
+          for (const suffix of ['_bucket', '_sum', '_count']) {
+            names.add(`${name}${suffix}`);
+          }
+        }
+      }
+      return names;
+    };
+
+    it('only query metrics the app exports', async () => {
+      const referenced = new Set(
+        [...ruleExpressions(), ...dashboardExpressions()].flatMap(
+          metricNamesIn,
+        ),
+      );
+      // Guards the extractor: had it found nothing, the check below would pass vacuously.
+      expect([...referenced]).toEqual(
+        expect.arrayContaining([
+          'orders_created_total',
+          'reconciliation_delta_minor',
+          'http_request_duration_seconds_bucket',
+          'business_open',
+        ]),
+      );
+
+      const exposed = exposedIn(await scrape());
+      // `up` is written by Prometheus itself, per target.
+      const missing = [...referenced].filter(
+        (name) => name !== 'up' && !exposed.has(name),
+      );
+      expect(missing).toEqual([]);
+    });
+  });
+});

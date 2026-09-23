@@ -3,6 +3,8 @@ import { uuidv7 } from 'uuidv7';
 import type { ProblemDetails } from '../src/common/errors/problem-details';
 import * as schema from '../src/database/schema';
 import type { OrderStatus } from '../src/database/schema/enums';
+import { Metrics } from '../src/observability/metrics/metrics';
+import { sampleOf } from '../src/observability/metrics/sample-of';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 const TOTAL = 12_500;
@@ -62,6 +64,12 @@ describe('Create payment endpoint (e2e)', () => {
     return id;
   }
 
+  const cashPayments = async () =>
+    (await sampleOf(harness.app.get(Metrics), 'payments_total', {
+      provider: 'CASH',
+      status: 'SUCCEEDED',
+    })) ?? 0;
+
   const pay = (orderId: string, token: string, body: object) =>
     harness
       .http()
@@ -104,6 +112,7 @@ describe('Create payment endpoint (e2e)', () => {
   describe('cash at the counter', () => {
     it('settles immediately and pays the order', async () => {
       const orderId = await givenOrder({ ownedByKiosk: false });
+      const before = await cashPayments();
 
       const res = await pay(orderId, cashierToken, {
         method: 'CASH',
@@ -120,6 +129,7 @@ describe('Create payment endpoint (e2e)', () => {
       });
       // No webhook is coming; the money is in the drawer.
       expect(await orderStatusOf(orderId)).toBe('PAID');
+      expect(await cashPayments()).toBe(before + 1);
     });
 
     /** B6: there is no drawer at a kiosk, and nobody standing at it. */
@@ -371,6 +381,7 @@ describe('Create payment endpoint (e2e)', () => {
     const orderId = await givenOrder({ ownedByKiosk: false });
     const key = `key-${uuidv7()}`;
     const body = { method: 'CASH', cashTenderedMinor: 20_000 };
+    const before = await cashPayments();
 
     const first = await harness
       .http()
@@ -395,5 +406,29 @@ describe('Create payment endpoint (e2e)', () => {
       .from(schema.payments)
       .where(eq(schema.payments.orderId, orderId));
     expect(rows).toHaveLength(1);
+    // The replay hands back the payment the first request already counted.
+    expect(await cashPayments()).toBe(before + 1);
+  });
+  /**
+   * A retry that races the original finds no stored response yet, so it is
+   * turned away by the key inside the transaction instead, and replayed from
+   * there. That replay must not count a second payment.
+   */
+  it('counts a cash payment once when a retry races the original', async () => {
+    const orderId = await givenOrder({ ownedByKiosk: false });
+    const key = `key-${uuidv7()}`;
+    const send = () =>
+      harness
+        .http()
+        .post(`/api/v1/orders/${orderId}/payments`)
+        .set('Authorization', `Bearer ${cashierToken}`)
+        .set('Idempotency-Key', key)
+        .send({ method: 'CASH', cashTenderedMinor: 20_000 });
+    const before = await cashPayments();
+
+    const [first, second] = await Promise.all([send(), send()]);
+
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(await cashPayments()).toBe(before + 1);
   });
 });

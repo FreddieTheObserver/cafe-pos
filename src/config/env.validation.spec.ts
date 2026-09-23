@@ -38,6 +38,65 @@ describe('validateEnv', () => {
     );
   });
 
+  describe('METRICS_PORT', () => {
+    it('defaults to a port of its own', () => {
+      expect(validateEnv({ ...REQUIRED }).METRICS_PORT).toBe(9464);
+    });
+
+    it('refuses to share the API port', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, PORT: '9000', METRICS_PORT: '9000' }),
+      ).toThrow(/METRICS_PORT/);
+    });
+
+    it('rejects a port outside the TCP range', () => {
+      expect(() => validateEnv({ ...REQUIRED, METRICS_PORT: '70000' })).toThrow(
+        /METRICS_PORT/,
+      );
+    });
+  });
+
+  describe('opening hours', () => {
+    it('defaults to the 07:00-20:00 window §3 states its availability against', () => {
+      const env = validateEnv({ ...REQUIRED });
+
+      expect(env.BUSINESS_OPEN_TIME).toBe('07:00');
+      expect(env.BUSINESS_CLOSE_TIME).toBe('20:00');
+    });
+
+    it('rejects a time that is not HH:MM', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, BUSINESS_OPEN_TIME: '7am' }),
+      ).toThrow(/BUSINESS_OPEN_TIME/);
+    });
+
+    it('rejects an hour past 23', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, BUSINESS_CLOSE_TIME: '24:00' }),
+      ).toThrow(/BUSINESS_CLOSE_TIME/);
+    });
+
+    it('accepts a window that wraps past midnight', () => {
+      const env = validateEnv({
+        ...REQUIRED,
+        BUSINESS_OPEN_TIME: '18:00',
+        BUSINESS_CLOSE_TIME: '02:00',
+      });
+
+      expect(env.BUSINESS_CLOSE_TIME).toBe('02:00');
+    });
+
+    it('rejects a window that opens and closes on the same minute', () => {
+      expect(() =>
+        validateEnv({
+          ...REQUIRED,
+          BUSINESS_OPEN_TIME: '09:00',
+          BUSINESS_CLOSE_TIME: '09:00',
+        }),
+      ).toThrow(/BUSINESS_CLOSE_TIME/);
+    });
+  });
+
   describe('JWT_SECRET', () => {
     it('rejects a secret short enough to brute-force', () => {
       expect(() =>
