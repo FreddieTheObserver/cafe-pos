@@ -183,6 +183,12 @@ pnpm start:dev
 
 Prometheus is on http://localhost:9090, scraping the app on the host and evaluating the rules, and Grafana is on http://localhost:3001 with the CafePOS dashboard provisioned. Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's `severity` label.
 
+## Data retention
+
+`DESIGN.md` §7.5's windows are enforced by jobs in `src/retention/`. Nightly at 04:00 Bangkok time: customer names on orders older than 90 days are cleared, webhook payloads older than 13 months are cut down to the event's identifiers (the row stays, marked `payload_trimmed_at`), and refresh tokens expired or revoked more than 30 days ago are deleted. Hourly, expired idempotency keys are deleted. Each job is a guarded statement run in bounded batches, so running it twice changes nothing.
+
+`retention_overdue_rows{data}` on `/metrics` counts rows past their window plus the job's grace, and the `RetentionBehind` alert fires when any stays above zero for an hour.
+
 ## API
 
 The application API is served under the base path **`/api/v1`** (URI versioning — visible in logs and in `curl`, unlike header versioning). Conventions that apply to every endpoint are specified in `DESIGN.md` [§5.1](./DESIGN.md#5-api-specification):

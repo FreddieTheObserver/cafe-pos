@@ -1,0 +1,2 @@
+ALTER TABLE "payment_events" ADD COLUMN "payload_trimmed_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "payment_events_untrimmed_received_at_idx" ON "payment_events" USING btree ("received_at") WHERE "payment_events"."payload_trimmed_at" is null;

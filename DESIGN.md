@@ -872,11 +872,13 @@ The application validates everything (§8), but money invariants are *also* in t
 |---|---|---|
 | Orders, items, payments, refunds, status history | ≥ 5 years (Thai tax/audit) | Keep; partition `orders` by year only if volume ever warrants (it won't at 1 cafe — ~250k rows/year) |
 | `customer_name` | 90 days | Nightly job nulls the column on old orders (PDPA minimization; reports never use names) |
-| `payment_events.payload` | 13 months full payload, then row kept but payload trimmed to type+ids | Monthly job (payloads can contain gateway PII) |
+| `payment_events.payload` | 13 months full payload, then row kept but payload trimmed to type+ids | Nightly job (payloads can contain gateway PII); the row records `payload_trimmed_at` |
 | `refresh_tokens` (expired/revoked) | 30 days | Nightly delete |
 | `idempotency_keys` | 24 h | Hourly delete |
 | `kiosk_devices` (revoked) | Soft-kept forever (audit references) | — |
 | Backups | Daily base + WAL (PITR), 30-day window, restore drill quarterly | Managed Postgres or pgBackRest |
+
+The jobs live in `src/retention/`: the nightly ones at 04:00, in the dead zone after the 03:00 rollup, and the idempotency sweep hourly. Payloads are trimmed nightly rather than monthly, so each run is small and a missed night is caught up by the next. Whether the policy is being met is read from the data, not from whether a job ran: `retention_overdue_rows{data}` (§13) counts rows past their window plus a grace of the job's cadence, and survives restarts in a way a last-run timestamp would not.
 
 ---
 
@@ -1195,13 +1197,15 @@ A system taking money unattended must be observable enough that *silent* failure
 | `business_open` | gauge | none; gates the business-hours alerts, from `BUSINESS_OPEN_TIME` and `BUSINESS_CLOSE_TIME` |
 | `rate_limit_rejections_total{rule}`, `rate_limit_backend_unavailable_total{policy}` | counter | none; section 16's rate limits observed in metrics |
 | `metrics_collector_failures_total{collector}` | counter | none; a gauge that could not be read exports no value rather than a stale one |
+| `retention_overdue_rows{data}` | gauge | > 0 for 1 h (a §7.5 retention job is not keeping up) |
+| `retention_rows_total{data}` | counter | none; rows each retention job handled |
 | DB/Redis: connections, replication, disk | - | platform defaults |
 
 `/metrics` is served on a port of its own (`METRICS_PORT`, default 9464) that the load balancer never routes. The alert rules live in `ops/prometheus/alerts.yml` with `promtool` tests in `alerts.test.yml`, run in CI; each carries `severity: page` or `severity: notify`.
 
 **Tracing.** OTel auto-instrumentation (HTTP, the `pg` driver, Redis, Stripe SDK; Drizzle queries are traced via the driver instrumentation plus a query logger); 10% sampling, 100% for requests that error. The trace that matters most: webhook → DB transaction → WS emit, because that's where "customer paid but nothing happened" hides.
 
-**Alerting routes.** Page (immediately): reconciliation delta, a night no instance could reconcile, webhook failures, a stuck payment inbox, API down, DB down, and the kitchen blind during business hours. Notify (business hours): kiosk offline, p95 breach, failure-ratio breach, webhook lag, an unpaid order past its expiry, orders silent, one instance down, Redis down. Weekly review: slow-query log, error budget, top 422s (kiosk UX bugs show up here first).
+**Alerting routes.** Page (immediately): reconciliation delta, a night no instance could reconcile, webhook failures, a stuck payment inbox, API down, DB down, and the kitchen blind during business hours. Notify (business hours): kiosk offline, p95 breach, failure-ratio breach, webhook lag, an unpaid order past its expiry, orders silent, one instance down, Redis down, retention behind. Weekly review: slow-query log, error budget, top 422s (kiosk UX bugs show up here first).
 
 ---
 

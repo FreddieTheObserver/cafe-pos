@@ -19,6 +19,7 @@ import { BoardModule } from './board/board.module';
 import { ReportingModule } from './reporting/reporting.module';
 import { MetricsModule } from './observability/metrics/metrics.module';
 import { StateGaugesModule } from './observability/metrics/state-gauges.module';
+import { RetentionModule } from './retention/retention.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { StateGaugesModule } from './observability/metrics/state-gauges.module';
      */
     PaymentsModule,
     ReportingModule,
+    RetentionModule,
     KdsModule,
   ],
 })

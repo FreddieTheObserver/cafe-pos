@@ -3,6 +3,7 @@ import { Counter, Histogram, Registry } from '@prometheus-io/client';
 import type { Namespace } from 'socket.io';
 import { orderChannels } from '../../database/schema/enums';
 import { RATE_LIMIT_RULE_LABELS } from '../../identity/rate-limit/rate-limits';
+import { RETAINED_DATA } from '../../retention/retention-policy';
 import { ScrapedGauge, type Read } from './scraped-gauge';
 
 export type SocketNamespace = 'kds' | 'kiosk' | 'board';
@@ -97,6 +98,13 @@ export class Metrics {
     registers: [this.registry],
   });
 
+  readonly retentionRows = new Counter({
+    name: 'retention_rows_total',
+    help: 'Rows the retention jobs cleared, trimmed or deleted, by kind of data.',
+    labelNames: ['data'] as const,
+    registers: [this.registry],
+  });
+
   private reconciliationDelta: number | null = null;
   private readonly namespaces = new Map<SocketNamespace, Namespace>();
 
@@ -115,6 +123,9 @@ export class Metrics {
     }
     for (const policy of ['allow', 'refuse'] as const) {
       this.rateLimitBackendUnavailable.inc({ policy }, 0);
+    }
+    for (const data of RETAINED_DATA) {
+      this.retentionRows.inc({ data }, 0);
     }
 
     this.scraped(
