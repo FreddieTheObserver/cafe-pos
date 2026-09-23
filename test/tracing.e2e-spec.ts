@@ -61,6 +61,7 @@ const freePort = (): Promise<number> =>
 describe('Tracing (e2e)', () => {
   const MAIN = join(__dirname, '..', 'dist', 'main.js');
   const spans: ReceivedSpan[] = [];
+  const otherSignals = new Set<string>();
   let receiver: Server;
   let app: ChildProcess;
   let baseUrl: string;
@@ -77,20 +78,27 @@ describe('Tracing (e2e)', () => {
       let body = '';
       req.on('data', (chunk: Buffer) => (body += chunk.toString()));
       req.on('end', () => {
-        const payload = JSON.parse(body) as OtlpPayload;
-        for (const resource of payload.resourceSpans ?? []) {
-          for (const scoped of resource.scopeSpans ?? []) {
-            for (const span of scoped.spans ?? []) {
-              const path = span.attributes?.find(
-                (a) => a.key === 'url.path' || a.key === 'http.target',
-              )?.value?.stringValue;
-              spans.push({
-                name: span.name,
-                scope: scoped.scope?.name ?? '',
-                path,
-              });
+        // Only the trace signal, and only as JSON. Any other OTLP signal
+        // reaching this collector is recorded as an unexpected export rather
+        // than parsed, so it fails the assertion below instead of the suite.
+        if (req.url?.startsWith('/v1/traces')) {
+          const payload = JSON.parse(body) as OtlpPayload;
+          for (const resource of payload.resourceSpans ?? []) {
+            for (const scoped of resource.scopeSpans ?? []) {
+              for (const span of scoped.spans ?? []) {
+                const path = span.attributes?.find(
+                  (a) => a.key === 'url.path' || a.key === 'http.target',
+                )?.value?.stringValue;
+                spans.push({
+                  name: span.name,
+                  scope: scoped.scope?.name ?? '',
+                  path,
+                });
+              }
             }
           }
+        } else if (req.url !== undefined) {
+          otherSignals.add(req.url);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
       });
@@ -111,6 +119,11 @@ describe('Tracing (e2e)', () => {
         // Every trace, and exported quickly, so the test need not wait.
         OTEL_TRACES_SAMPLER_ARG: '1',
         OTEL_BSP_SCHEDULE_DELAY: '200',
+        // Both default to far longer than this suite runs. Short enough that a
+        // logs or metrics pipeline, if one were started, would reach the
+        // collector here and fail the traces-only assertion below.
+        OTEL_BLRP_SCHEDULE_DELAY: '200',
+        OTEL_METRIC_EXPORT_INTERVAL: '200',
       },
     });
     app.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
@@ -157,5 +170,15 @@ describe('Tracing (e2e)', () => {
   // Polled throughout start-up above, so a missing exclusion would have left spans here.
   it('does not trace the readiness probe', () => {
     expect(spans.filter((span) => span.path === '/readyz')).toEqual([]);
+  });
+
+  /**
+   * NodeSDK reads OTEL_EXPORTER_OTLP_ENDPOINT for all three signals, so leaving
+   * its defaults alone ships protobuf logs and metrics to the collector beside
+   * the traces. Metrics belong to Prometheus on their own port and logs to
+   * stdout, so anything but /v1/traces here is an export nobody asked for.
+   */
+  it('exports traces alone, not logs or metrics', () => {
+    expect([...otherSignals]).toEqual([]);
   });
 });

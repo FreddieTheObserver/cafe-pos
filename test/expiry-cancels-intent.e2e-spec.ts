@@ -1,3 +1,4 @@
+import { SchedulerRegistry } from '@nestjs/schedule';
 import { eq, inArray } from 'drizzle-orm';
 import { uuidv7 } from 'uuidv7';
 import * as schema from '../src/database/schema';
@@ -105,6 +106,14 @@ describe('Order expiry cancels the intent (e2e)', () => {
 
   beforeAll(async () => {
     harness = await IdentityHarness.boot({ paymentProvider: provider });
+    // Every fixture here is already overdue, so a tick landing mid-test would
+    // reclaim the ones a test deliberately leaves live and cancel their intents
+    // — counting into payments_total behind the assertions below. This suite
+    // drives the sweep itself, so the schedule has nothing left to do.
+    await harness.app
+      .get(SchedulerRegistry)
+      .getCronJob('expire-pending-orders')
+      .stop();
     cashierId = (await harness.createStaff('CASHIER')).id;
     cashierToken = await harness.accessTokenFor('CASHIER');
   }, 60_000);
