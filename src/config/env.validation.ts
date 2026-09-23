@@ -227,6 +227,13 @@ export const envSchema = z.object({
       'must be a Stripe secret or restricted key (prefer rk_)',
     ),
   /**
+   * Which Stripe this deployment means to use (§16: live and test keys cannot
+   * cross). Declared rather than read off the key, so a key pasted into the
+   * wrong environment is a refused boot, not real money taken by a staging box
+   * or fake money taken by production. Live mode is production-only.
+   */
+  STRIPE_MODE: z.enum(['test', 'live']).default('test'),
+  /**
    * Points the Stripe client somewhere other than api.stripe.com.
    *
    * Exists for `stripe-mock`, which speaks the real protocol and returns
@@ -317,6 +324,22 @@ function conflictsIn(env: Env): string[] {
   if (env.METRICS_PORT === env.PORT) {
     conflicts.push(
       'METRICS_PORT: must differ from PORT, or /metrics and the API would contend for one listener',
+    );
+  }
+  const keyMode = env.STRIPE_SECRET_KEY.split('_')[1];
+  if (keyMode !== env.STRIPE_MODE) {
+    conflicts.push(
+      `STRIPE_SECRET_KEY: is a ${keyMode} key but STRIPE_MODE is ${env.STRIPE_MODE}; live and test keys must not cross`,
+    );
+  }
+  if (env.STRIPE_MODE === 'live' && env.NODE_ENV !== 'production') {
+    conflicts.push(
+      `STRIPE_MODE: live is for production only, and NODE_ENV is ${env.NODE_ENV}`,
+    );
+  }
+  if (env.STRIPE_MODE === 'live' && env.STRIPE_API_BASE !== undefined) {
+    conflicts.push(
+      'STRIPE_API_BASE: must be unset in live mode; a live key goes to Stripe and nowhere else',
     );
   }
   if (env.BUSINESS_OPEN_TIME === env.BUSINESS_CLOSE_TIME) {

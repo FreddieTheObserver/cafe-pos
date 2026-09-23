@@ -1,0 +1,21 @@
+# Security overrides for transitive dependencies whose parents have not yet
+# picked up a patched release. Each stays inside the major line its consumers
+# ask for, so none of them changes an API underneath a package. Remove an entry
+# once `pnpm audit` is clean without it. Triage: docs/security/dependency-audit.md.
+overrides:
+  multer@2: ^2.4.0
+  brace-expansion@1: ^1.1.18
+  brace-expansion@2: ^2.1.4
+  brace-expansion@5: ^5.0.9
+  fast-uri@3: ^3.1.6
+  js-yaml@3: ^3.15.2
+  js-yaml@4: ^4.3.2
+  qs@6: ^6.16.0
+
+auditConfig:
+  ignoreGhsas:
+    # esbuild <=0.24.2, reached only through drizzle-kit's loader
+    # (@esbuild-kit/core-utils pins 0.18). The flaw is in `esbuild serve`, the
+    # development server, which that loader never starts. Accepted; see
+    # docs/security/dependency-audit.md.
+    - GHSA-67mh-4wv8-2f99

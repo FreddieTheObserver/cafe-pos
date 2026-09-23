@@ -1,0 +1,31 @@
+name: Dependency audit
+
+# Weekly rather than on every push: a newly published advisory should raise a
+# flag, not fail whichever unrelated pull request happens to run next.
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Accepted advisories are listed, with reasons, under auditConfig in
+      # pnpm-workspace.yaml and in docs/security/dependency-audit.md.
+      - name: Audit
+        run: pnpm audit
