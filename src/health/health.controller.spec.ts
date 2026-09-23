@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { HealthController } from './health.controller';
 import { HealthService } from './health.service';
 import type { ReadinessResult } from './health.service';
+import { ShutdownDrain } from './shutdown-drain';
 
 const UP = { status: 'up' } as const;
 const DOWN = { status: 'down', error: 'connection refused' } as const;
@@ -19,16 +20,21 @@ function makeRes(): { res: Response; status: jest.Mock } {
 describe('HealthController', () => {
   let controller: HealthController;
   let checkReadiness: jest.Mock;
+  const drain = { isDraining: false };
 
   const givenReadiness = (result: ReadinessResult) =>
     checkReadiness.mockResolvedValue(result);
 
   beforeEach(async () => {
     checkReadiness = jest.fn();
+    drain.isDraining = false;
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       controllers: [HealthController],
-      providers: [{ provide: HealthService, useValue: { checkReadiness } }],
+      providers: [
+        { provide: HealthService, useValue: { checkReadiness } },
+        { provide: ShutdownDrain, useValue: drain },
+      ],
     }).compile();
 
     controller = moduleRef.get(HealthController);
@@ -70,7 +76,19 @@ describe('HealthController', () => {
 
       const body = await controller.readiness(makeRes().res);
 
-      expect(body.checks.redis.error).toBe('connection refused');
+      expect(body.checks?.redis.error).toBe('connection refused');
+    });
+
+    // Stopping, so the load balancer should move away whatever the dependencies say.
+    it('answers 503 while the instance drains, without checking dependencies', async () => {
+      drain.isDraining = true;
+      const { res, status } = makeRes();
+
+      const body = await controller.readiness(res);
+
+      expect(status).toHaveBeenCalledWith(503);
+      expect(body).toEqual({ status: 'draining' });
+      expect(checkReadiness).not.toHaveBeenCalled();
     });
   });
 });

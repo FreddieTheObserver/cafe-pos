@@ -4,6 +4,7 @@ import { CommonModule } from '../../src/common/common.module';
 import { createZodDto } from '../../src/common/validation/zod-dto';
 import { HealthController } from '../../src/health/health.controller';
 import { HealthService } from '../../src/health/health.service';
+import { ShutdownDrain } from '../../src/health/shutdown-drain';
 
 const EchoSchema = z.object({
   name: z.string().min(1),
@@ -53,6 +54,7 @@ export class ProbeModule {}
           }),
       },
     },
+    { provide: ShutdownDrain, useValue: { isDraining: false } },
   ],
 })
 export class StubbedHealthModule {}

@@ -56,6 +56,20 @@ describe('validateEnv', () => {
     });
   });
 
+  describe('SHUTDOWN_DRAIN_SECONDS', () => {
+    // Off unless a deployment asks: tests and a laptop have no load balancer to wait for.
+    it('defaults to no drain', () => {
+      expect(validateEnv({ ...REQUIRED }).SHUTDOWN_DRAIN_SECONDS).toBe(0);
+    });
+
+    // Past 30 s the platform's own grace period would kill the process mid-drain.
+    it('rejects a drain longer than the platform would wait', () => {
+      expect(() =>
+        validateEnv({ ...REQUIRED, SHUTDOWN_DRAIN_SECONDS: '31' }),
+      ).toThrow(/SHUTDOWN_DRAIN_SECONDS/);
+    });
+  });
+
   describe('opening hours', () => {
     it('defaults to the 07:00-20:00 window §3 states its availability against', () => {
       const env = validateEnv({ ...REQUIRED });
