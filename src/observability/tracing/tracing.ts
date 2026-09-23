@@ -65,6 +65,13 @@ export function startTracing(env: NodeJS.ProcessEnv): NodeSDK | null {
       root: new TraceIdRatioBasedSampler(options.sampleRatio),
     }),
     traceExporter: new OTLPTraceExporter(),
+    // Traces only. Left to its own devices, NodeSDK reads the same
+    // OTEL_EXPORTER_OTLP_ENDPOINT and quietly starts OTLP logs and metrics
+    // pipelines beside this one, in protobuf. Metrics are already served to
+    // Prometheus on their own port (§13), and logs go to stdout as pino JSON,
+    // so those exports would be a duplicate nobody reads.
+    logRecordProcessors: [],
+    metricReaders: [],
     instrumentations: [
       new HttpInstrumentation({
         ignoreIncomingRequestHook: (req) =>
