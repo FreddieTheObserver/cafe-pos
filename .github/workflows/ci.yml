@@ -166,5 +166,7 @@ jobs:
 
       # Runs against the migrated Postgres above: proves the schema's money
       # constraints are actually armed, not just declared (§7.4).
+      # Needs the build above too: the tracing suite starts dist/main.js, because
+      # OpenTelemetry cannot instrument through Jest's module loader.
       - name: Integration tests
         run: pnpm test:e2e
