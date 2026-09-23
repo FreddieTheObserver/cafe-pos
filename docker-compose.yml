@@ -62,7 +62,7 @@ services:
   # Point at it deliberately when you want the gateway path offline:
   #   STRIPE_API_BASE=http://localhost:12111 pnpm test:e2e
   stripe-mock:
-    image: stripe/stripe-mock:v0.196.0
+    image: stripe/stripe-mock:v0.203.0
     container_name: cafepos-stripe-mock
     restart: unless-stopped
     ports:
