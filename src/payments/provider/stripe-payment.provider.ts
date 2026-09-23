@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Stripe from 'stripe';
+import { DependencyUnavailableError } from '../../common/errors/dependency-unavailable.error';
 import { describeError } from '../../common/errors/describe-error';
+import { LogThrottle } from '../../common/logging/log-throttle';
 import type { PaymentMethod } from '../../database/schema/enums';
 import { WebhookSignatureInvalidError } from '../errors/payments.errors';
 import { STRIPE_CLIENT, STRIPE_WEBHOOK_SECRETS } from '../payments.constants';
@@ -12,6 +14,13 @@ import type {
   GatewayOutcome,
   PaymentProvider,
 } from './payment-provider';
+
+/** Stripe's ways of not answering: no connection, its own 5xx, or its rate limit. */
+const UNREACHABLE = [
+  Stripe.errors.StripeConnectionError,
+  Stripe.errors.StripeAPIError,
+  Stripe.errors.StripeRateLimitError,
+];
 
 /**
  * Stripe's rail names, mapped to ours.
@@ -37,6 +46,8 @@ const METHOD_BY_STRIPE_TYPE: Readonly<Record<string, PaymentMethod>> = {
 @Injectable()
 export class StripePaymentProvider implements PaymentProvider {
   private readonly logger = new Logger(StripePaymentProvider.name);
+  // An outage fails every kiosk payment; one line every 30 s says so.
+  private readonly outageLog = new LogThrottle(30_000);
 
   constructor(
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
@@ -49,27 +60,29 @@ export class StripePaymentProvider implements PaymentProvider {
     idempotencyKey,
     metadata,
   }: CreateIntentRequest): Promise<CreatedIntent> {
-    const intent = await this.stripe.paymentIntents.create(
-      {
-        amount: amountMinor,
-        // Stripe wants the code lower-case; our column and config carry the
-        // ISO 4217 upper-case form (§3.5).
-        currency: currency.toLowerCase(),
-        /**
-         * Dynamic payment methods, which is what *not* naming
-         * `payment_method_types` buys. Stripe's guidance is emphatic about
-         * this: pinning the list freezes the accepted rails into deployed code
-         * and opts out of the ranking that decides what a given customer sees.
-         * Enabling PromptPay — or anything after it — is then a Dashboard
-         * setting rather than a release.
-         */
-        automatic_payment_methods: { enabled: true },
-        metadata: { ...metadata },
-      },
-      // Forwarded so the retry chain is idempotent end to end (§5.7): a kiosk
-      // that times out and retries reaches the same intent instead of opening
-      // a second one against the same basket.
-      idempotencyKey === undefined ? undefined : { idempotencyKey },
+    const intent = await this.gateway(() =>
+      this.stripe.paymentIntents.create(
+        {
+          amount: amountMinor,
+          // Stripe wants the code lower-case; our column and config carry the
+          // ISO 4217 upper-case form (§3.5).
+          currency: currency.toLowerCase(),
+          /**
+           * Dynamic payment methods, which is what *not* naming
+           * `payment_method_types` buys. Stripe's guidance is emphatic about
+           * this: pinning the list freezes the accepted rails into deployed code
+           * and opts out of the ranking that decides what a given customer sees.
+           * Enabling PromptPay — or anything after it — is then a Dashboard
+           * setting rather than a release.
+           */
+          automatic_payment_methods: { enabled: true },
+          metadata: { ...metadata },
+        },
+        // Forwarded so the retry chain is idempotent end to end (§5.7): a kiosk
+        // that times out and retries reaches the same intent instead of opening
+        // a second one against the same basket.
+        idempotencyKey === undefined ? undefined : { idempotencyKey },
+      ),
     );
 
     if (intent.client_secret === null) {
@@ -113,7 +126,9 @@ export class StripePaymentProvider implements PaymentProvider {
   }
 
   async clientSecretFor(intentId: string): Promise<string> {
-    const intent = await this.stripe.paymentIntents.retrieve(intentId);
+    const intent = await this.gateway(() =>
+      this.stripe.paymentIntents.retrieve(intentId),
+    );
 
     if (intent.client_secret === null) {
       // Stripe types it nullable; an intent we opened always has one. A null
@@ -229,6 +244,29 @@ export class StripePaymentProvider implements PaymentProvider {
         `Could not resolve the payment method for ${intentId}; recording it without one. ${describeError(error)}`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Stripe failing to answer, as opposed to answering "no": a dependency outage,
+   * which the kiosk hears as "try again" (503) while the counter keeps taking
+   * cash. A refusal is left alone, because that one is a bug to look at.
+   */
+  private async gateway<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      if (!UNREACHABLE.some((kind) => error instanceof kind)) throw error;
+
+      const suffix = this.outageLog.claim();
+      if (suffix !== null) {
+        this.logger.warn(
+          `Stripe could not be reached; refusing gateway payments until it can. ${describeError(error)}${suffix}`,
+        );
+      }
+      throw new DependencyUnavailableError(
+        'The payment gateway could not be reached. Try again shortly, or pay at the counter.',
+      );
     }
   }
 }

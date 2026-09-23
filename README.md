@@ -172,9 +172,11 @@ Both probes sit at the **root**, outside the API prefix, so platform orchestrato
 
 ## Metrics and alerts
 
-`GET /metrics` is served on `METRICS_PORT` (9464), a listener of its own that the load balancer never routes. It exports the metrics `DESIGN.md` §13 lists: request timing by route, orders and payments, webhook lag and failures, the reconciliation delta, connected screens, kiosk ages, dependency status, and rate-limit refusals.
+`GET /metrics` is served on `METRICS_PORT` (9464), a listener of its own that the load balancer never routes.
+It exports the metrics `DESIGN.md` §13 lists: request timing by route, orders and payments, webhook lag and failures, the reconciliation delta, connected screens, kiosk ages, dependency status, and rate-limit refusals.
 
-The alert rules are `ops/prometheus/alerts.yml`, tested by `alerts.test.yml`. CI runs them; to run them locally (Docker required, from PowerShell):
+The alert rules are `ops/prometheus/alerts.yml`, tested by `alerts.test.yml`.
+CI runs them; to run them locally (Docker required, from PowerShell):
 
 ```powershell
 docker run --rm --entrypoint promtool -v "${PWD}/ops/prometheus:/etc/prometheus:ro" prom/prometheus:v3.14.0 test rules /etc/prometheus/alerts.test.yml
@@ -187,30 +189,41 @@ docker compose --profile observability up -d
 pnpm start:dev
 ```
 
-Prometheus is on http://localhost:9090, scraping the app on the host and evaluating the rules, and Grafana is on http://localhost:3001 with the CafePOS dashboard provisioned. Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's `severity` label.
+Prometheus is on http://localhost:9090, scraping the app on the host and evaluating the rules, and Grafana is on http://localhost:3001 with the CafePOS dashboard provisioned.
+Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's `severity` label.
 
 ## Tracing and error reporting
 
-Tracing is OpenTelemetry, started by `src/instrument.ts`, which `main.ts` imports before anything else so the HTTP server, Express, Nest, Postgres and Redis are patched before they load. It is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, samples 10% of traces by default (`OTEL_TRACES_SAMPLER_ARG`), and skips the health probes and `/metrics`. Keeping every erroring trace, as `DESIGN.md` §13 asks, is a tail-sampling decision for the collector, since only it sees a trace once it has finished.
+Tracing is OpenTelemetry, started by `src/instrument.ts`, which `main.ts` imports before anything else so the HTTP server, Express, Nest, Postgres and Redis are patched before they load.
+It is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, samples 10% of traces by default (`OTEL_TRACES_SAMPLER_ARG`), and skips the health probes and `/metrics`.
+Keeping every erroring trace, as `DESIGN.md` §13 asks, is a tail-sampling decision for the collector, since only it sees a trace once it has finished.
 
 Locally, `docker compose --profile observability up -d` also starts Jaeger; run the app with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and open http://localhost:16686.
 
-Unplanned failures (a 5xx other than a deliberate 503) are reported to Sentry when `SENTRY_DSN` is set, tagged with the route pattern and request id and without request bodies or personal data. `test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
+Unplanned failures (a 5xx other than a deliberate 503) are reported to Sentry when `SENTRY_DSN` is set, tagged with the route pattern and request id and without request bodies or personal data.
+`test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
 
 ## Load test
 
-`ops/load/cafepos.k6.js` is `DESIGN.md` §14's load profile: four kiosks and two counter tills at three times the assumed peak (18 orders a minute), a 50-requests-a-second menu burst, and 20 kitchen screens holding sockets. It fails on a p95 over 300 ms, any 5xx, or any failed check. Against a running API that talks to stripe-mock or Stripe test mode, with the seed data loaded:
+`ops/load/cafepos.k6.js` is `DESIGN.md` §14's load profile: four kiosks and two counter tills at three times the assumed peak (18 orders a minute), a 50-requests-a-second menu burst, and 20 kitchen screens holding sockets.
+It fails on a p95 over 300 ms, any 5xx, or any failed check.
+Against a running API that talks to stripe-mock or Stripe test mode, with the seed data loaded:
 
 ```bash
 docker run --rm -i -e BASE_URL=http://host.docker.internal:3000 grafana/k6:2.3.0 run - < ops/load/cafepos.k6.js
 docker exec -i cafepos-postgres psql -U cafepos -d cafepos < ops/load/verify.sql
 ```
 
-`DURATION` defaults to the full 30 minutes; `DURATION=90s` is a quick smoke run. Every query in `verify.sql` must return no rows: queue numbers unique per day, every history step one the state machine allows, every order where its history says, every paid order backed by a succeeded payment. Pairing allows five kiosks an hour, so to run again within the hour pass the kiosk tokens from the first run as `KIOSK_TOKENS`.
+`DURATION` defaults to the full 30 minutes; `DURATION=90s` is a quick smoke run.
+Every query in `verify.sql` must return no rows: queue numbers unique per day, every history step one the state machine allows, every order where its history says, every paid order backed by a succeeded payment.
+Pairing allows five kiosks an hour, so to run again within the hour pass the kiosk tokens from the first run as `KIOSK_TOKENS`.
 
 ## Data retention
 
-`DESIGN.md` §7.5's windows are enforced by jobs in `src/retention/`. Nightly at 04:00 Bangkok time: customer names on orders older than 90 days are cleared, webhook payloads older than 13 months are cut down to the event's identifiers (the row stays, marked `payload_trimmed_at`), and refresh tokens expired or revoked more than 30 days ago are deleted. Hourly, expired idempotency keys are deleted. Each job is a guarded statement run in bounded batches, so running it twice changes nothing.
+`DESIGN.md` §7.5's windows are enforced by jobs in `src/retention/`.
+Nightly at 04:00 Bangkok time: customer names on orders older than 90 days are cleared, webhook payloads older than 13 months are cut down to the event's identifiers (the row stays, marked `payload_trimmed_at`), and refresh tokens expired or revoked more than 30 days ago are deleted.
+Hourly, expired idempotency keys are deleted.
+Each job is a guarded statement run in bounded batches, so running it twice changes nothing.
 
 `retention_overdue_rows{data}` on `/metrics` counts rows past their window plus the job's grace, and the `RetentionBehind` alert fires when any stays above zero for an hour.
 
@@ -384,7 +397,16 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
 - **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
-- **Phase 3 — Orders: in progress.** `POST /orders` is in: server-side pricing from the catalog, name and price snapshots on every line, per-business-day queue numbers, the opening status-history row, the §8 refusals (`ORDER_ITEM_UNAVAILABLE`, `OPTION_SELECTION_INVALID`, `PRICE_MISMATCH`), [idempotency keys](#idempotency), [the read side](#searching-orders) — `GET /orders` with cursor pagination and `GET /orders/:id` — and [the state machine](#the-order-state-machine) behind `POST /orders/:id/status`. cancellation, the FR-10 expiry sweep, and parked orders with `POST /orders/:id/checkout`.
+- **Phase 3 - Orders: complete.** Server-side pricing with snapshots, per-business-day queue numbers, idempotency keys, cursor-paginated reads, the guarded state machine, cancellation, the expiry sweep, and parked orders with checkout. The notes below record the decisions it took.
+- **Phase 4 - Payments: complete.**
+  Stripe PaymentIntents with dynamic payment methods, the webhook inbox and its sweep, cash at the counter, bookkeeping refunds, and nightly reconciliation.
+- **Phase 5 - Realtime: complete.**
+  Socket.IO over a Redis adapter for the kitchen screens, the kiosks and the public board, with revocation that cuts live sockets on every instance.
+- **Phase 6 - Reporting: complete.**
+  The nightly rollup, and the sales, top-items and Z-report endpoints, reading history from rollups and today live through the same aggregation.
+- **Phase 7 - Hardening: the repository work is complete.**
+  Metrics and tested alert rules, retention jobs, secret scanning and dependency triage, a live/test key guard, a draining shutdown, tracing and error reporting, a load test, and the runbook.
+  What is left needs a deployment or a person, and [docs/production-readiness.md](docs/production-readiness.md) lists it item by item against §16.
 
 **Everything §17 scopes to Phase 3 is built.** The one thing the phase's exit criterion names that is not here is the cash path: §17's own table lists cash tender under **Phase 4**, alongside the gateway and refunds, so "manual cash-paid" is read as marking an order paid by hand. `test/orders-http.e2e-spec.ts` walks exactly that — an order created, moved to `PAID`, then `IN_PREPARATION` → `READY` → `COMPLETED`. §4.4 leaves no endpoint that reaches `PAID`, on purpose: an order becomes paid because a payment succeeded, never because somebody asked.
 

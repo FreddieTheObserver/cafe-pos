@@ -1266,6 +1266,8 @@ Test pyramid with the money paths over-weighted on purpose:
 
 ## 16. Production Readiness Checklist
 
+Status, item by item, with the evidence for each: [docs/production-readiness.md](docs/production-readiness.md).
+
 **Money & data**
 - [ ] Reconciliation job green for 7 consecutive days in staging against Stripe test mode (delta = 0)
 - [ ] Webhook crash-recovery test passed (kill API mid-webhook; event recovers on retry)

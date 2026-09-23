@@ -22,6 +22,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "No CafePOS instance is answering, so no kiosk can take an order."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#apidown"
       - eval_time: 3m
         alertname: InstanceDown
         exp_alerts:
@@ -31,12 +32,14 @@ tests:
               instance: 'a:9464'
             exp_annotations:
               summary: "A CafePOS instance is not answering scrapes."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#instancedown"
           - exp_labels:
               severity: notify
               job: cafepos
               instance: 'b:9464'
             exp_annotations:
               summary: "A CafePOS instance is not answering scrapes."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#instancedown"
 
   # One instance down: the API is still up.
   - interval: 1m
@@ -58,6 +61,7 @@ tests:
               instance: 'b:9464'
             exp_annotations:
               summary: "A CafePOS instance is not answering scrapes."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#instancedown"
 
   # No instance reaches either dependency.
   - interval: 1m
@@ -78,6 +82,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "No instance can reach Postgres."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#databasedown"
       - eval_time: 3m
         alertname: RedisDown
         exp_alerts:
@@ -85,6 +90,7 @@ tests:
               severity: notify
             exp_annotations:
               summary: "No instance can reach Redis. Logins and kiosk pairing are refused until it is back."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#redisdown"
 
   # One instance still reaches both: that instance is the problem, not the dependency.
   - interval: 1m
@@ -120,6 +126,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "The gateway and the books disagree about yesterday's takings."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#reconciliationdelta"
   - interval: 1m
     input_series:
       - series: 'reconciliation_delta_minor{instance="a:9464"}'
@@ -146,6 +153,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "No instance could check yesterday's takings against the gateway."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#reconciliationfailed"
 
   # One instance failed, the other checked the books the same night.
   - interval: 1m
@@ -175,6 +183,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "A payment webhook failed to process."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#webhookprocessingfailures"
 
   # Thirty seconds is a sweep in progress; three minutes is stuck.
   - interval: 1m
@@ -192,6 +201,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "A payment event has sat unprocessed for over two minutes."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#paymentinboxstuck"
 
   # Every event arrives between one and five minutes late.
   - interval: 1m
@@ -212,6 +222,7 @@ tests:
               severity: notify
             exp_annotations:
               summary: "Stripe events are reaching us more than a minute late."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#webhooklaghigh"
 
   # Every event arrives within a second.
   - interval: 1m
@@ -246,6 +257,7 @@ tests:
               severity: notify
             exp_annotations:
               summary: "More than 10% of card and PromptPay payments are failing."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#paymentfailureratio"
 
   # One failure in three payments: a high ratio on too few attempts to mean anything.
   - interval: 1m
@@ -287,6 +299,7 @@ tests:
               severity: notify
             exp_annotations:
               summary: "An unpaid order is five minutes past its expiry. Is the expiry job running?"
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#pendingpaymentoverdue"
 
   # Open, no kitchen screen on either instance. Board sockets are not kitchen screens.
   - interval: 1m
@@ -309,6 +322,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "No kitchen screen is connected while the cafe is open."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#kitchenblind"
 
   # Closed, no kitchen screen: nobody is cooking.
   - interval: 1m
@@ -353,6 +367,7 @@ tests:
               severity: notify
             exp_annotations:
               summary: "No orders for 15 minutes while the cafe is open."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#orderssilent"
 
   # Opened ten minutes ago: the quiet stretch includes time the cafe was closed.
   - interval: 1m
@@ -411,6 +426,7 @@ tests:
               device: k1
             exp_annotations:
               summary: "A kiosk has not been heard from for two minutes while the cafe is open."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#kioskoffline"
 
   # The same kiosk overnight: switched off, as it should be.
   - interval: 1m
@@ -461,6 +477,7 @@ tests:
               route: /api/v1/orders
             exp_annotations:
               summary: "A route's p95 response time is above 300 ms."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#latencyp95high"
 
   # Names past their window for over an hour, reported by both instances: one alert.
   - interval: 1m
@@ -483,3 +500,4 @@ tests:
               data: customer_names
             exp_annotations:
               summary: "A retention job is not keeping up, so data is being kept past its window."
+              runbook_url: "https://github.com/FreddieTheObserver/cafe-pos/blob/main/docs/runbook.md#retentionbehind"
