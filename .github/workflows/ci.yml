@@ -135,7 +135,7 @@ jobs:
           echo "stripe-mock did not become reachable" >&2
           exit 1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
