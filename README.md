@@ -197,6 +197,17 @@ Locally, `docker compose --profile observability up -d` also starts Jaeger; run 
 
 Unplanned failures (a 5xx other than a deliberate 503) are reported to Sentry when `SENTRY_DSN` is set, tagged with the route pattern and request id and without request bodies or personal data. `test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
 
+## Load test
+
+`ops/load/cafepos.k6.js` is `DESIGN.md` §14's load profile: four kiosks and two counter tills at three times the assumed peak (18 orders a minute), a 50-requests-a-second menu burst, and 20 kitchen screens holding sockets. It fails on a p95 over 300 ms, any 5xx, or any failed check. Against a running API that talks to stripe-mock or Stripe test mode, with the seed data loaded:
+
+```bash
+docker run --rm -i -e BASE_URL=http://host.docker.internal:3000 grafana/k6:2.3.0 run - < ops/load/cafepos.k6.js
+docker exec -i cafepos-postgres psql -U cafepos -d cafepos < ops/load/verify.sql
+```
+
+`DURATION` defaults to the full 30 minutes; `DURATION=90s` is a quick smoke run. Every query in `verify.sql` must return no rows: queue numbers unique per day, every history step one the state machine allows, every order where its history says, every paid order backed by a succeeded payment. Pairing allows five kiosks an hour, so to run again within the hour pass the kiosk tokens from the first run as `KIOSK_TOKENS`.
+
 ## Data retention
 
 `DESIGN.md` §7.5's windows are enforced by jobs in `src/retention/`. Nightly at 04:00 Bangkok time: customer names on orders older than 90 days are cleared, webhook payloads older than 13 months are cut down to the event's identifiers (the row stays, marked `payload_trimmed_at`), and refresh tokens expired or revoked more than 30 days ago are deleted. Hourly, expired idempotency keys are deleted. Each job is a guarded statement run in bounded batches, so running it twice changes nothing.
