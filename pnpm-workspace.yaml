@@ -3,14 +3,11 @@
 # ask for, so none of them changes an API underneath a package. Remove an entry
 # once `pnpm audit` is clean without it. Triage: docs/security/dependency-audit.md.
 overrides:
-  multer@2: ^2.4.0
-  brace-expansion@1: ^1.1.18
-  brace-expansion@2: ^2.1.4
-  brace-expansion@5: ^5.0.9
-  fast-uri@3: ^3.1.6
-  js-yaml@3: ^3.15.2
-  js-yaml@4: ^4.3.2
-  qs@6: ^6.16.0
+  multer@2: ^2.5.0
+  # Not a security entry. @nestjs/platform-socket.io pins socket.io exactly, and
+  # RedisIoAdapter subclasses its IoAdapter, so a second copy makes the two
+  # Server types incompatible. One copy, at the version package.json declares.
+  socket.io: $socket.io
 
 auditConfig:
   ignoreGhsas:
@@ -19,3 +16,8 @@ auditConfig:
     # development server, which that loader never starts. Accepted; see
     # docs/security/dependency-audit.md.
     - GHSA-67mh-4wv8-2f99
+    # deepmerge <=4.3.1, no patched release. Reached only through jest-config
+    # and the Nest CLI's fork-ts-checker plugin, both merging this repo's own
+    # config files, never request data. Accepted; see
+    # docs/security/dependency-audit.md.
+    - GHSA-gcqx-w48m-w2h4

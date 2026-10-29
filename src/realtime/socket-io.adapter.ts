@@ -17,7 +17,8 @@ import { attachRedisDiagnostics } from '../redis/redis.diagnostics';
  * than added when scaling "becomes a concern".
  */
 export class RedisIoAdapter extends IoAdapter {
-  private readonly logger = new Logger('RealtimeAdapter');
+  // Replaces IoAdapter's own, so its lines carry this context too.
+  protected readonly logger = new Logger('RealtimeAdapter');
   private pub?: Redis;
   private sub?: Redis;
 
