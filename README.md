@@ -13,18 +13,18 @@ Because the kiosk is unattended, the backend has to be the adult in the room: pr
 | Runtime | Node.js 22, TypeScript, NestJS 11 (modular monolith) |
 | Database | PostgreSQL 16 with Drizzle ORM; migrations via `drizzle-kit` |
 | Cache / pub-sub | Redis 7 |
-| Object storage | S3-compatible (MinIO locally), for item images |
+| Object storage | S3-compatible (SeaweedFS locally), for item images |
 | Validation | Zod — for environment config and request bodies |
 | Image processing | sharp — every upload is decoded and re-encoded to WebP |
 | Logging | pino via `nestjs-pino`, JSON in production |
-| Tests | Jest (unit) + Jest/supertest against real Postgres, Redis and MinIO (integration) |
+| Tests | Jest (unit) + Jest/supertest against real Postgres, Redis and SeaweedFS (integration) |
 | Package manager | pnpm |
 
 ## Prerequisites
 
 - Node.js 22 (the version CI builds against)
 - pnpm 10
-- Docker with Compose v2, for Postgres, Redis and MinIO
+- Docker with Compose v2, for Postgres, Redis and SeaweedFS
 
 ## First-time setup
 
@@ -32,7 +32,7 @@ From a fresh clone:
 
 ```bash
 cp .env.example .env      # defaults already match docker-compose.yml
-docker compose up -d      # Postgres on 5433, Redis on 6379, MinIO on 9000/9001
+docker compose up -d      # Postgres on 5433, Redis on 6379, SeaweedFS on 9000/12535
 pnpm install
 pnpm db:migrate           # applies drizzle/*.sql to the running database
 pnpm db:seed              # staff accounts and a small menu, for local use only
@@ -50,7 +50,7 @@ Both should return `200`. If `/readyz` returns `503`, the body names the failing
 
 > **Postgres is published on host port `5433`, not `5432`.** A native PostgreSQL install commonly already owns 5432 on a developer machine, and a silent connection to the wrong server is a miserable way to lose an afternoon. `.env.example` therefore points at `5433`. CI runs on a runner with no native Postgres, so the workflow uses `5432` — that difference between `.env.example` and `.github/workflows/ci.yml` is deliberate, not drift.
 
-> **MinIO stands in for S3.** The API talks to it through the same S3-compatible client it uses in production, so only the endpoint and credentials differ between environments. `S3_AUTO_CREATE_BUCKET=true` in `.env.example` lets the app create the bucket (and mark it publicly readable) at boot, which is why local setup needs no `mc` step; that flag defaults to **off**, because in production the bucket is infrastructure with lifecycle and access policies attached. The MinIO console is at <http://localhost:9001> with the credentials from `.env`, and is the quickest way to see what the upload pipeline actually wrote.
+> **SeaweedFS stands in for S3.** The API talks to it through the same S3-compatible client it uses in production, so only the endpoint and credentials differ between environments. `S3_AUTO_CREATE_BUCKET=true` in `.env.example` lets the app create the bucket (and mark it publicly readable) at boot, which is why local setup needs no bucket-creation step; that flag defaults to **off**, because in production the bucket is infrastructure with lifecycle and access policies attached. The SeaweedFS admin UI is at <http://localhost:12535> with the same credentials as `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`, and its file browser under `/buckets/cafepos-media` is the quickest way to see what the upload pipeline actually wrote. It replaced MinIO, whose community edition is archived and whose images no registry serves any more.
 
 ## Running the app
 
@@ -78,7 +78,7 @@ pnpm test:cov      # the same, with coverage
 pnpm test:e2e      # integration specs (test/*.e2e-spec.ts)
 ```
 
-`pnpm test:e2e` talks to the **real** Postgres, Redis and MinIO from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
+`pnpm test:e2e` talks to the **real** Postgres, Redis and SeaweedFS from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
 
 Two suites point the real clients at dependencies that are deliberately **not** running — `menu-cache-degraded` at a closed Redis port, `object-storage-degraded` at a closed S3 endpoint. They need no setup, and they exist because a hand-written `new Error('boom')` does not reproduce the error shapes those SDKs actually raise. Between them they pin the two opposite policies: the menu cache fails **open** (Redis down still serves a menu), object storage fails **fast** (an unreachable bucket refuses the boot instead of surfacing at the first upload).
 
@@ -113,12 +113,12 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 | `BUSINESS_OPEN_TIME` | `07:00` | When the cafe opens, `HH:MM` in `BUSINESS_TIMEZONE`. Read only by the alerts that mean nothing overnight. |
 | `BUSINESS_CLOSE_TIME` | `20:00` | When it closes. A close earlier than the open wraps past midnight; equal times are refused. |
 | `S3_BUCKET` | — | Required. Bucket holding item images. |
-| `S3_REGION` | `us-east-1` | Region passed to the S3 client. MinIO ignores it; AWS does not. |
+| `S3_REGION` | `us-east-1` | Region passed to the S3 client. SeaweedFS ignores it; AWS does not. |
 | `S3_ACCESS_KEY_ID` | — | Required. Object-storage access key. |
 | `S3_SECRET_ACCESS_KEY` | — | Required. Object-storage secret key. |
-| `S3_ENDPOINT` | unset | Overrides the AWS endpoint so the same client can address MinIO. Leave unset in production, where the SDK resolves the real regional endpoint. Setting it also switches the client to path-style addressing, which MinIO requires. |
+| `S3_ENDPOINT` | unset | Overrides the AWS endpoint so the same client can address SeaweedFS. Leave unset in production, where the SDK resolves the real regional endpoint. Setting it also switches the client to path-style addressing, which SeaweedFS requires. |
 | `S3_PUBLIC_BASE_URL` | — | Required. Public origin images are served from — the CDN in front of the bucket. Must be `https` anywhere but localhost: kiosks render these URLs, and a plaintext image source is both tamperable and mixed content. Trailing slashes are stripped. |
-| `S3_AUTO_CREATE_BUCKET` | `false` | Creates the bucket at boot when missing, and marks it publicly readable. For MinIO and CI only. Off in production, where a bucket the app can conjure is a deployment pointed at the wrong account that nobody notices. |
+| `S3_AUTO_CREATE_BUCKET` | `false` | Creates the bucket at boot when missing, and marks it publicly readable. For local dev and CI only. Off in production, where a bucket the app can conjure is a deployment pointed at the wrong account that nobody notices. |
 | `STRIPE_SECRET_KEY` | - | Required. A restricted (`rk_`) key is preferred, scoped to PaymentIntents write and Charges read; `sk_` is accepted, `pk_` refused. |
 | `STRIPE_MODE` | `test` | `test` or `live`. The key must match it; `live` is refused outside `NODE_ENV=production` and with `STRIPE_API_BASE` set, so live and test keys cannot cross (§16). |
 | `STRIPE_WEBHOOK_SECRETS` | - | Required. Comma-separated signing secrets, newest first, for the 24-hour rotation window (§10.5). |
@@ -396,7 +396,7 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
 
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
 - **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
-- **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through MinIO/S3. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
+- **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through S3-compatible object storage. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
 - **Phase 3 - Orders: complete.** Server-side pricing with snapshots, per-business-day queue numbers, idempotency keys, cursor-paginated reads, the guarded state machine, cancellation, the expiry sweep, and parked orders with checkout. The notes below record the decisions it took.
 - **Phase 4 - Payments: complete.**
   Stripe PaymentIntents with dynamic payment methods, the webhook inbox and its sweep, cash at the counter, bookkeeping refunds, and nightly reconciliation.

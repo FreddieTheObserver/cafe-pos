@@ -261,7 +261,7 @@ describe('validateEnv', () => {
     });
 
     // Kiosks render these URLs, so plaintext is both tamperable and mixed
-    // content — but MinIO speaks http on localhost and has no TLS in front.
+    // content — but SeaweedFS speaks http on localhost and has no TLS in front.
     it('accepts a localhost origin over plain http', () => {
       const env = validateEnv({
         ...REQUIRED,
@@ -275,7 +275,7 @@ describe('validateEnv', () => {
 
     /**
      * The localhost exemption is about TLS not being terminated in front of
-     * MinIO — it is not permission to use any scheme at all. `ftp://localhost`
+     * SeaweedFS — it is not permission to use any scheme at all. `ftp://localhost`
      * parses as a URL and has a local hostname, so a rule that only looked at
      * the host would admit it and produce image URLs nothing can load.
      */
