@@ -37,7 +37,7 @@ import { S3_CLIENT } from './storage.constants';
           // Unset against real AWS, where the SDK resolves the regional
           // endpoint itself.
           ...(endpoint === undefined ? {} : { endpoint }),
-          // MinIO serves one host, not per-bucket subdomains, so addressing
+          // SeaweedFS serves one host, not per-bucket subdomains, so addressing
           // has to be `host/bucket/key`. Harmless against AWS, which still
           // honours path style.
           forcePathStyle: endpoint !== undefined,

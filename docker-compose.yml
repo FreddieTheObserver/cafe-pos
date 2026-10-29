@@ -32,26 +32,33 @@ services:
   # Stands in for S3 (§12.4). The API talks to it through the same
   # S3-compatible client it uses in production, so the adapter code is
   # identical and only the endpoint and credentials change per environment.
-  minio:
-    # Pinned like postgres and redis above. `latest` would let a MinIO release
-    # change local dev and CI with no commit to point at when something breaks.
-    # quay.io, because Docker Hub no longer has the minio/minio repository.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: cafepos-minio
+  seaweedfs:
+    # Pinned like postgres and redis above. `latest` would let a release change
+    # local dev and CI with no commit to point at when something breaks. Not
+    # MinIO: its community edition is archived and no registry serves its
+    # images any more.
+    image: chrislusf/seaweedfs:4.51
+    container_name: cafepos-seaweedfs
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    # `mini` runs the whole store in one process. Without an admin password the
+    # admin UI binds to the container's loopback and the host cannot reach it.
+    command: >-
+      mini -dir=/data -master.telemetry=false
+      -admin.user=cafepos -admin.password=cafepos_dev_secret
     environment:
-      MINIO_ROOT_USER: cafepos
-      MINIO_ROOT_PASSWORD: cafepos_dev_secret
+      # The S3 identity the app signs requests with.
+      AWS_ACCESS_KEY_ID: cafepos
+      AWS_SECRET_ACCESS_KEY: cafepos_dev_secret
     ports:
-      # 9000 is the S3 API; 9001 is the web console, handy for eyeballing what
-      # the upload pipeline actually wrote.
-      - "9000:9000"
-      - "9001:9001"
+      # 8333 is the S3 API, published on 9000 so every S3_* URL stays as it
+      # was. 12535 is the admin UI, handy for eyeballing what the upload
+      # pipeline actually wrote.
+      - "9000:8333"
+      - "12535:12535"
     volumes:
-      - cafepos_miniodata:/data
+      - cafepos_seaweedfsdata:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8333/healthz"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -117,5 +124,5 @@ services:
 
 volumes:
   cafepos_pgdata:
-  cafepos_miniodata:
+  cafepos_seaweedfsdata:
   cafepos_prometheusdata:

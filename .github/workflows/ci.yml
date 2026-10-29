@@ -35,6 +35,21 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
+      # The image's default command is already `mini`, so unlike MinIO this
+      # can be a service. It runs without the admin UI and telemetry flags
+      # docker-compose adds; the S3 side is identical.
+      seaweedfs:
+        image: chrislusf/seaweedfs:4.51
+        env:
+          AWS_ACCESS_KEY_ID: cafepos
+          AWS_SECRET_ACCESS_KEY: cafepos_dev_secret
+        ports:
+          - 9000:8333
+        options: >-
+          --health-cmd "wget -qO /dev/null http://localhost:8333/healthz"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
       # Stripe's own protocol-accurate fake. It authenticates nothing and
       # returns fixtures, so the payment suites exercise the real SDK and the
       # real adapter without a key and without the network — which is the only
@@ -53,7 +68,7 @@ jobs:
       # Test-only signing key. Not a secret worth protecting — it signs nothing
       # outside this job — but it has to clear the 32-char floor the app enforces.
       JWT_SECRET: ci-only-jwt-signing-key-not-used-anywhere-else
-      # Object storage (§12.4), same MinIO the compose stack runs locally.
+      # Object storage (§12.4), the same SeaweedFS the compose stack runs locally.
       S3_BUCKET: cafepos-media
       S3_REGION: us-east-1
       S3_ACCESS_KEY_ID: cafepos
@@ -102,24 +117,6 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "$PWD/ops/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v3.14.0 test rules /etc/prometheus/alerts.test.yml
-
-      # Not a `services:` entry: MinIO needs `server /data` as its
-      # command, and service containers cannot override one. The tag is pinned
-      # to the same release as docker-compose, so CI and local dev cannot drift,
-      # and comes from quay.io because Docker Hub no longer has minio/minio.
-      - name: Start MinIO
-        run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=cafepos \
-            -e MINIO_ROOT_PASSWORD=cafepos_dev_secret \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:9000/minio/health/live; then exit 0; fi
-            sleep 1
-          done
-          echo "MinIO did not become healthy" >&2
-          docker logs minio >&2
-          exit 1
 
       # The service container has no healthcheck (no shell in the image), so
       # readiness is proven from the runner instead. Any HTTP answer means the

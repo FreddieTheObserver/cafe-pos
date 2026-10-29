@@ -13,7 +13,7 @@ import { S3_CLIENT } from './storage.constants';
 
 /**
  * The API and its object storage start concurrently — `docker compose up`
- * brings both up at once, and CI starts MinIO in the step before the suite. A
+ * brings both up at once, and CI starts SeaweedFS alongside the job. A
  * bucket check that fails on the first blip would make a cold start a coin
  * flip, which is exactly what it was before this loop existed: one cold run in
  * four failed here, and every test in the suite went red because the app never
@@ -97,7 +97,7 @@ export class ObjectStorageService implements OnModuleInit {
       if (!this.autoCreateBucket) throw error;
     }
 
-    // Only reached with auto-create on, which is MinIO and CI. A second
+    // Only reached with auto-create on, which is local dev and CI. A second
     // instance racing us here loses harmlessly: the bucket it wanted exists.
     try {
       await this.s3.send(new CreateBucketCommand({ Bucket: this.bucket }));
@@ -117,7 +117,7 @@ export class ObjectStorageService implements OnModuleInit {
    * because `S3_AUTO_CREATE_BUCKET` defaults to false and a real deployment
    * points at a bucket that already exists. Locally it is what makes the URL
    * this service hands back actually load in a browser, which is the whole
-   * point of storing one. A MinIO bucket is private by default, so without
+   * point of storing one. A SeaweedFS bucket is private by default, so without
    * this every item photo in development is a broken image.
    */
   private async allowPublicReads(): Promise<void> {
@@ -168,7 +168,7 @@ export class ObjectStorageService implements OnModuleInit {
   }
 }
 
-/** S3 and MinIO both report a re-create as one of these two codes. */
+/** S3 and SeaweedFS both report a re-create as one of these two codes. */
 function isBucketAlreadyOwned(error: unknown): boolean {
   const name = (error as { name?: string }).name;
   return name === 'BucketAlreadyOwnedByYou' || name === 'BucketAlreadyExists';

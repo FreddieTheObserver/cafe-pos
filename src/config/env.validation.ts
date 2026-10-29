@@ -4,11 +4,11 @@ import { CLOCK_TIME } from '../orders/business-hours';
 /**
  * Item images are served straight to kiosk and board clients, so a plaintext
  * origin would be a mixed-content failure in prod and a tamperable image
- * source anywhere. Localhost is the exception the rule needs: MinIO speaks
+ * source anywhere. Localhost is the exception the rule needs: SeaweedFS speaks
  * http on 9000 (§12.4's local stand-in for S3) and no TLS terminator sits in
  * front of it during development.
  */
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'minio']);
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'seaweedfs']);
 
 function isSecureOrLocal(value: string): boolean {
   try {
@@ -183,7 +183,7 @@ export const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   /**
-   * Overrides the AWS endpoint so the same client can address MinIO. Unset in
+   * Overrides the AWS endpoint so the same client can address SeaweedFS. Unset in
    * production, where the SDK resolves the real regional endpoint.
    */
   S3_ENDPOINT: z.url().optional(),
@@ -196,7 +196,7 @@ export const envSchema = z.object({
     // CDNs treat as a distinct (and missing) key.
     .transform((value) => value.replace(/\/+$/, '')),
   /**
-   * Creates the bucket at boot if it is missing. Convenience for MinIO and CI,
+   * Creates the bucket at boot if it is missing. Convenience for local dev and CI,
    * and off by default: in production the bucket is infrastructure with a
    * lifecycle policy and an access policy, and an app that can conjure one is
    * an app that quietly papers over pointing at the wrong account.
