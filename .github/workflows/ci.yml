@@ -56,7 +56,7 @@ jobs:
       # way `pnpm test:e2e` can cover the gateway path at all. No healthcheck:
       # the image ships no curl or shell tools, so the wait is a step below.
       stripe-mock:
-        image: stripe/stripe-mock:v0.196.0
+        image: stripe/stripe-mock:v0.206.0
         ports:
           - 12111:12111
 
@@ -113,10 +113,10 @@ jobs:
         run: |
           docker run --rm --entrypoint promtool \
             -v "$PWD/ops/prometheus:/etc/prometheus:ro" \
-            prom/prometheus:v3.14.0 check config /etc/prometheus/prometheus.yml
+            prom/prometheus:v3.15.1 check config /etc/prometheus/prometheus.yml
           docker run --rm --entrypoint promtool \
             -v "$PWD/ops/prometheus:/etc/prometheus:ro" \
-            prom/prometheus:v3.14.0 test rules /etc/prometheus/alerts.test.yml
+            prom/prometheus:v3.15.1 test rules /etc/prometheus/alerts.test.yml
 
       # The service container has no healthcheck (no shell in the image), so
       # readiness is proven from the runner instead. Any HTTP answer means the
