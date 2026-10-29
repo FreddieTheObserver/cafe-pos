@@ -51,7 +51,8 @@ const OUTAGE_LOG_INTERVAL_MS = 30_000;
  */
 @Injectable()
 export class IdentityThrottlerGuard extends ThrottlerGuard {
-  private readonly logger = new Logger(IdentityThrottlerGuard.name);
+  // Replaces ThrottlerGuard's own, so its lines carry this class's name too.
+  protected readonly logger = new Logger(IdentityThrottlerGuard.name);
 
   /**
    * Separate throttles so a flood of one cannot hide the other: the refusals
