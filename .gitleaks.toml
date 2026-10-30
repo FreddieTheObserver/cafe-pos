@@ -19,4 +19,8 @@ regexes = [
   '''0197f3aa-8e1c-7c3a-9f2b-2a1d4c6e8f01''',
   # The Nest starter README's CircleCI badge, in the first commit.
   '''token=abc123def456''',
+  # docs/api.md samples. The JWT is only matched with its trailing dots, since
+  # every real HS256 token starts with the same header segment.
+  '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.\.\.''',
+  '''0c8e3b7a-5d21-4f6e-9a47-1b2c3d4e5f60''',
 ]
