@@ -88,6 +88,21 @@ CI (`.github/workflows/ci.yml`) runs lint, typecheck, build, migrations, unit te
 
 The typecheck step is separate from the build on purpose: `pnpm build` compiles with `tsconfig.build.json`, which excludes specs, so a type error in a test file would otherwise reach `main` unnoticed.
 
+## Git hooks
+
+`pnpm install` sets up the Husky hooks through the `prepare` script.
+
+- **pre-commit** runs Prettier on the staged `src` and `test` files and stages the result, then scans the staged changes for secrets with the rules in `.gitleaks.toml`, the same ones CI applies.
+  The scan uses a `gitleaks` binary on your PATH if there is one, falls back to the same Docker image CI uses, and otherwise prints a warning and skips, which leaves CI as the only check.
+  A secret that reaches a public history stays exposed after it is removed, so install `gitleaks` if you do not keep Docker running.
+- **pre-push** runs `pnpm typecheck` and `pnpm test`, which takes about ten seconds.
+  The integration suite is left to CI because it needs the docker-compose stack.
+
+The hooks are advisory.
+`git commit --no-verify` and `HUSKY=0` skip them, and CI is still the check that counts.
+Hooks run under Git's `sh`, so a Git GUI may not see `pnpm`.
+If one reports `command not found`, add the directory to `PATH` in `~/.config/husky/init.sh`.
+
 ## Configuration
 
 Environment is parsed once at boot by `src/config/env.validation.ts`. A missing or malformed variable crashes the process immediately with a readable message rather than surfacing as `undefined` inside a request handler.
