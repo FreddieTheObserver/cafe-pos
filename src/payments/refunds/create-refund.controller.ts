@@ -2,13 +2,20 @@ import {
   Body,
   Controller,
   Header,
+  Headers,
   HttpCode,
   Param,
   Post,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentPrincipal } from '../../identity/decorators/current-principal.decorator';
 import { Roles } from '../../identity/decorators/roles.decorator';
 import type { Principal, StaffPrincipal } from '../../identity/principal';
+import {
+  parseIdempotencyKey,
+  REPLAY_HEADER,
+} from '../../orders/idempotency/idempotency-key';
 import { CreateRefundDto, PaymentIdParamDto } from './create-refund.dto';
 import { CreateRefundService, type RefundView } from './create-refund.service';
 
@@ -28,16 +35,26 @@ export class CreateRefundController {
   @Header('Cache-Control', 'no-store')
   @HttpCode(201)
   @Post()
-  create(
+  async create(
     @CurrentPrincipal() principal: Principal,
     @Param() params: PaymentIdParamDto,
     @Body() body: CreateRefundDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<RefundView> {
     /**
      * The role guard has already refused every device token, so a kiosk cannot
      * arrive here — but the narrowing has to be stated for the type system, and
      * asserting it makes the guard's guarantee explicit rather than assumed.
      */
-    return this.refunds.refund(principal as StaffPrincipal, params.id, body);
+    const { refund, replayed } = await this.refunds.refund(
+      principal as StaffPrincipal,
+      params.id,
+      body,
+      parseIdempotencyKey(idempotencyKey),
+    );
+
+    if (replayed) res.setHeader(REPLAY_HEADER, 'true');
+    return refund;
   }
 }

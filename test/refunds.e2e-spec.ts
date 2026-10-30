@@ -4,6 +4,12 @@ import type { ProblemDetails } from '../src/common/errors/problem-details';
 import * as schema from '../src/database/schema';
 import type { OrderStatus, PaymentStatus } from '../src/database/schema/enums';
 import { businessDayOf } from '../src/orders/business-day';
+import {
+  completeKey,
+  keyExpiry,
+  reserveKey,
+} from '../src/orders/idempotency/idempotency.store';
+import { hashRequest } from '../src/orders/idempotency/request-hash';
 import { IdentityHarness } from './fixtures/identity-fixtures';
 
 const TOTAL = 12_500;
@@ -94,8 +100,8 @@ describe('Refund endpoint (e2e)', () => {
 
   beforeAll(async () => {
     harness = await IdentityHarness.boot();
-    managerToken = await harness.accessTokenFor('MANAGER');
-    cashierToken = await harness.accessTokenFor('CASHIER');
+    managerToken = await harness.tokenFor('MANAGER');
+    cashierToken = await harness.tokenFor('CASHIER');
     cashierId = (await harness.createStaff('CASHIER')).id;
     today = businessDayOf(
       new Date(),
@@ -274,5 +280,225 @@ describe('Refund endpoint (e2e)', () => {
     const res = await refund(paymentId, managerToken, { amountMinor: 100 });
 
     expect(res.status).toBe(422);
+  });
+
+  describe('with an Idempotency-Key', () => {
+    const body = { amountMinor: 2_500, reason: 'Missing pastry' };
+
+    const refundWithKey = (
+      paymentId: string,
+      token: string,
+      key: string,
+      payload: object = body,
+    ) => refund(paymentId, token, payload).set('Idempotency-Key', key);
+
+    const refundRows = (paymentId: string) =>
+      harness.db
+        .select()
+        .from(schema.refunds)
+        .where(eq(schema.refunds.paymentId, paymentId));
+
+    it('replays a retried refund instead of recording a second one', async () => {
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+
+      const first = await refundWithKey(paymentId, managerToken, key);
+      const second = await refundWithKey(paymentId, managerToken, key);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(refundOf(second).id).toBe(refundOf(first).id);
+      expect(first.headers['idempotency-replayed']).toBeUndefined();
+      expect(second.headers['idempotency-replayed']).toBe('true');
+      expect(await refundRows(paymentId)).toHaveLength(1);
+    });
+
+    it('replays a retried full refund instead of refusing it', async () => {
+      const { orderId, paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      const full = { amountMinor: TOTAL, reason: 'Wrong drink made' };
+
+      const first = await refundWithKey(paymentId, managerToken, key, full);
+      const second = await refundWithKey(paymentId, managerToken, key, full);
+
+      expect(second.status).toBe(201);
+      expect(refundOf(second)).toMatchObject({
+        id: refundOf(first).id,
+        fullyRefunded: true,
+      });
+      expect(await orderStatusOf(orderId)).toBe('REFUNDED');
+    });
+
+    it('replays a retry that arrives after the business day closed', async () => {
+      const { orderId, paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      const first = await refundWithKey(paymentId, managerToken, key);
+      await harness.db
+        .update(schema.orders)
+        .set({ businessDay: '2020-01-01' })
+        .where(eq(schema.orders.id, orderId));
+
+      const second = await refundWithKey(paymentId, managerToken, key);
+
+      expect(second.status).toBe(201);
+      expect(refundOf(second).id).toBe(refundOf(first).id);
+      expect(second.headers['idempotency-replayed']).toBe('true');
+    });
+
+    class RolledBack extends Error {}
+
+    /**
+     * Holds a reservation open in a transaction of the test's own, which is the
+     * state a retry sees while the original request is still running.
+     */
+    async function holdReservation(
+      key: string,
+      requestHash: string,
+      finish: (tx: Parameters<typeof reserveKey>[0]) => Promise<void>,
+    ) {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let markReserved!: () => void;
+      const reserved = new Promise<void>((resolve) => (markReserved = resolve));
+
+      const original = harness.db
+        .transaction(async (tx) => {
+          await reserveKey(tx, key, requestHash, keyExpiry());
+          markReserved();
+          await released;
+          await finish(tx);
+        })
+        .catch((error: unknown) => {
+          if (!(error instanceof RolledBack)) throw error;
+        });
+      await reserved;
+
+      return { release, original };
+    }
+
+    it('waits for an original still in flight, then replays its answer', async () => {
+      const staff = await harness.createStaff('MANAGER');
+      const token = await harness.tokenForUserId(staff.id, 'MANAGER');
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      const stored = {
+        id: uuidv7(),
+        paymentId,
+        ...body,
+        status: 'SUCCEEDED',
+        fullyRefunded: false,
+      };
+      const { release, original } = await holdReservation(
+        key,
+        hashRequest(`user:${staff.id}:refunds:${paymentId}`, body),
+        (tx) => completeKey(tx, key, 201, stored),
+      );
+
+      let answered = false;
+      const retry = refundWithKey(paymentId, token, key).then((res) => {
+        answered = true;
+        return res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(answered).toBe(false);
+
+      release();
+      await original;
+      const res = await retry;
+
+      expect(res.status).toBe(201);
+      expect(refundOf(res).id).toBe(stored.id);
+      expect(res.headers['idempotency-replayed']).toBe('true');
+      expect(await refundRows(paymentId)).toHaveLength(0);
+    });
+
+    it('does the work itself when the original in flight rolls back', async () => {
+      const staff = await harness.createStaff('MANAGER');
+      const token = await harness.tokenForUserId(staff.id, 'MANAGER');
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      const { release, original } = await holdReservation(
+        key,
+        hashRequest(`user:${staff.id}:refunds:${paymentId}`, body),
+        () => Promise.reject(new RolledBack()),
+      );
+
+      const retry = refundWithKey(paymentId, token, key);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      release();
+      await original;
+      const res = await retry;
+
+      expect(res.status).toBe(201);
+      expect(res.headers['idempotency-replayed']).toBeUndefined();
+      expect(await refundRows(paymentId)).toHaveLength(1);
+    });
+
+    it('records one refund when the same request is sent twice at once', async () => {
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      const send = () => refundWithKey(paymentId, managerToken, key);
+
+      const [first, second] = await Promise.all([send(), send()]);
+
+      expect([first.status, second.status]).toEqual([201, 201]);
+      expect(refundOf(second).id).toBe(refundOf(first).id);
+      expect(await refundRows(paymentId)).toHaveLength(1);
+    });
+
+    it('refuses the key for a different request', async () => {
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      await refundWithKey(paymentId, managerToken, key);
+
+      const res = await refundWithKey(paymentId, managerToken, key, {
+        ...body,
+        amountMinor: 1_000,
+      });
+
+      expect(res.status).toBe(409);
+      expect(problemOf(res).code).toBe('IDEMPOTENCY_CONFLICT');
+      expect(await refundRows(paymentId)).toHaveLength(1);
+    });
+
+    it('does not let another manager replay the key', async () => {
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+      await refundWithKey(paymentId, managerToken, key);
+
+      const res = await refundWithKey(
+        paymentId,
+        await harness.tokenFor('MANAGER'),
+        key,
+      );
+
+      expect(res.status).toBe(409);
+      expect(problemOf(res).code).toBe('IDEMPOTENCY_CONFLICT');
+      expect(await refundRows(paymentId)).toHaveLength(1);
+    });
+
+    it('leaves the key free after a refund that was refused', async () => {
+      const { paymentId } = await givenPaidOrder();
+      const key = `key-${uuidv7()}`;
+
+      const refused = await refundWithKey(paymentId, managerToken, key, {
+        ...body,
+        amountMinor: TOTAL + 1,
+      });
+      const retried = await refundWithKey(paymentId, managerToken, key);
+
+      expect(refused.status).toBe(422);
+      expect(retried.status).toBe(201);
+      expect(retried.headers['idempotency-replayed']).toBeUndefined();
+    });
+
+    it('refuses a malformed key', async () => {
+      const { paymentId } = await givenPaidOrder();
+
+      const res = await refundWithKey(paymentId, managerToken, 'short');
+
+      expect(res.status).toBe(422);
+      expect(problemOf(res).errors?.[0].field).toBe('Idempotency-Key');
+    });
   });
 });

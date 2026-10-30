@@ -9,6 +9,16 @@ import { orders, payments, refunds } from '../../database/schema';
 import type { RefundStatus } from '../../database/schema/enums';
 import type { StaffPrincipal } from '../../identity/principal';
 import { businessDayOf } from '../../orders/business-day';
+import { IdempotencyConflictError } from '../../orders/errors/orders.errors';
+import {
+  completeKey,
+  completedResponseFor,
+  isKeyAlreadyReserved,
+  keyExpiry,
+  replayKey,
+  reserveKey,
+} from '../../orders/idempotency/idempotency.store';
+import { hashRequest } from '../../orders/idempotency/request-hash';
 import { transitionOrder } from '../../orders/state/transition-order';
 import { AfterCommit } from '../../realtime/events/after-commit.service';
 import {
@@ -58,7 +68,29 @@ export class CreateRefundService {
     principal: StaffPrincipal,
     paymentId: string,
     input: CreateRefundInput,
-  ): Promise<RefundView> {
+    idempotencyKey?: string,
+  ): Promise<{ refund: RefundView; replayed: boolean }> {
+    const requestHash =
+      idempotencyKey === undefined
+        ? null
+        : hashRequest(`user:${principal.userId}:refunds:${paymentId}`, input);
+
+    /**
+     * Answered before the checks below, which read state the original refund
+     * may have moved on from: a retry arriving after the business day closed
+     * would be refused as a same-day violation instead of replayed. The
+     * reservation inside the transaction stays the authority.
+     */
+    if (idempotencyKey !== undefined && requestHash !== null) {
+      const answered = await completedResponseFor(this.db, idempotencyKey);
+      if (answered !== undefined) {
+        if (answered.requestHash !== requestHash) {
+          throw new IdempotencyConflictError();
+        }
+        return { refund: answered.responseBody as RefundView, replayed: true };
+      }
+    }
+
     const payment = await this.db.query.payments.findFirst({
       where: eq(payments.id, paymentId),
       columns: { id: true, orderId: true, status: true, amountMinor: true },
@@ -98,84 +130,116 @@ export class CreateRefundService {
       );
     }
 
-    return this.afterCommit.run(async (tx, emit) => {
-      /**
-       * The payment row is locked, and the sum is read behind that lock.
-       *
-       * Two managers refunding the same payment at once would otherwise both
-       * read the same "already refunded" and both pass E9 — and unlike a
-       * payment there is no unique index to catch it, because a payment may
-       * legitimately have many refunds. Locking the *parent* is what serialises
-       * them: `FOR UPDATE` cannot be applied to an aggregate, and there are no
-       * refund rows to lock on the first refund anyway.
-       */
-      await tx
-        .select({ id: payments.id })
-        .from(payments)
-        .where(eq(payments.id, paymentId))
-        .for('update');
-
-      const [{ refunded }] = await tx
-        .select({ refunded: sum(refunds.amountMinor) })
-        .from(refunds)
-        .where(eq(refunds.paymentId, paymentId));
-
-      const already = Number(refunded ?? 0);
-      const remaining = payment.amountMinor - already;
-
-      if (input.amountMinor > remaining) {
-        throw new RefundExceedsRemainingError(input.amountMinor, remaining);
-      }
-
-      const [row] = await tx
-        .insert(refunds)
-        .values({
-          paymentId,
-          // Null, and it stays null: no gateway refund happened to have an id.
-          providerRefundId: null,
-          amountMinor: input.amountMinor,
-          reason: input.reason,
-          // Settled by the time it is recorded — the cash is out of the drawer.
-          status: 'SUCCEEDED',
-          initiatedByUserId: principal.userId,
-        })
-        .returning({ id: refunds.id });
-
-      /**
-       * §4.4: a partial refund leaves the order where it is and attaches a
-       * record, so REFUNDED means *fully* refunded. Only the refund that takes
-       * the last of the captured amount moves the order.
-       */
-      const fullyRefunded = already + input.amountMinor === payment.amountMinor;
-      if (fullyRefunded) {
-        const updated = await transitionOrder(tx, {
-          orderId: order.id,
-          from: order.status,
-          to: 'REFUNDED',
-          actor: { actorType: 'USER', actorId: principal.userId },
-          reason: input.reason,
-        });
+    try {
+      const refund = await this.afterCommit.run(async (tx, emit) => {
+        // First, so a retry that races the original blocks on the key until the original commits.
+        if (idempotencyKey !== undefined && requestHash !== null) {
+          await reserveKey(tx, idempotencyKey, requestHash, keyExpiry());
+        }
 
         /**
-         * Only on the transition, never on a partial refund. §4.4 leaves a
-         * partially refunded order exactly where it was, so its ticket has not
-         * changed and announcing it would make screens repaint over nothing.
+         * The payment row is locked, and the sum is read behind that lock.
+         *
+         * Two managers refunding the same payment at once would otherwise both
+         * read the same "already refunded" and both pass E9 — and unlike a
+         * payment there is no unique index to catch it, because a payment may
+         * legitimately have many refunds. Locking the *parent* is what serialises
+         * them: `FOR UPDATE` cannot be applied to an aggregate, and there are no
+         * refund rows to lock on the first refund anyway.
          */
-        emit({
-          kind: 'order.updated',
-          orderId: order.id,
-          deviceId: updated.kioskDeviceId,
-        });
+        await tx
+          .select({ id: payments.id })
+          .from(payments)
+          .where(eq(payments.id, paymentId))
+          .for('update');
+
+        const [{ refunded }] = await tx
+          .select({ refunded: sum(refunds.amountMinor) })
+          .from(refunds)
+          .where(eq(refunds.paymentId, paymentId));
+
+        const already = Number(refunded ?? 0);
+        const remaining = payment.amountMinor - already;
+
+        if (input.amountMinor > remaining) {
+          throw new RefundExceedsRemainingError(input.amountMinor, remaining);
+        }
+
+        const [row] = await tx
+          .insert(refunds)
+          .values({
+            paymentId,
+            // Null, and it stays null: no gateway refund happened to have an id.
+            providerRefundId: null,
+            amountMinor: input.amountMinor,
+            reason: input.reason,
+            // Settled by the time it is recorded — the cash is out of the drawer.
+            status: 'SUCCEEDED',
+            initiatedByUserId: principal.userId,
+          })
+          .returning({ id: refunds.id });
+
+        /**
+         * §4.4: a partial refund leaves the order where it is and attaches a
+         * record, so REFUNDED means *fully* refunded. Only the refund that takes
+         * the last of the captured amount moves the order.
+         */
+        const fullyRefunded =
+          already + input.amountMinor === payment.amountMinor;
+        if (fullyRefunded) {
+          const updated = await transitionOrder(tx, {
+            orderId: order.id,
+            from: order.status,
+            to: 'REFUNDED',
+            actor: { actorType: 'USER', actorId: principal.userId },
+            reason: input.reason,
+          });
+
+          /**
+           * Only on the transition, never on a partial refund. §4.4 leaves a
+           * partially refunded order exactly where it was, so its ticket has not
+           * changed and announcing it would make screens repaint over nothing.
+           */
+          emit({
+            kind: 'order.updated',
+            orderId: order.id,
+            deviceId: updated.kioskDeviceId,
+          });
+        }
+
+        const view: RefundView = {
+          id: row.id,
+          paymentId,
+          amountMinor: input.amountMinor,
+          reason: input.reason,
+          status: 'SUCCEEDED',
+          fullyRefunded,
+        };
+
+        if (idempotencyKey !== undefined) {
+          await completeKey(tx, idempotencyKey, 201, view);
+        }
+        return view;
+      });
+
+      return { refund, replayed: false };
+    } catch (error) {
+      if (
+        !isKeyAlreadyReserved(error) ||
+        idempotencyKey === undefined ||
+        requestHash === null
+      ) {
+        throw error;
       }
 
       return {
-        id: row.id,
-        paymentId,
-        amountMinor: input.amountMinor,
-        reason: input.reason,
-        status: 'SUCCEEDED' as const,
-        fullyRefunded,
+        refund: await replayKey<RefundView>(
+          this.db,
+          idempotencyKey,
+          requestHash,
+        ),
+        replayed: true,
       };
-    });
+    }
   }
 }

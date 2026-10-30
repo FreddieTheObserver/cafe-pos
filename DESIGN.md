@@ -419,7 +419,7 @@ Rules that the diagram can't show:
 - Authentication: `Authorization: Bearer <token>` — staff JWT or kiosk device token (§6). The webhook endpoint authenticates by signature instead.
 - Money: integer minor units + currency code, e.g. `"totalMinor": 12000, "currency": "THB"` (= ฿120.00).
 - Timestamps: ISO-8601 UTC. IDs: UUIDv7 (time-ordered → friendly to B-tree indexes and cursor pagination).
-- Mutating requests that money depends on (`POST /orders`, `POST /orders/:id/payments`) accept an **`Idempotency-Key`** header (§5.7).
+- Mutating requests that money depends on (`POST /orders`, `POST /orders/:id/payments`, `POST /payments/:id/refunds`) accept an **`Idempotency-Key`** header (§5.7).
 - Soft deletes for catalog entities (availability/active flags); hard `DELETE` only where history can't reference the row.
 
 **Pagination.** Two honest regimes instead of one cargo-culted one:
@@ -670,7 +670,7 @@ Order lookup (`q`) covers the real use cases: exact order number, customer-name 
 
 ### 5.7 Idempotency design
 
-- Client generates a UUID `Idempotency-Key` per logical attempt (one per cart checkout, one per payment attempt).
+- Client generates a UUID `Idempotency-Key` per logical attempt (one per cart checkout, one per payment attempt, one per refund).
 - Server stores `(key, request_body_hash, response)` — on replay with the same body, return the stored response (`200/201`, header `Idempotency-Replayed: true`); same key with a *different* body → `409 IDEMPOTENCY_CONFLICT`.
 - The key row is **inserted at the start of the request's transaction, before there is a response to store**, which is why the response columns are nullable (§7.2): NULL means "reserved, not yet answered." That reservation is what makes a concurrent retry *block* on the primary key rather than race the original into a second order — and it is only ever observed by a transaction that is itself blocked, since the row becomes visible to readers when the transaction that filled it commits. A refused request therefore stores nothing at all: the reservation dies with the rolled-back transaction, leaving the kiosk free to retry an order that failed only because an item was briefly sold out.
 - Keys expire after 24 h (table cleanup job, §7.5).

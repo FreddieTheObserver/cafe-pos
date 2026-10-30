@@ -194,7 +194,7 @@ export class IdempotencyConflictError extends AppException {
       status: 409,
       title: 'Idempotency key reused',
       detail:
-        'That Idempotency-Key was already used for a different request. Use a new key for a new order.',
+        'That Idempotency-Key was already used for a different request. Use a new key for a new request.',
     });
   }
 }

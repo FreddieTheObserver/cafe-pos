@@ -25,6 +25,7 @@ import {
 import {
   completeKey,
   isKeyAlreadyReserved,
+  keyExpiry,
   replayKey,
   reserveKey,
   type Transaction,
@@ -110,7 +111,7 @@ export class OrdersService {
     try {
       const order = await this.db.transaction(async (tx) => {
         if (idempotencyKey !== undefined && requestHash !== null) {
-          await reserveKey(tx, idempotencyKey, requestHash, this.keyExpiry());
+          await reserveKey(tx, idempotencyKey, requestHash, keyExpiry());
         }
 
         const view = await this.build(tx, principal, input);
@@ -166,11 +167,6 @@ export class OrdersService {
     }
 
     return this.persist(tx, principal, channel, input, priced);
-  }
-
-  /** 24 hours (§5.7); the §7.5 cleanup job is what eventually reaps the row. */
-  private keyExpiry(): Date {
-    return new Date(Date.now() + 24 * 60 * 60 * 1000);
   }
 
   /**
