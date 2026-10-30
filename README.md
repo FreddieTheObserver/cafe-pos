@@ -189,6 +189,12 @@ Port 3000 is the API and 9464 is the metrics listener, which belongs to Promethe
 The `HEALTHCHECK` is liveness only, `/healthz`, for the same reason the endpoint checks no dependencies.
 Point a load balancer at `/readyz`.
 
+Node and pnpm are pinned exactly, each in one place.
+The Node image is the single `FROM` at the top of the `Dockerfile`, by tag and digest, and Dependabot proposes new patch releases of it.
+A new Node major is left to a person, because it has to move together with `node-version` in the workflows.
+pnpm is `packageManager` in `package.json`, which the `Dockerfile`, the workflows and `pnpm` itself all read.
+Dependabot may not bump that field, so move it by hand, and keep it close to the pnpm that last wrote `pnpm-lock.yaml`.
+
 On SIGTERM the app reports unready, waits `SHUTDOWN_DRAIN_SECONDS`, then closes, which took about 2.5 seconds locally with a drain of zero.
 Give the platform a stop grace period longer than the drain plus that.
 A stop timeout shorter than that shows up as exit code 137 even though the shutdown is healthy, which is what a one-second timeout on a development machine produced.
