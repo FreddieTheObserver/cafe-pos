@@ -152,6 +152,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # docs/openapi.json is generated from the code; a stale copy fails here.
+      - name: OpenAPI contract is current
+        run: pnpm openapi:check
+
       - name: Build
         run: pnpm build
 

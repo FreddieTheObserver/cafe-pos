@@ -18,6 +18,10 @@ import {
 import { PaymentEventProcessor } from './payment-event-processor.service';
 import { WebhookInboxService } from './webhook-inbox.service';
 
+export interface WebhookAck {
+  received: true;
+}
+
 /**
  * Stripe's callback into this system (§4.2, §9.3).
  *
@@ -60,7 +64,7 @@ export class StripeWebhookController {
   async receive(
     @Req() request: RawBodyRequest<Request>,
     @Headers('stripe-signature') signature: string | undefined,
-  ): Promise<{ received: true }> {
+  ): Promise<WebhookAck> {
     const { rawBody } = request;
 
     /**
