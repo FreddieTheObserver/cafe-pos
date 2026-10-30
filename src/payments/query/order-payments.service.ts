@@ -4,7 +4,11 @@ import { ResourceNotFoundError } from '../../common/errors/resource-not-found.er
 import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, payments } from '../../database/schema';
-import type { PaymentMethod, PaymentStatus } from '../../database/schema/enums';
+import type {
+  PaymentMethod,
+  PaymentProvider,
+  PaymentStatus,
+} from '../../database/schema/enums';
 import type { Principal } from '../../identity/principal';
 
 /**
@@ -21,7 +25,7 @@ export interface PaymentAttemptView {
   method: PaymentMethod | null;
   amountMinor: number;
   currency: string;
-  provider: string;
+  provider: PaymentProvider;
   providerIntentId: string | null;
   cashTenderedMinor: number | null;
   createdAt: string;

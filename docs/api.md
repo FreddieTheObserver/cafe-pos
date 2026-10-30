@@ -794,7 +794,7 @@ interface PaymentAttemptView {
   method: PaymentMethod | null;
   amountMinor: Minor;
   currency: string;
-  provider: string;
+  provider: PaymentProvider;
   providerIntentId: string | null;  // a Stripe PaymentIntent id, never the client secret
   cashTenderedMinor: Minor | null;
   createdAt: Instant;

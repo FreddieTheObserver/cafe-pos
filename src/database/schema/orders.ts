@@ -117,8 +117,8 @@ export const orderStatusHistory = pgTable(
     orderId: uuidRef('order_id')
       .notNull()
       .references(() => orders.id),
-    fromStatus: text('from_status'),
-    toStatus: text('to_status').notNull(),
+    fromStatus: text('from_status', { enum: orderStatuses }),
+    toStatus: text('to_status', { enum: orderStatuses }).notNull(),
     actorType: text('actor_type', { enum: actorTypes }).notNull(),
     actorId: uuidRef('actor_id'),
     /**
