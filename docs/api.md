@@ -95,8 +95,7 @@ Every path in sections 6.1 to 6.12 is relative to `/api/v1`.
 | `Cache-Control: private, no-cache` | `GET /menu` | Store it, but revalidate with `If-None-Match` before reuse. |
 | `ETag` | `GET /menu` | A weak validator, `W/"catalog-<n>"`. |
 | `Retry-After` | 429 responses from the per-address rate limits | Seconds to wait. |
-| `Idempotency-Replayed: true` | `POST /orders`, on a replay | The response is the stored original. |
-| `Idempotent-Replay: true` | `POST /orders/:id/payments`, on a replay | The same signal under a different name (see [9](#9-differences-from-designmd-and-known-rough-edges)). |
+| `Idempotency-Replayed: true` | `POST /orders`, `POST /orders/:id/payments` and `POST /payments/:id/refunds`, on a replay | The response is the stored original. |
 
 `helmet`'s default security headers are set on every response, and `X-Powered-By` is removed.
 
@@ -363,7 +362,7 @@ This catalog is built from the code, so it includes codes that `DESIGN.md` §9.2
   A kiosk should show its offline screen and try again, and a till can fall back to cash.
 - **5xx other than 503** is a bug on the server.
   Report the `requestId`.
-- A network failure or timeout on `POST /orders` or `POST /orders/:id/payments` is safe to retry **if you sent an `Idempotency-Key`**, and not otherwise (see [4.2](#42-idempotency)).
+- A network failure or timeout on `POST /orders`, `POST /orders/:id/payments` or `POST /payments/:id/refunds` is safe to retry **if you sent an `Idempotency-Key`**, and not otherwise (see [4.2](#42-idempotency)).
 
 ---
 
@@ -391,7 +390,7 @@ Limits are held in Redis, so they apply across all API instances.
 
 ### 4.2 Idempotency
 
-`POST /orders` and `POST /orders/:id/payments` accept an `Idempotency-Key` header.
+`POST /orders`, `POST /orders/:id/payments` and `POST /payments/:id/refunds` accept an `Idempotency-Key` header.
 No other route does.
 Send one whenever a client might retry, which for a kiosk on unreliable wifi is always.
 
@@ -403,7 +402,7 @@ A UUID is the intended value.
 **What counts as the same request.**
 The server stores a fingerprint with the key.
 The fingerprint is a SHA-256 over the caller's identity and the parsed body with its keys sorted, so key order and omitted-versus-default fields do not matter.
-For payments the order id is part of the fingerprint too.
+For payments the order id is part of the fingerprint too, and for refunds the payment id.
 
 | You send | Result |
 |---|---|
@@ -413,17 +412,21 @@ For payments the order id is part of the fingerprint too.
 
 **Important consequences.**
 
-- Keys live in **one namespace shared by both endpoints**.
+- Keys live in **one namespace shared by all three endpoints**.
   Reusing an order's key for that order's payment is a different fingerprint, so it is a 409.
   Use a fresh key for each attempt on each endpoint.
-- The fingerprint includes the caller, so one device cannot pull back another device's order by guessing a key.
-- A replay is always `201`, never `200`, and its header is `Idempotency-Replayed: true` on orders but `Idempotent-Replay: true` on payments.
+- The fingerprint includes the caller, so one device cannot pull back another device's order by guessing a key, and one manager cannot replay another's refund.
+- A replay is always `201`, never `200`, and always carries `Idempotency-Replayed: true`.
 - A refused request stores nothing.
   A basket rejected because an item was briefly 86'd leaves the key free, so the same key can be retried the moment the item is back.
+  A refund refused with 422 `REFUND_EXCEEDS_REMAINING` leaves its key free in the same way.
 - Duplicates that arrive while the original is still running wait for it, and then replay.
-  They do not create a second order.
+  They do not create a second order, payment or refund.
+  If the original fails instead, the duplicate does the work itself.
 - Payments are replayed before the order is re-checked.
   Retrying a cash payment that already moved the order to `PAID` returns the stored payment, not 409 `ORDER_NOT_PAYABLE`.
+- Refunds are replayed before the payment and business day are re-checked.
+  A retry that arrives after the business day has closed returns the stored refund, not 409 `PAYMENT_NOT_REFUNDABLE`.
 - The stored copy of a payment response has `clientAction: null`, because the client secret is a credential and is not written down.
   On a replay of a gateway payment that is still `PENDING`, the secret is fetched from Stripe again.
   **That replay can therefore fail with 503** if Stripe is unreachable.
@@ -1799,7 +1802,7 @@ The client secret is never returned here.
 
 #### `POST /payments/:id/refunds`
 
-**Roles:** A M · **Success:** `201` `RefundView`
+**Roles:** A M · **Success:** `201` `RefundView` · **Idempotency:** `Idempotency-Key` header, optional (see [4.2](#42-idempotency))
 
 Records a full or partial refund.
 `:id` is a **payment** id, which you can read from `GET /orders/:id/payments`.
@@ -1819,13 +1822,14 @@ Staff settle from the till, and this route records that they did.
 - The payment row is locked while the remaining amount is computed, so two managers cannot both over-refund it.
 - A partial refund leaves the order where it is.
   The refund that takes the last of the captured amount sets `fullyRefunded: true`, moves the order to `REFUNDED`, and publishes `order.updated`.
-- This route takes **no** `Idempotency-Key`.
-  Sending the same request twice records two refunds, limited only by the amount remaining.
+- **Send an `Idempotency-Key`.**
+  It is optional, but without one a retried request records a second refund, limited only by the amount remaining.
 
 | Status | Code | When |
 |---|---|---|
 | 404 | `RESOURCE_NOT_FOUND` | No such payment. |
 | 409 | `PAYMENT_NOT_REFUNDABLE` | The payment is not `SUCCEEDED`, or its order is from an earlier business day. `detail` says which. |
+| 409 | `IDEMPOTENCY_CONFLICT` | The key was used for a different refund, or by a different user. |
 | 422 | `REFUND_EXCEEDS_REMAINING` | The amount is more than what is left. `meta` holds `requestedMinor` and `remainingMinor`. |
 
 ---
@@ -2209,7 +2213,8 @@ curl -s -X POST $BASE/items/$ITEM_ID/image -H "Authorization: Bearer $MANAGER" -
 ```bash
 curl -s $BASE/orders/$ORDER_ID/payments -H "Authorization: Bearer $MANAGER"   # find the payment id
 curl -s -X POST $BASE/payments/$PAYMENT_ID/refunds -H "Authorization: Bearer $MANAGER" \
-  -H 'Content-Type: application/json' -d '{"amountMinor":5000,"reason":"wrong drink"}'
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"amountMinor":5000,"reason":"wrong drink"}'
 curl -s "$BASE/reports/z-report?businessDay=2026-06-11" -H "Authorization: Bearer $MANAGER"
 ```
 
@@ -2224,7 +2229,6 @@ These are the differences that remain.
 
 | Topic | DESIGN.md | The code |
 |---|---|---|
-| Replay header | §5.7 names `Idempotency-Replayed: true` for any replay. | `POST /orders` sends that. `POST /orders/:id/payments` sends `Idempotent-Replay: true`. This looks unintentional. |
 | Replay status | §5.7: the stored response, "200/201". | Always `201`. |
 | Error code catalog | §9.2 lists the codes. | The code also raises `BAD_REQUEST`, `CONFLICT`, `USER_EMAIL_EXISTS`, `USER_LAST_ADMIN`, `CATEGORY_NAME_EXISTS`, `CATEGORY_UNKNOWN`, `OPTION_GROUP_MINMAX_INVALID`, `OPTION_GROUP_UNKNOWN`, `IMAGE_FILE_MISSING`, `IMAGE_TYPE_UNSUPPORTED` and `IMAGE_UNPROCESSABLE`, which §9.2's table omits (some appear in the §5.2 endpoint tables). |
 | `errors[].field` format | §9.1 example: `items[0].quantity`. | `items.0.quantity`. |
@@ -2239,10 +2243,9 @@ Each is behaviour an integrator is likely to trip over, stated plainly so it can
 
 **Idempotency**
 
-- The two replay headers have different names, so a client handling both endpoints must check `Idempotency-Replayed` and `Idempotent-Replay`, or compare bodies instead.
-- Keys share one namespace across orders and payments, so reusing an order's key for its payment is a 409.
+- Keys share one namespace across orders, payments and refunds, so reusing an order's key for its payment is a 409.
 - Replaying a pending gateway payment re-fetches the client secret from Stripe, so the replay can be a 503.
-- `POST /payments/:id/refunds` takes no `Idempotency-Key`, and a retried request records a second refund.
+- The `Idempotency-Key` on a refund is optional, and a retried refund sent without one records a second refund.
 
 **Authentication and limits**
 

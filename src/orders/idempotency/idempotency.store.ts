@@ -19,6 +19,11 @@ export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
  */
 class KeyAlreadyReserved extends Error {}
 
+const KEY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 24 hours (§5.7); the §7.5 cleanup job is what eventually reaps the row. */
+export const keyExpiry = (): Date => new Date(Date.now() + KEY_TTL_MS);
+
 /**
  * Claims a key for the transaction that is about to do the work (§5.7).
  *

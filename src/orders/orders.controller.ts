@@ -14,7 +14,10 @@ import type { Response } from 'express';
 import { CurrentPrincipal } from '../identity/decorators/current-principal.decorator';
 import { Roles } from '../identity/decorators/roles.decorator';
 import type { Principal } from '../identity/principal';
-import { parseIdempotencyKey } from './idempotency/idempotency-key';
+import {
+  parseIdempotencyKey,
+  REPLAY_HEADER,
+} from './idempotency/idempotency-key';
 import {
   CancelOrderDto,
   CreateOrderDto,
@@ -80,7 +83,7 @@ export class OrdersController {
 
     // §5.7: the replay is a 201 carrying the original order, marked so a client
     // can tell "my retry worked" from "I just created a second order".
-    if (replayed) res.setHeader('Idempotency-Replayed', 'true');
+    if (replayed) res.setHeader(REPLAY_HEADER, 'true');
     return order;
   }
 

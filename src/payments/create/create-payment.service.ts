@@ -12,6 +12,7 @@ import {
   completeKey,
   completedResponseFor,
   isKeyAlreadyReserved,
+  keyExpiry,
   replayKey,
   reserveKey,
 } from '../../orders/idempotency/idempotency.store';
@@ -379,7 +380,7 @@ export class CreatePaymentService {
        */
       const payment = await this.afterCommit.run(async (tx, emit) => {
         if (idempotencyKey !== undefined && requestHash !== null) {
-          await reserveKey(tx, idempotencyKey, requestHash, this.keyExpiry());
+          await reserveKey(tx, idempotencyKey, requestHash, keyExpiry());
         }
 
         const view = await work(tx, emit);
@@ -447,11 +448,6 @@ export class CreatePaymentService {
         clientSecret: await this.provider.clientSecretFor(row.intentId),
       },
     };
-  }
-
-  /** 24 hours (§5.7), matching `OrdersService`; §7.5's job reaps the row. */
-  private keyExpiry(): Date {
-    return new Date(Date.now() + 24 * 60 * 60 * 1000);
   }
 }
 

@@ -10,6 +10,9 @@ import { ErrorCode } from '../../common/errors/error-codes';
 export const MIN_LENGTH = 8;
 export const MAX_LENGTH = 128;
 
+/** Set to `true` on every response that replays a stored answer (§5.7). */
+export const REPLAY_HEADER = 'Idempotency-Replayed';
+
 /** Token characters only — this value reaches a primary key and an error body. */
 export const KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
