@@ -368,7 +368,7 @@ describe('Create payment endpoint (e2e)', () => {
     const second = await send();
 
     expect(second.status).toBe(201);
-    expect(second.headers['idempotent-replay']).toBe('true');
+    expect(second.headers['idempotency-replayed']).toBe('true');
     expect(paymentOf(second).id).toBe(paymentOf(first).id);
     expect(paymentOf(second).clientAction?.clientSecret).toMatch(/_secret_/);
   }, 30_000);
@@ -399,7 +399,8 @@ describe('Create payment endpoint (e2e)', () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(paymentOf(second).id).toBe(paymentOf(first).id);
-    expect(second.headers['idempotent-replay']).toBe('true');
+    expect(second.headers['idempotency-replayed']).toBe('true');
+    expect(second.headers['idempotent-replay']).toBeUndefined();
 
     const rows = await harness.db
       .select()

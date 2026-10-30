@@ -12,7 +12,10 @@ import type { Response } from 'express';
 import { CurrentPrincipal } from '../../identity/decorators/current-principal.decorator';
 import { Roles } from '../../identity/decorators/roles.decorator';
 import type { Principal } from '../../identity/principal';
-import { parseIdempotencyKey } from '../../orders/idempotency/idempotency-key';
+import {
+  parseIdempotencyKey,
+  REPLAY_HEADER,
+} from '../../orders/idempotency/idempotency-key';
 import { OrderIdParamDto } from '../../orders/orders.dto';
 import {
   CreatePaymentService,
@@ -60,7 +63,7 @@ export class CreatePaymentController {
 
     // Same signal `POST /orders` sets: a client that retried deserves to know
     // it got the original answer rather than a second payment.
-    if (replayed) res.setHeader('Idempotent-Replay', 'true');
+    if (replayed) res.setHeader(REPLAY_HEADER, 'true');
 
     return payment;
   }

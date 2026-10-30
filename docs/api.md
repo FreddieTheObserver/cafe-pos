@@ -95,8 +95,7 @@ Every path in sections 6.1 to 6.12 is relative to `/api/v1`.
 | `Cache-Control: private, no-cache` | `GET /menu` | Store it, but revalidate with `If-None-Match` before reuse. |
 | `ETag` | `GET /menu` | A weak validator, `W/"catalog-<n>"`. |
 | `Retry-After` | 429 responses from the per-address rate limits | Seconds to wait. |
-| `Idempotency-Replayed: true` | `POST /orders`, on a replay | The response is the stored original. |
-| `Idempotent-Replay: true` | `POST /orders/:id/payments`, on a replay | The same signal under a different name (see [9](#9-differences-from-designmd-and-known-rough-edges)). |
+| `Idempotency-Replayed: true` | `POST /orders` and `POST /orders/:id/payments`, on a replay | The response is the stored original. |
 
 `helmet`'s default security headers are set on every response, and `X-Powered-By` is removed.
 
@@ -417,7 +416,7 @@ For payments the order id is part of the fingerprint too.
   Reusing an order's key for that order's payment is a different fingerprint, so it is a 409.
   Use a fresh key for each attempt on each endpoint.
 - The fingerprint includes the caller, so one device cannot pull back another device's order by guessing a key.
-- A replay is always `201`, never `200`, and its header is `Idempotency-Replayed: true` on orders but `Idempotent-Replay: true` on payments.
+- A replay is always `201`, never `200`, and it always carries `Idempotency-Replayed: true`.
 - A refused request stores nothing.
   A basket rejected because an item was briefly 86'd leaves the key free, so the same key can be retried the moment the item is back.
 - Duplicates that arrive while the original is still running wait for it, and then replay.
@@ -2224,7 +2223,6 @@ These are the differences that remain.
 
 | Topic | DESIGN.md | The code |
 |---|---|---|
-| Replay header | §5.7 names `Idempotency-Replayed: true` for any replay. | `POST /orders` sends that. `POST /orders/:id/payments` sends `Idempotent-Replay: true`. This looks unintentional. |
 | Replay status | §5.7: the stored response, "200/201". | Always `201`. |
 | Error code catalog | §9.2 lists the codes. | The code also raises `BAD_REQUEST`, `CONFLICT`, `USER_EMAIL_EXISTS`, `USER_LAST_ADMIN`, `CATEGORY_NAME_EXISTS`, `CATEGORY_UNKNOWN`, `OPTION_GROUP_MINMAX_INVALID`, `OPTION_GROUP_UNKNOWN`, `IMAGE_FILE_MISSING`, `IMAGE_TYPE_UNSUPPORTED` and `IMAGE_UNPROCESSABLE`, which §9.2's table omits (some appear in the §5.2 endpoint tables). |
 | `errors[].field` format | §9.1 example: `items[0].quantity`. | `items.0.quantity`. |
@@ -2239,7 +2237,6 @@ Each is behaviour an integrator is likely to trip over, stated plainly so it can
 
 **Idempotency**
 
-- The two replay headers have different names, so a client handling both endpoints must check `Idempotency-Replayed` and `Idempotent-Replay`, or compare bodies instead.
 - Keys share one namespace across orders and payments, so reusing an order's key for its payment is a 409.
 - Replaying a pending gateway payment re-fetches the client secret from Stripe, so the replay can be a 503.
 - `POST /payments/:id/refunds` takes no `Idempotency-Key`, and a retried request records a second refund.
