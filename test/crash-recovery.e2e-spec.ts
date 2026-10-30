@@ -47,7 +47,7 @@ describe('Crash recovery (e2e)', () => {
    */
   function crashingProvider(webhookSecret: string): Partial<PaymentProvider> {
     const real = new StripePaymentProvider(
-      new Stripe('sk_test_notarealkey', { apiVersion: '2026-07-29.dahlia' }),
+      new Stripe('sk_test_notarealkey', { apiVersion: '2026-08-26.dahlia' }),
       [webhookSecret],
     );
 
@@ -97,7 +97,7 @@ describe('Crash recovery (e2e)', () => {
       id: eventId,
       object: 'event',
       type: 'payment_intent.succeeded',
-      api_version: '2026-07-29.dahlia',
+      api_version: '2026-08-26.dahlia',
       created: 1_785_829_150,
       data: {
         object: { id: intentId, amount_received: TOTAL, currency: 'thb' },
@@ -119,7 +119,7 @@ describe('Crash recovery (e2e)', () => {
     survivor = await IdentityHarness.boot();
     secret = survivor.app.get<readonly string[]>(STRIPE_WEBHOOK_SECRETS)[0];
     stripe = new Stripe('sk_test_notarealkey', {
-      apiVersion: '2026-07-29.dahlia',
+      apiVersion: '2026-08-26.dahlia',
     });
     cashierId = (await survivor.createStaff('CASHIER')).id;
 

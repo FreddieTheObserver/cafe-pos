@@ -18,7 +18,7 @@ import type { WebhookInboxService } from './webhook-inbox.service';
  * route, and a stubbed one would prove nothing about it.
  */
 const stripe = new Stripe('sk_test_notarealkey', {
-  apiVersion: '2026-07-29.dahlia',
+  apiVersion: '2026-08-26.dahlia',
 });
 
 const SECRET = 'whsec_thetestsecret';
@@ -28,7 +28,7 @@ function eventBody(id = 'evt_test_1'): string {
     id,
     object: 'event',
     type: 'payment_intent.succeeded',
-    api_version: '2026-07-29.dahlia',
+    api_version: '2026-08-26.dahlia',
     created: 1_785_829_150,
     data: {
       object: {

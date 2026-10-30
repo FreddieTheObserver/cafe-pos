@@ -47,7 +47,7 @@ describe('Payment inbox processing (e2e)', () => {
       id: eventId,
       object: 'event',
       type: 'payment_intent.succeeded',
-      api_version: '2026-07-29.dahlia',
+      api_version: '2026-08-26.dahlia',
       created: 1_785_829_150,
       data: {
         object: { id: intentId, amount_received: amount, currency: 'thb' },
@@ -130,7 +130,7 @@ describe('Payment inbox processing (e2e)', () => {
           id: providerEventId,
           object: 'event',
           type: 'payment_intent.payment_failed',
-          api_version: '2026-07-29.dahlia',
+          api_version: '2026-08-26.dahlia',
           created: 1_785_829_150,
           data: { object: { id: intentId, last_payment_error: null } },
         },
@@ -163,7 +163,7 @@ describe('Payment inbox processing (e2e)', () => {
     processor = harness.app.get(PaymentEventProcessor);
     secret = harness.app.get<readonly string[]>(STRIPE_WEBHOOK_SECRETS)[0];
     stripe = new Stripe('sk_test_notarealkey', {
-      apiVersion: '2026-07-29.dahlia',
+      apiVersion: '2026-08-26.dahlia',
     });
     cashierId = (await harness.createStaff('CASHIER')).id;
   });

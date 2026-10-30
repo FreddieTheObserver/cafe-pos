@@ -14,7 +14,7 @@ import { StripePaymentProvider } from './stripe-payment.provider';
  * that the test and the code agree with each other.
  */
 const stripe = new Stripe('sk_test_notarealkey', {
-  apiVersion: '2026-07-29.dahlia',
+  apiVersion: '2026-08-26.dahlia',
 });
 
 const NEW_SECRET = 'whsec_newsecret';
@@ -34,7 +34,7 @@ function eventBody(
     id,
     object: 'event',
     type,
-    api_version: '2026-07-29.dahlia',
+    api_version: '2026-08-26.dahlia',
     created: 1_785_829_150,
     data: { object },
   });
@@ -436,7 +436,7 @@ describe('StripePaymentProvider', () => {
    */
   describe('when Stripe cannot be reached', () => {
     const unreachable = new Stripe('sk_test_notarealkey', {
-      apiVersion: '2026-07-29.dahlia',
+      apiVersion: '2026-08-26.dahlia',
       host: '127.0.0.1',
       port: 1,
       protocol: 'http',
