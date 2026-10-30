@@ -229,6 +229,8 @@ Each job is a guarded statement run in bounded batches, so running it twice chan
 
 ## API
 
+The complete reference for every route, error and realtime event is [`docs/api.md`](./docs/api.md), and the endpoint table below stops at Phase 3.
+
 The application API is served under the base path **`/api/v1`** (URI versioning — visible in logs and in `curl`, unlike header versioning). Conventions that apply to every endpoint are specified in `DESIGN.md` [§5.1](./DESIGN.md#5-api-specification):
 
 - JSON in and out; `Authorization: Bearer <token>` for staff JWTs and kiosk device tokens.
