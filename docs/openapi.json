@@ -2591,6 +2591,14 @@
         ],
         "additionalProperties": false
       },
+      "ActorType": {
+        "type": "string",
+        "enum": [
+          "USER",
+          "DEVICE",
+          "SYSTEM"
+        ]
+      },
       "AttachedOptionGroup": {
         "type": "object",
         "properties": {
@@ -3111,10 +3119,10 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderStatus"
           },
           "channel": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderChannel"
           },
           "businessDay": {
             "type": "string"
@@ -3526,10 +3534,10 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderStatus"
           },
           "channel": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderChannel"
           },
           "businessDay": {
             "type": "string"
@@ -3683,16 +3691,20 @@
         "type": "object",
         "properties": {
           "fromStatus": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderStatus"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "toStatus": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderStatus"
           },
           "actorType": {
-            "type": "string"
+            "$ref": "#/components/schemas/ActorType"
           },
           "actorId": {
             "type": [
@@ -3725,10 +3737,10 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderStatus"
           },
           "channel": {
-            "type": "string"
+            "$ref": "#/components/schemas/OrderChannel"
           },
           "businessDay": {
             "type": "string"
@@ -3919,7 +3931,7 @@
             "type": "string"
           },
           "provider": {
-            "type": "string"
+            "$ref": "#/components/schemas/PaymentProvider"
           },
           "providerIntentId": {
             "type": [
@@ -3954,6 +3966,13 @@
         "enum": [
           "CARD",
           "PROMPTPAY",
+          "CASH"
+        ]
+      },
+      "PaymentProvider": {
+        "type": "string",
+        "enum": [
+          "STRIPE",
           "CASH"
         ]
       },

@@ -16,6 +16,7 @@ import type { Database } from '../../database/database.module';
 import { DRIZZLE } from '../../database/drizzle.constants';
 import { orders, payments } from '../../database/schema';
 import type {
+  ActorType,
   OrderChannel,
   OrderStatus,
   PaymentMethod,
@@ -29,8 +30,8 @@ export interface OrderSummary {
   id: string;
   /** Null while the order is a parked DRAFT — checkout assigns it (B3). */
   orderNumber: string | null;
-  status: string;
-  channel: string;
+  status: OrderStatus;
+  channel: OrderChannel;
   businessDay: string;
   customerName: string | null;
   subtotalMinor: number;
@@ -62,9 +63,9 @@ export interface OrdersQuery {
 
 /** One line of the audit trail (FR-22). */
 export interface OrderStatusChange {
-  fromStatus: string | null;
-  toStatus: string;
-  actorType: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  actorType: ActorType;
   actorId: string | null;
   createdAt: string;
 }
@@ -373,8 +374,8 @@ export const toOrderLines = (
 export const toOrderSummary = (row: {
   id: string;
   orderNumber: string | null;
-  status: string;
-  channel: string;
+  status: OrderStatus;
+  channel: OrderChannel;
   businessDay: string;
   customerName: string | null;
   subtotalMinor: number;
