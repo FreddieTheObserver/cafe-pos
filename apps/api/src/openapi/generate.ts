@@ -6,7 +6,7 @@ import { readReturnTypes } from './response-types';
 import { scanRoutes } from './scan-routes';
 import { generateTypeSchemas } from './type-schemas';
 
-// Relative to the repository root, which is where `pnpm openapi` runs.
+// Relative to apps/api, which is where `pnpm openapi` runs.
 export async function generateDocument() {
   const routes = await scanRoutes(AppModule);
   const returnTypes = readReturnTypes('src');

@@ -1,5 +1,6 @@
 import './placeholder-env';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AppModule } from '../app.module';
 import {
   CORS_ALLOWED_HEADERS,
@@ -14,10 +15,14 @@ import { principalRoles } from '../identity/principal';
 import { OrderErrorCode } from '../orders/errors/orders.errors';
 import { PaymentErrorCode } from '../payments/errors/payments.errors';
 import { responsesOf } from './build-document';
+import { DOCS_DIR } from './repo-paths';
 import { readReturnTypes } from './response-types';
 import { scanRoutes } from './scan-routes';
 
-const DOC = readFileSync('docs/api.md', 'utf8').replace(/\r\n/g, '\n');
+const DOC = readFileSync(join(DOCS_DIR, 'api.md'), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+);
 
 function tableRows(from: string, to: string): string[][] {
   const start = DOC.indexOf(from);

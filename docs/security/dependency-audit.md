@@ -41,7 +41,7 @@ The weekly audit had failed since 2026-10-05.
 ### Fixed
 
 Every dependency was updated within its declared range, and the `0.x` OpenTelemetry packages to the versions Dependabot proposed.
-`stripe` was held at 22.4.0: a newer SDK requires a newer `apiVersion`, which is a deliberate change of its own (see `src/payments/payments.module.ts`).
+`stripe` was held at 22.4.0: a newer SDK requires a newer `apiVersion`, which is a deliberate change of its own (see `apps/api/src/payments/payments.module.ts`).
 It was moved afterwards, on 2026-10-30, to 22.6.2 with `apiVersion` `2026-08-26.dahlia`.
 
 | Package | Reached through | Severity | Resolved |

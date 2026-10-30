@@ -2,20 +2,20 @@
 .github
 .husky
 .superpowers
-node_modules
-dist
-coverage
+**/node_modules
+**/dist
+**/coverage
 
 # Secrets and local config never enter the build context.
-.env
-.env.*
+**/.env
+**/.env.*
 
 docs
 ops
 postman
-test
-scripts
-*.md
+apps/*/test
+apps/*/scripts
+**/*.md
 docker-compose.yml
-Dockerfile
+**/Dockerfile
 .dockerignore

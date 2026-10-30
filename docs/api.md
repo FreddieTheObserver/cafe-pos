@@ -1,8 +1,8 @@
 # CafePOS API reference
 
 This is the reference for the HTTP and WebSocket API of the CafePOS backend.
-It describes the code as it stands at commit `55cbd79` (2026-10-30), and it was written from the controllers, DTOs, services and gateways in `src/`.
-Every route's roles were also checked against `test/authz-matrix.e2e-spec.ts`, which is the executable form of the permission matrix.
+It describes the code as it stands at commit `55cbd79` (2026-10-30), and it was written from the controllers, DTOs, services and gateways in `apps/api/src/`.
+Every route's roles were also checked against `apps/api/test/authz-matrix.e2e-spec.ts`, which is the executable form of the permission matrix.
 
 [`DESIGN.md`](../DESIGN.md) is the design specification and explains why the API is shaped the way it is.
 When this file and `DESIGN.md` disagree, this file describes what the code does, and [section 9](#9-differences-from-designmd-and-known-rough-edges) lists the differences.
@@ -211,7 +211,7 @@ Hammering a route you are not allowed to call still spends your rate-limit budge
 A request rejected for a bad token never reaches the limiter, so volumetric defence against that case belongs at the edge.
 
 Every route must declare either public access or a role list.
-A route that declares neither fails closed with a 500, and `test/authz-matrix.e2e-spec.ts` fails if the application exposes a route that the matrix does not list.
+A route that declares neither fails closed with a 500, and `apps/api/test/authz-matrix.e2e-spec.ts` fails if the application exposes a route that the matrix does not list.
 
 ### 2.5 Authentication errors
 

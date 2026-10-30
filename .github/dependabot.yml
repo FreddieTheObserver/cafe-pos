@@ -32,7 +32,7 @@ updates:
   # The Dockerfile's Node image. A major bump is a decision, made together with
   # the node-version in the workflows, so it is left to a person.
   - package-ecosystem: docker
-    directory: /
+    directory: /apps/api
     schedule:
       interval: weekly
     ignore:

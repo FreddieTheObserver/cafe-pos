@@ -878,7 +878,7 @@ The application validates everything (§8), but money invariants are *also* in t
 | `kiosk_devices` (revoked) | Soft-kept forever (audit references) | — |
 | Backups | Daily base + WAL (PITR), 30-day window, restore drill quarterly | Managed Postgres or pgBackRest |
 
-The jobs live in `src/retention/`: the nightly ones at 04:00, in the dead zone after the 03:00 rollup, and the idempotency sweep hourly. Payloads are trimmed nightly rather than monthly, so each run is small and a missed night is caught up by the next. Whether the policy is being met is read from the data, not from whether a job ran: `retention_overdue_rows{data}` (§13) counts rows past their window plus a grace of the job's cadence, and survives restarts in a way a last-run timestamp would not.
+The jobs live in `apps/api/src/retention/`: the nightly ones at 04:00, in the dead zone after the 03:00 rollup, and the idempotency sweep hourly. Payloads are trimmed nightly rather than monthly, so each run is small and a missed night is caught up by the next. Whether the policy is being met is read from the data, not from whether a job ran: `retention_overdue_rows{data}` (§13) counts rows past their window plus a grace of the job's cadence, and survives restarts in a way a last-run timestamp would not.
 
 ---
 
@@ -1203,7 +1203,7 @@ A system taking money unattended must be observable enough that *silent* failure
 
 `/metrics` is served on a port of its own (`METRICS_PORT`, default 9464) that the load balancer never routes. The alert rules live in `ops/prometheus/alerts.yml` with `promtool` tests in `alerts.test.yml`, run in CI; each carries `severity: page` or `severity: notify`.
 
-**Tracing.** OTel auto-instrumentation (HTTP, the `pg` driver, Redis, Stripe SDK; Drizzle queries are traced via the driver instrumentation plus a query logger); 10% sampling, 100% for requests that error. The 10% is head sampling in the app (`src/instrument.ts`); keeping every erroring trace is tail sampling, which only the collector can do once a trace has finished. The Stripe SDK is covered by the HTTP client instrumentation. The trace that matters most: webhook → DB transaction → WS emit, because that's where "customer paid but nothing happened" hides.
+**Tracing.** OTel auto-instrumentation (HTTP, the `pg` driver, Redis, Stripe SDK; Drizzle queries are traced via the driver instrumentation plus a query logger); 10% sampling, 100% for requests that error. The 10% is head sampling in the app (`apps/api/src/instrument.ts`); keeping every erroring trace is tail sampling, which only the collector can do once a trace has finished. The Stripe SDK is covered by the HTTP client instrumentation. The trace that matters most: webhook → DB transaction → WS emit, because that's where "customer paid but nothing happened" hides.
 
 **Alerting routes.** Page (immediately): reconciliation delta, a night no instance could reconcile, webhook failures, a stuck payment inbox, API down, DB down, and the kitchen blind during business hours. Notify (business hours): kiosk offline, p95 breach, failure-ratio breach, webhook lag, an unpaid order past its expiry, orders silent, one instance down, Redis down, retention behind. Weekly review: slow-query log, error budget, top 422s (kiosk UX bugs show up here first).
 
