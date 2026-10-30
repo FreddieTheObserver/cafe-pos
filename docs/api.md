@@ -465,19 +465,20 @@ Pass it back unchanged as `?cursor=`.
 ### 4.5 CORS
 
 CORS is off unless `CORS_ORIGINS` (comma-separated) is set, because native kiosk apps are not browsers and need no CORS.
+A web app served from the API's own origin, such as behind the same reverse proxy, needs none either.
 When it is on:
 
 | Setting | Value |
 |---|---|
 | Origins | The configured list |
 | Methods | `GET`, `POST`, `PATCH`, `PUT`, `DELETE` |
-| Request headers allowed | `Authorization`, `Content-Type`, `Idempotency-Key` |
-| Response headers exposed | `X-Request-Id` only |
+| Request headers allowed | `Authorization`, `Content-Type`, `Idempotency-Key`, `If-None-Match` |
+| Response headers exposed | `X-Request-Id`, `ETag`, `Retry-After`, `Idempotency-Replayed` |
 | Credentials | Not allowed |
 | Preflight cache | 600 seconds |
 
-Browser JavaScript on another origin therefore cannot read `Retry-After`, `ETag`, `Idempotency-Replayed` or `Idempotent-Replay`.
-Read `meta.retryAfterSeconds` from the body instead of the `Retry-After` header.
+Browser JavaScript on another origin can therefore read the menu's `ETag`, the `Retry-After` on a 429 and the replay marker, and can send `If-None-Match` itself.
+The per-account login lockout sends no `Retry-After` header, so read `meta.retryAfterSeconds` from the body.
 Socket.IO uses the same origin list, with credentials allowed.
 
 ### 4.6 The order lifecycle
@@ -2249,7 +2250,6 @@ Each is behaviour an integrator is likely to trip over, stated plainly so it can
 - Deactivating or demoting a staff member does not stop REST calls made with an access token already issued, for up to `ACCESS_TOKEN_TTL_SECONDS` (15 minutes).
   Logout has the same limit, because the denial list is only consulted by `/kds` sockets.
 - The per-account login lockout returns no `Retry-After` header.
-  Browser clients on another origin cannot read `Retry-After`, `ETag` or either replay header, because CORS exposes only `X-Request-Id`.
 - The per-address limits (`login`, `deviceActivation`, and `staffGeneral` on public routes) key on Express's `req.ip`.
   Nothing in the repository sets Express's `trust proxy`.
   Behind a load balancer `req.ip` would then be the balancer's address unless the platform preserves the client address, and every client would share one budget.

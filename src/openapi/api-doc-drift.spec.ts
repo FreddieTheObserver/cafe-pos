@@ -1,6 +1,11 @@
 import './placeholder-env';
 import { readFileSync } from 'node:fs';
 import { AppModule } from '../app.module';
+import {
+  CORS_ALLOWED_HEADERS,
+  CORS_EXPOSED_HEADERS,
+  CORS_METHODS,
+} from '../bootstrap';
 import { CatalogErrorCode } from '../catalog/errors/catalog.errors';
 import { ErrorCode } from '../common/errors/error-codes';
 import * as enums from '../database/schema/enums';
@@ -156,6 +161,27 @@ describe('docs/api.md agrees with the code', () => {
     );
     for (const [name, values] of documented) {
       expect([name, sameSet(values, inCode[name] ?? [])]).toEqual([name, true]);
+    }
+  });
+
+  it('documents the CORS policy the code applies', () => {
+    const documented = new Map(
+      tableRows('### 4.5 CORS', '### 4.6 The order lifecycle').map(
+        ([setting, value]) =>
+          [
+            setting,
+            [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]),
+          ] as const,
+      ),
+    );
+
+    const inCode: Record<string, readonly string[]> = {
+      Methods: CORS_METHODS,
+      'Request headers allowed': CORS_ALLOWED_HEADERS,
+      'Response headers exposed': CORS_EXPOSED_HEADERS,
+    };
+    for (const [setting, values] of Object.entries(inCode)) {
+      expect([setting, documented.get(setting)]).toEqual([setting, values]);
     }
   });
 
