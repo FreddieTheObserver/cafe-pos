@@ -1,3 +1,5 @@
 # Hook scripts run under sh, which fails on CRLF. Windows' core.autocrlf would
 # otherwise rewrite them on checkout.
 .husky/* text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
