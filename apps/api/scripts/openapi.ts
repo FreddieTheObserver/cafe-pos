@@ -1,7 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { generateDocument } from '../src/openapi/generate';
+import { DOCS_DIR } from '../src/openapi/repo-paths';
 
-const FILE = 'docs/openapi.json';
+const LABEL = 'docs/openapi.json';
+const FILE = join(DOCS_DIR, 'openapi.json');
 
 async function main(): Promise<void> {
   const document = await generateDocument();
@@ -21,16 +24,16 @@ async function main(): Promise<void> {
       : '';
     if (current !== text) {
       console.error(
-        `${FILE} is out of date. Run \`pnpm openapi\` and commit it.`,
+        `${LABEL} is out of date. Run \`pnpm openapi\` and commit it.`,
       );
       process.exit(1);
     }
-    console.log(`${FILE} is up to date.`);
+    console.log(`${LABEL} is up to date.`);
     return;
   }
 
   writeFileSync(FILE, text);
-  console.log(`Wrote ${FILE}.`);
+  console.log(`Wrote ${LABEL}.`);
 }
 
 void main();

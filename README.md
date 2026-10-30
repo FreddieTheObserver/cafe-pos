@@ -31,10 +31,10 @@ Because the kiosk is unattended, the backend has to be the adult in the room: pr
 From a fresh clone:
 
 ```bash
-cp .env.example .env      # defaults already match docker-compose.yml
+cp .env.example apps/api/.env   # the API reads .env from its own folder; defaults match docker-compose.yml
 docker compose up -d      # Postgres on 5433, Redis on 6379, SeaweedFS on 9000/12535
 pnpm install
-pnpm db:migrate           # applies drizzle/*.sql to the running database
+pnpm db:migrate           # applies apps/api/drizzle/*.sql to the running database
 pnpm db:seed              # staff accounts and a small menu, for local use only
 pnpm start:dev
 ```
@@ -65,20 +65,20 @@ Supporting commands:
 
 ```bash
 pnpm lint          # eslint with --fix
-pnpm typecheck     # tsc --noEmit over src/ and test/
-pnpm format        # prettier over src/ and test/
+pnpm typecheck     # tsc --noEmit over apps/api/src and apps/api/test
+pnpm format        # prettier over apps/api/src and apps/api/test
 pnpm db:studio     # drizzle-kit studio, a browser UI over the dev database
 ```
 
 ## Tests
 
 ```bash
-pnpm test          # unit specs (src/**/*.spec.ts) — no services required
+pnpm test          # unit specs (apps/api/src/**/*.spec.ts) — no services required
 pnpm test:cov      # the same, with coverage
-pnpm test:e2e      # integration specs (test/*.e2e-spec.ts)
+pnpm test:e2e      # integration specs (apps/api/test/*.e2e-spec.ts)
 ```
 
-`pnpm test:e2e` talks to the **real** Postgres, Redis and SeaweedFS from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
+`pnpm test:e2e` talks to the **real** Postgres, Redis and SeaweedFS from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `apps/api/.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
 
 Two suites point the real clients at dependencies that are deliberately **not** running — `menu-cache-degraded` at a closed Redis port, `object-storage-degraded` at a closed S3 endpoint. They need no setup, and they exist because a hand-written `new Error('boom')` does not reproduce the error shapes those SDKs actually raise. Between them they pin the two opposite policies: the menu cache fails **open** (Redis down still serves a menu), object storage fails **fast** (an unreachable bucket refuses the boot instead of surfacing at the first upload).
 
@@ -86,7 +86,7 @@ The integration suite exists to check the claims a unit test cannot: that the mo
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, build, migrations, unit tests, and integration tests against service containers of the same Postgres and Redis images used locally. It triggers on every pull request and on pushes to `main` — branch pushes are covered by the PR run rather than duplicating it.
 
-The typecheck step is separate from the build on purpose: `pnpm build` compiles with `tsconfig.build.json`, which excludes specs, so a type error in a test file would otherwise reach `main` unnoticed.
+The typecheck step is separate from the build on purpose: `pnpm build` compiles with `apps/api/tsconfig.build.json`, which excludes specs, so a type error in a test file would otherwise reach `main` unnoticed.
 
 ## Git hooks
 
@@ -105,7 +105,7 @@ If one reports `command not found`, add the directory to `PATH` in `~/.config/hu
 
 ## Configuration
 
-Environment is parsed once at boot by `src/config/env.validation.ts`. A missing or malformed variable crashes the process immediately with a readable message rather than surfacing as `undefined` inside a request handler.
+Environment is parsed once at boot by `apps/api/src/config/env.validation.ts`. A missing or malformed variable crashes the process immediately with a readable message rather than surfacing as `undefined` inside a request handler.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -144,14 +144,14 @@ Environment is parsed once at boot by `src/config/env.validation.ts`. A missing 
 
 ## Database and migrations
 
-The schema lives in `src/database/schema/` and is the source of truth. `drizzle.config.ts` points `drizzle-kit` at it.
+The schema lives in `apps/api/src/database/schema/` and is the source of truth. `apps/api/drizzle.config.ts` points `drizzle-kit` at it.
 
 ```bash
-pnpm db:generate   # diff schema against the last snapshot, emit SQL into drizzle/
+pnpm db:generate   # diff schema against the last snapshot, emit SQL into apps/api/drizzle/
 pnpm db:migrate    # apply pending migration files to DATABASE_URL
 ```
 
-The workflow is: edit the schema in TypeScript, run `db:generate`, read the emitted SQL, commit both the migration and the updated `drizzle/meta` snapshot, then `db:migrate`. Never hand-edit a migration that has already been applied anywhere but your own machine.
+The workflow is: edit the schema in TypeScript, run `db:generate`, read the emitted SQL, commit both the migration and the updated `apps/api/drizzle/meta` snapshot, then `db:migrate`. Never hand-edit a migration that has already been applied anywhere but your own machine.
 
 ### Seed data
 
@@ -159,20 +159,21 @@ The workflow is: edit the schema in TypeScript, run `db:generate`, read the emit
 pnpm db:seed       # idempotent; re-running changes nothing
 ```
 
-`POST /users` is ADMIN-only (§6.4), so a freshly migrated database cannot produce a caller allowed to create the first account. `scripts/seed.ts` is that door: it inserts one staff account per role — `admin@` / `manager@` / `cashier@` / `barista@cafepos.local`, password `cafepos-dev-password` unless `SEED_PASSWORD` says otherwise — plus three categories, eight items and three shared option groups, so `GET /menu` returns something worth looking at.
+`POST /users` is ADMIN-only (§6.4), so a freshly migrated database cannot produce a caller allowed to create the first account. `apps/api/scripts/seed.ts` is that door: it inserts one staff account per role — `admin@` / `manager@` / `cashier@` / `barista@cafepos.local`, password `cafepos-dev-password` unless `SEED_PASSWORD` says otherwise — plus three categories, eight items and three shared option groups, so `GET /menu` returns something worth looking at.
 
 It refuses to run under `NODE_ENV=production`, with no override flag, because a script that mints known-password admins is a backdoor anywhere it is not wanted. Every row is matched on its natural key and skipped if present, so a re-run never resets a password somebody changed.
 
 Two details in the seeded menu are there to be tested against rather than to look pretty. The `Size` group prices `Small` at **−10฿**: `price_delta_minor` carries no `CHECK` (unlike `base_price_minor`), so a negative delta is legal, and keeping a line total off the floor is Phase 3's pricing job. The pastries carry **no option groups at all**, which is the shape a kiosk client has to render without assuming every item has choices attached.
 
-> **`drizzle/0000_nasty_dagger.sql` must never be regenerated.** Its first line, `CREATE EXTENSION IF NOT EXISTS citext;`, was added by hand and `drizzle-kit` does not reproduce it: the `citext` column type is declared in the schema as a Drizzle `customType`, so the generator emits a column of type `citext` without ever emitting the extension that defines it. That type backs the case-insensitive unique email on `users` (so `A@x.com` and `a@x.com` collide on the unique index). A regenerated `0000` would therefore fail on any fresh database. Add new changes as new migration files; leave `0000` alone.
+> **`apps/api/drizzle/0000_nasty_dagger.sql` must never be regenerated.** Its first line, `CREATE EXTENSION IF NOT EXISTS citext;`, was added by hand and `drizzle-kit` does not reproduce it: the `citext` column type is declared in the schema as a Drizzle `customType`, so the generator emits a column of type `citext` without ever emitting the extension that defines it. That type backs the case-insensitive unique email on `users` (so `A@x.com` and `a@x.com` collide on the unique index). A regenerated `0000` would therefore fail on any fresh database. Add new changes as new migration files; leave `0000` alone.
 
 ## Container image
 
 ```bash
-docker build -t cafepos .
+docker build -f apps/api/Dockerfile -t cafepos .
 ```
 
+Build it from the repository root, because the workspace lockfile is part of the context.
 One image, two entry points.
 `node dist/main`, the default, serves the API.
 `node dist/database/migrate.js` applies `drizzle/*.sql` and reads only `DATABASE_URL`.
@@ -190,9 +191,9 @@ The `HEALTHCHECK` is liveness only, `/healthz`, for the same reason the endpoint
 Point a load balancer at `/readyz`.
 
 Node and pnpm are pinned exactly, each in one place.
-The Node image is the single `FROM` at the top of the `Dockerfile`, by tag and digest, and Dependabot proposes new patch releases of it.
+The Node image is the single `FROM` at the top of the `apps/api/Dockerfile`, by tag and digest, and Dependabot proposes new patch releases of it.
 A new Node major is left to a person, because it has to move together with `node-version` in the workflows.
-pnpm is `packageManager` in `package.json`, which the `Dockerfile`, the workflows and `pnpm` itself all read.
+pnpm is `packageManager` in `package.json`, which the `apps/api/Dockerfile`, the workflows and `pnpm` itself all read.
 Dependabot may not bump that field, so move it by hand, and keep it close to the pnpm that last wrote `pnpm-lock.yaml`.
 
 On SIGTERM the app reports unready, waits `SHUTDOWN_DRAIN_SECONDS`, then closes, which took about 2.5 seconds locally with a drain of zero.
@@ -243,14 +244,14 @@ Routing alerts to a phone is the deployment's Alertmanager, keyed on each rule's
 
 ## Tracing and error reporting
 
-Tracing is OpenTelemetry, started by `src/instrument.ts`, which `main.ts` imports before anything else so the HTTP server, Express, Nest, Postgres and Redis are patched before they load.
+Tracing is OpenTelemetry, started by `apps/api/src/instrument.ts`, which `main.ts` imports before anything else so the HTTP server, Express, Nest, Postgres and Redis are patched before they load.
 It is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, samples 10% of traces by default (`OTEL_TRACES_SAMPLER_ARG`), and skips the health probes and `/metrics`.
 Keeping every erroring trace, as `DESIGN.md` §13 asks, is a tail-sampling decision for the collector, since only it sees a trace once it has finished.
 
 Locally, `docker compose --profile observability up -d` also starts Jaeger; run the app with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and open http://localhost:16686.
 
 Unplanned failures (a 5xx other than a deliberate 503) are reported to Sentry when `SENTRY_DSN` is set, tagged with the route pattern and request id and without request bodies or personal data.
-`test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
+`apps/api/test/tracing.e2e-spec.ts` proves the instrumentation against the built app, so run `pnpm build` before the e2e suite.
 
 ## Load test
 
@@ -269,7 +270,7 @@ Pairing allows five kiosks an hour, so to run again within the hour pass the kio
 
 ## Data retention
 
-`DESIGN.md` §7.5's windows are enforced by jobs in `src/retention/`.
+`DESIGN.md` §7.5's windows are enforced by jobs in `apps/api/src/retention/`.
 Nightly at 04:00 Bangkok time: customer names on orders older than 90 days are cleared, webhook payloads older than 13 months are cut down to the event's identifiers (the row stays, marked `payload_trimmed_at`), and refresh tokens expired or revoked more than 30 days ago are deleted.
 Hourly, expired idempotency keys are deleted.
 Each job is a guarded statement run in bounded batches, so running it twice changes nothing.
@@ -329,7 +330,7 @@ The catalog `GET` routes are management reads: they return inactive categories a
 
 Availability toggles are separate routes from the updates beside them. That is what lets any staff member 86 the oat milk — the person who finds it gone is whoever is at the bar — without also holding the rights to reprice it.
 
-Every route must declare either `@Public()` or `@Roles(...)`; one that declares neither is refused rather than defaulting to "any authenticated principal". `test/authz-matrix.e2e-spec.ts` sweeps every endpoint against every role and additionally fails if the application exposes a route the matrix does not list, so a new endpoint cannot merge without stating who may call it.
+Every route must declare either `@Public()` or `@Roles(...)`; one that declares neither is refused rather than defaulting to "any authenticated principal". `apps/api/test/authz-matrix.e2e-spec.ts` sweeps every endpoint against every role and additionally fails if the application exposes a route the matrix does not list, so a new endpoint cannot merge without stating who may call it.
 
 ### OpenAPI
 
@@ -346,10 +347,10 @@ Each part comes from the place that already enforces it:
   A handler returning an inline or unnamed type, or declaring none, fails generation with the handler's name.
 - Two exported types with the same name fail generation too, because the contract cannot tell them apart.
 
-Two handlers write the response themselves (`GET /menu`, `GET /readyz`) and are described by hand in `src/openapi/build-document.ts`, as are the headers the contract knows about.
+Two handlers write the response themselves (`GET /menu`, `GET /readyz`) and are described by hand in `apps/api/src/openapi/build-document.ts`, as are the headers the contract knows about.
 A new header needs an entry there.
 
-The tooling lives in `src/openapi/` and is left out of the production build.
+The tooling lives in `apps/api/src/openapi/` and is left out of the production build.
 The generator also runs the OpenAPI validator over its own output and exits non-zero if the document is invalid.
 Domain error codes and recipes are not in the file; `docs/api.md` still carries those.
 
@@ -384,13 +385,13 @@ When Redis is unreachable those limits deliberately stop behaving alike. The 600
 
 The header is read rather than the body because it describes the *attempt*, not the order — the same basket submitted twice on purpose is legitimately two orders, and the key is what says which of the two a request means. A replay returns the original order with `Idempotency-Replayed: true`, so a client can tell "my retry worked" from "I just created another order". The same key carrying a different basket is a `409 IDEMPOTENCY_CONFLICT`; serving either answer would be wrong, since one hands a customer someone else's receipt and the other makes the key meaningless.
 
-Two details are load-bearing. The key row is inserted **before** the order is priced, with its response column still null — so a retry that arrives while the original is still in flight blocks on the primary key instead of racing past it. That is not a rare edge: the client only retries *because* it stopped waiting, so the concurrent case is the normal one. And because the reservation lives in the same transaction as the order, **a refused order stores nothing** — a basket rejected because an item was briefly 86'd leaves the key free, and the customer can retry the moment the pastry is back. Both are pinned in `test/orders-http.e2e-spec.ts`, the first by firing two identical requests at once and asserting exactly one of them did the work.
+Two details are load-bearing. The key row is inserted **before** the order is priced, with its response column still null — so a retry that arrives while the original is still in flight blocks on the primary key instead of racing past it. That is not a rare edge: the client only retries *because* it stopped waiting, so the concurrent case is the normal one. And because the reservation lives in the same transaction as the order, **a refused order stores nothing** — a basket rejected because an item was briefly 86'd leaves the key free, and the customer can retry the moment the pastry is back. Both are pinned in `apps/api/test/orders-http.e2e-spec.ts`, the first by firing two identical requests at once and asserting exactly one of them did the work.
 
 The fingerprint is taken from the parsed body, not the raw bytes, so a client that serialises the same basket with its JSON keys in a different order gets a replay rather than a conflict. It is also scoped to the principal, so a guessed key cannot be used to pull back another tablet's order.
 
 ### The order state machine
 
-`DESIGN.md` §4.4 is encoded as one table in `src/orders/state/order-state.ts`, and every door that moves an order reads it. By Phase 4 there will be four such doors — the gateway webhook, a manager's refund, the expiry job, and the KDS route — and a table is the only way they can agree on what an order may do next.
+`DESIGN.md` §4.4 is encoded as one table in `apps/api/src/orders/state/order-state.ts`, and every door that moves an order reads it. By Phase 4 there will be four such doors — the gateway webhook, a manager's refund, the expiry job, and the KDS route — and a table is the only way they can agree on what an order may do next.
 
 **Every transition is a guarded update**: `UPDATE orders SET status = :to WHERE id = :id AND status = :from`. Two baristas tapping "start" on the same ticket both read `PAID` and both send the same request; without the guard the second silently overwrites the first and the history claims the order started twice. With it the loser updates zero rows and gets `409 ORDER_INVALID_TRANSITION` carrying the order's *actual* current status, so the screen that lost can resync from the response. §4.4 calls this the one pattern that resolves both that race (E8) and the webhook race (E2) without a lock anywhere.
 
@@ -422,7 +423,7 @@ Every catalog write moves the version, via an interceptor on the write controlle
 
 If Redis is unreachable the menu is still served, built fresh from Postgres and without its `catalog-` validator — so a kiosk still holding a pre-outage `ETag` gets the menu rather than a `304` that would pin it to a stale copy for as long as the outage lasts. The cache is a cache: a slower menu is a worse cafe, an erroring one is a closed cafe.
 
-That claim is pinned over HTTP, in `test/redis-outage-http.e2e-spec.ts`. Until it was, the claim was false and the suite was green: the only degraded-Redis test exercised `MenuCacheService` in isolation against a dead port, where it degrades exactly as advertised — while the global rate-limit guard, which runs ahead of every handler, turned the whole API into 500s. A degradation claim about a *request* can only be tested by making one.
+That claim is pinned over HTTP, in `apps/api/test/redis-outage-http.e2e-spec.ts`. Until it was, the claim was false and the suite was green: the only degraded-Redis test exercised `MenuCacheService` in isolation against a dead port, where it degrades exactly as advertised — while the global rate-limit guard, which runs ahead of every handler, turned the whole API into 500s. A degradation claim about a *request* can only be tested by making one.
 
 ### Item images
 
@@ -434,34 +435,46 @@ Stored keys are the SHA-256 of the *output*, so the same photo occupies one obje
 
 ## Project layout
 
+This is a pnpm workspace.
+The API is `apps/api`, and the root `package.json` forwards `pnpm test`, `pnpm build`, `pnpm db:migrate` and the other scripts to it, so they work from the repository root.
+Web clients will live beside it in `apps/*`, with code they share in `packages/*`.
+The root holds repository tooling only: the Husky hooks, `lint-staged` and `prettier`.
+
 ```
-src/
-  config/      environment schema and boot-time validation
-  common/      cross-cutting: error envelope, exception filter, request id,
-               logger options, Zod validation pipe
-  database/    Drizzle client, connection pool, schema/ (the tables)
-  redis/       Redis client provider
-  storage/     S3-compatible object storage client and writer
-  health/      liveness and readiness probes
-  identity/    auth/ (login, rotation, access tokens), users/, devices/
-               (pairing and revocation), guards/ (authentication + §6.4 roles),
-               crypto/ (argon2id passwords, opaque tokens), rate-limit/
-  catalog/     categories/, items/ (incl. image upload and option-group
-               attachment), option-groups/, menu/ (composite read, Redis
-               cache, write-invalidation interceptor)
-  orders/      pricing/ (the pure server-side pricing function), idempotency/
-               (key parsing, request fingerprint, reserve-then-complete store),
-               query/ (list filters, cursor pagination, detail with scoping),
-               state/ (the §4.4 graph, the guarded transition primitive),
-               cancel/, checkout/, expiry/ (the FR-10 sweep),
-               business-day boundary, queue numbers, errors/, and the order
-               aggregate write
-  bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
-               shared by main.ts and the e2e suite so it is never untested
-  main.ts      composition root
-drizzle/       generated migrations and snapshots
-Dockerfile     the production image; see Container image
-test/          integration specs
+apps/
+  api/               the NestJS API; its own package.json, tsconfig and Dockerfile, and it reads its .env from here
+    src/
+      config/      environment schema and boot-time validation
+      common/      cross-cutting: error envelope, exception filter, request id,
+                   logger options, Zod validation pipe
+      database/    Drizzle client, connection pool, schema/ (the tables)
+      redis/       Redis client provider
+      storage/     S3-compatible object storage client and writer
+      health/      liveness and readiness probes
+      identity/    auth/ (login, rotation, access tokens), users/, devices/
+                   (pairing and revocation), guards/ (authentication + §6.4 roles),
+                   crypto/ (argon2id passwords, opaque tokens), rate-limit/
+      catalog/     categories/, items/ (incl. image upload and option-group
+                   attachment), option-groups/, menu/ (composite read, Redis
+                   cache, write-invalidation interceptor)
+      orders/      pricing/ (the pure server-side pricing function), idempotency/
+                   (key parsing, request fingerprint, reserve-then-complete store),
+                   query/ (list filters, cursor pagination, detail with scoping),
+                   state/ (the §4.4 graph, the guarded transition primitive),
+                   cancel/, checkout/, expiry/ (the FR-10 sweep),
+                   business-day boundary, queue numbers, errors/, and the order
+                   aggregate write
+      bootstrap.ts HTTP hardening (helmet, body limit, CORS, shutdown hooks),
+                   shared by main.ts and the e2e suite so it is never untested
+      main.ts      composition root
+    drizzle/         generated migrations and snapshots
+    scripts/         the seed script and the OpenAPI generator
+    test/            integration specs
+    Dockerfile       the production image; see Container image
+.env.example         every API variable with a local default; copy it to apps/api/.env
+docs/                API reference, OpenAPI document, runbook, readiness checklist
+ops/                 Prometheus, Alertmanager and Grafana config for docker-compose
+postman/             the request collection
 ```
 
 ## Project status
@@ -469,8 +482,8 @@ test/          integration specs
 Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-development-roadmap). Each phase is meant to end runnable.
 
 - **Phase 0 — Foundations: complete.** Repo, CI, docker-compose (Postgres + Redis), the full Drizzle schema and migrations, config validation, error envelope, structured logging, and health endpoints. Its exit criterion — `docker compose up` → migrated database, `/healthz` green, CI runs tests — is what the [First-time setup](#first-time-setup) section above walks through.
-- **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `test/authz-matrix.e2e-spec.ts`.
-- **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through S3-compatible object storage. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `test/menu-http.e2e-spec.ts`.
+- **Phase 1 — Identity: complete.** Staff auth (login, refresh with rotation and reuse detection), users CRUD with the last-admin guard, RBAC guards enforcing §6.4, kiosk device pairing/activation/pause/revocation, and the §10.2 rate limits. Its exit criterion — the AuthZ matrix sweep green — is `apps/api/test/authz-matrix.e2e-spec.ts`.
+- **Phase 2 — Catalog: complete.** Categories, items, option groups and options, availability toggles, the composite `GET /menu` with ETag and Redis caching, and item image upload through S3-compatible object storage. Its exit criterion — a kiosk-shaped client renders a menu from one call — is `apps/api/test/menu-http.e2e-spec.ts`.
 - **Phase 3 - Orders: complete.** Server-side pricing with snapshots, per-business-day queue numbers, idempotency keys, cursor-paginated reads, the guarded state machine, cancellation, the expiry sweep, and parked orders with checkout. The notes below record the decisions it took.
 - **Phase 4 - Payments: complete.**
   Stripe PaymentIntents with dynamic payment methods, the webhook inbox and its sweep, cash at the counter, bookkeeping refunds, and nightly reconciliation.
@@ -482,7 +495,7 @@ Built against the phased roadmap in `DESIGN.md` [§17](./DESIGN.md#17-developmen
   Metrics and tested alert rules, retention jobs, secret scanning and dependency triage, a live/test key guard, a draining shutdown, tracing and error reporting, a load test, and the runbook.
   What is left needs a deployment or a person, and [docs/production-readiness.md](docs/production-readiness.md) lists it item by item against §16.
 
-**Everything §17 scopes to Phase 3 is built.** The one thing the phase's exit criterion names that is not here is the cash path: §17's own table lists cash tender under **Phase 4**, alongside the gateway and refunds, so "manual cash-paid" is read as marking an order paid by hand. `test/orders-http.e2e-spec.ts` walks exactly that — an order created, moved to `PAID`, then `IN_PREPARATION` → `READY` → `COMPLETED`. §4.4 leaves no endpoint that reaches `PAID`, on purpose: an order becomes paid because a payment succeeded, never because somebody asked.
+**Everything §17 scopes to Phase 3 is built.** The one thing the phase's exit criterion names that is not here is the cash path: §17's own table lists cash tender under **Phase 4**, alongside the gateway and refunds, so "manual cash-paid" is read as marking an order paid by hand. `apps/api/test/orders-http.e2e-spec.ts` walks exactly that — an order created, moved to `PAID`, then `IN_PREPARATION` → `READY` → `COMPLETED`. §4.4 leaves no endpoint that reaches `PAID`, on purpose: an order becomes paid because a payment succeeded, never because somebody asked.
 
 Resolving `DRAFT` needed a schema decision. §4.5 B3 assigns the queue number at checkout, but `orders.order_number` was `NOT NULL`, so a parked order had no legal value to hold. Migration 0004 makes the column nullable, which matches B3 exactly and keeps the unique index meaningful — the alternative, a `DRAFT-…` placeholder swapped at checkout, would have given one column two vocabularies and let a non-number leak onto a screen.
 

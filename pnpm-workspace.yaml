@@ -1,3 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+# The one place socket.io's version is chosen: apps/api depends on it as `catalog:`
+# and the override below points every other copy at it.
+catalog:
+  socket.io: ^4.8.4
+
 # Security overrides for transitive dependencies whose parents have not yet
 # picked up a patched release. Each stays inside the major line its consumers
 # ask for, so none of them changes an API underneath a package. Remove an entry
@@ -6,8 +15,8 @@ overrides:
   multer@2: ^2.5.0
   # Not a security entry. @nestjs/platform-socket.io pins socket.io exactly, and
   # RedisIoAdapter subclasses its IoAdapter, so a second copy makes the two
-  # Server types incompatible. One copy, at the version package.json declares.
-  socket.io: $socket.io
+  # Server types incompatible. One copy, at the version the catalog declares.
+  socket.io: 'catalog:'
 
 auditConfig:
   ignoreGhsas:

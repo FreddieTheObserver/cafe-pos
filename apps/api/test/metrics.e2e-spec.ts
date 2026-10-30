@@ -398,7 +398,7 @@ describe('Metrics (e2e)', () => {
    * nothing, silently: the config-invisible-to-tests failure PR #5 taught.
    */
   describe('the alert rules and the dashboard', () => {
-    const OPS = join(__dirname, '..', 'ops');
+    const OPS = join(__dirname, '..', '..', '..', 'ops');
 
     const ruleExpressions = (): string[] => {
       const file = parse(

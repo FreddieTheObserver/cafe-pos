@@ -143,7 +143,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: pnpm exec eslint "{src,test}/**/*.ts"
+        run: pnpm --filter @cafepos/api exec eslint "{src,test}/**/*.ts"
 
       # `pnpm build` compiles with tsconfig.build.json, which excludes specs —
       # so without this step a type error in a test file reaches main unnoticed.
@@ -171,7 +171,7 @@ jobs:
         run: pnpm test:e2e
 
       - name: Build image
-        run: docker build -t cafepos:ci .
+        run: docker build -f apps/api/Dockerfile -t cafepos:ci .
 
       # The image's migrator alone must build the schema, and drizzle-kit must
       # then have nothing to add. /readyz only proves connectivity.
@@ -184,7 +184,7 @@ jobs:
           applied() {
             psql -d cafepos_image -c 'select count(*) from drizzle.__drizzle_migrations'
           }
-          expected=$(node -p "require('./drizzle/meta/_journal.json').entries.length")
+          expected=$(node -p "require('./apps/api/drizzle/meta/_journal.json').entries.length")
           psql -d cafepos -c 'CREATE DATABASE cafepos_image'
           export DATABASE_URL=postgresql://cafepos:cafepos_dev_pw@localhost:5432/cafepos_image
           docker run --rm --network host -e DATABASE_URL cafepos:ci node dist/database/migrate.js

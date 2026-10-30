@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { CatalogErrorCode } from '../catalog/errors/catalog.errors';
 import { ErrorCode } from '../common/errors/error-codes';
 import { IdentityErrorCode } from '../identity/errors/identity.errors';
 import { OrderErrorCode } from '../orders/errors/orders.errors';
 import { PaymentErrorCode } from '../payments/errors/payments.errors';
+import { DOCS_DIR } from './repo-paths';
 
 type Schema = {
   type?: string | string[];
@@ -14,7 +16,9 @@ type Schema = {
   properties?: Record<string, Schema>;
 };
 
-const document = JSON.parse(readFileSync('docs/openapi.json', 'utf8')) as {
+const document = JSON.parse(
+  readFileSync(join(DOCS_DIR, 'openapi.json'), 'utf8'),
+) as {
   components: { schemas: Record<string, Schema> };
 };
 
