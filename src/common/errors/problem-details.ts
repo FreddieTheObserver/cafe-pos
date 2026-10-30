@@ -1,3 +1,5 @@
+import type { ApiErrorCode } from './api-error-code';
+
 /** One field-level validation failure (populated only for 422 responses, §9.1). */
 export interface ValidationErrorItem {
   field: string;
@@ -13,7 +15,7 @@ export interface ProblemDetails {
   type: string;
   title: string;
   status: number;
-  code: string;
+  code: ApiErrorCode;
   detail: string;
   requestId: string;
   errors: ValidationErrorItem[] | null;

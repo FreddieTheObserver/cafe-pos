@@ -9,6 +9,7 @@ import {
 import { HttpAdapterHost } from '@nestjs/core';
 import type { Request } from 'express';
 import { ZodError } from 'zod';
+import type { ApiErrorCode } from '../errors/api-error-code';
 import { AppException } from '../errors/app.exception';
 import { ErrorCode } from '../errors/error-codes';
 import {
@@ -24,7 +25,7 @@ import {
 import { routeLabelOf } from '../../observability/metrics/http-metrics';
 
 /** Default code + title per HTTP status for framework-raised HttpExceptions. */
-const HTTP_STATUS_MAP: Record<number, { code: string; title: string }> = {
+const HTTP_STATUS_MAP: Record<number, { code: ApiErrorCode; title: string }> = {
   400: { code: ErrorCode.BAD_REQUEST, title: 'Bad request' },
   401: { code: ErrorCode.AUTH_TOKEN_INVALID, title: 'Unauthorized' },
   403: { code: ErrorCode.FORBIDDEN_ROLE, title: 'Forbidden' },
@@ -208,7 +209,7 @@ const truncate = (detail: string): string =>
     : detail;
 
 function build(p: {
-  code: string;
+  code: ApiErrorCode;
   status: number;
   title: string;
   detail: string;

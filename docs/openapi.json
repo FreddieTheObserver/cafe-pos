@@ -2610,6 +2610,49 @@
           "SYSTEM"
         ]
       },
+      "ApiErrorCode": {
+        "type": "string",
+        "enum": [
+          "VALIDATION_FAILED",
+          "BAD_REQUEST",
+          "AUTH_TOKEN_INVALID",
+          "FORBIDDEN_ROLE",
+          "RESOURCE_NOT_FOUND",
+          "CONFLICT",
+          "PAYLOAD_TOO_LARGE",
+          "RATE_LIMITED",
+          "DEPENDENCY_UNAVAILABLE",
+          "INTERNAL",
+          "CATEGORY_NAME_EXISTS",
+          "CATEGORY_UNKNOWN",
+          "OPTION_GROUP_MINMAX_INVALID",
+          "OPTION_GROUP_UNKNOWN",
+          "IMAGE_FILE_MISSING",
+          "IMAGE_TYPE_UNSUPPORTED",
+          "IMAGE_UNPROCESSABLE",
+          "AUTH_INVALID_CREDENTIALS",
+          "AUTH_TOKEN_EXPIRED",
+          "AUTH_REFRESH_REUSED",
+          "DEVICE_PAIRING_INVALID",
+          "DEVICE_REVOKED",
+          "DEVICE_PAUSED",
+          "USER_EMAIL_EXISTS",
+          "USER_LAST_ADMIN",
+          "ORDER_ITEM_UNAVAILABLE",
+          "OPTION_SELECTION_INVALID",
+          "PRICE_MISMATCH",
+          "IDEMPOTENCY_CONFLICT",
+          "ORDER_INVALID_TRANSITION",
+          "PAYMENT_ALREADY_ACTIVE",
+          "ORDER_NOT_PAYABLE",
+          "ORDER_EXPIRED",
+          "WEBHOOK_SIGNATURE_INVALID",
+          "REFUND_EXCEEDS_REMAINING",
+          "PAYMENT_NOT_REFUNDABLE",
+          "CASH_TENDER_INSUFFICIENT",
+          "ORDER_ALREADY_PAID"
+        ]
+      },
       "AttachedOptionGroup": {
         "type": "object",
         "properties": {
@@ -4125,7 +4168,7 @@
             "type": "number"
           },
           "code": {
-            "type": "string"
+            "$ref": "#/components/schemas/ApiErrorCode"
           },
           "detail": {
             "type": "string"

@@ -1,3 +1,4 @@
+import type { ApiErrorCode } from './api-error-code';
 import type { ValidationErrorItem } from './problem-details';
 
 /**
@@ -7,14 +8,14 @@ import type { ValidationErrorItem } from './problem-details';
  * values, e.g. `class OrderInvalidTransitionError extends AppException`.
  */
 export class AppException extends Error {
-  readonly code: string;
+  readonly code: ApiErrorCode;
   readonly status: number;
   readonly title: string;
   readonly meta: Record<string, unknown> | null;
   readonly errors: ValidationErrorItem[] | null;
 
   constructor(params: {
-    code: string;
+    code: ApiErrorCode;
     status: number;
     title: string;
     detail: string;
