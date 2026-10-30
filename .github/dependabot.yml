@@ -28,3 +28,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # The Dockerfile's Node image. A major bump is a decision, made together with
+  # the node-version in the workflows, so it is left to a person.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
