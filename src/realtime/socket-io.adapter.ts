@@ -90,26 +90,20 @@ export class RedisIoAdapter extends IoAdapter {
     this.logger.warn(`Realtime pub/sub degraded: ${describeError(error)}`);
   }
 
-  async close(server: Server): Promise<void> {
-    await super.close(server);
-    await this.dispose();
-  }
-
   /**
    * Closes the pub/sub pair this adapter created, and nothing else — the base
    * client belongs to `RedisModule`'s shutdown hook.
    *
-   * **`close()` is not enough, because Nest never calls it.** Measured, not
-   * assumed: a harness boot that creates a server and then closes the
-   * application invokes this class's `close` zero times. Every owner therefore
-   * has to dispose explicitly, or two clients keep retrying for the life of the
-   * process — which in a test runner means every booted app leaks a pair, and
-   * the accumulated churn eventually starves the suites that come later.
+   * Nest calls this once, after every server has closed. Disposing from
+   * `close()` instead ran it once per server, all at once, so each client got
+   * several QUITs and the extras failed with EPIPE. Taking the clients before
+   * awaiting makes a repeat call, such as the test harness's, a no-op.
    */
   async dispose(): Promise<void> {
-    await Promise.allSettled([stop(this.pub), stop(this.sub)]);
+    const { pub, sub } = this;
     this.pub = undefined;
     this.sub = undefined;
+    await Promise.allSettled([stop(pub), stop(sub)]);
   }
 }
 
