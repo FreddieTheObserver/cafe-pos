@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+# Debian, not Alpine: sharp and @node-rs/argon2 ship glibc prebuilds.
+FROM node:22-bookworm-slim AS base
+# HUSKY=0: no .git in the build context for the prepare hook to find.
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    HUSKY=0
+RUN corepack enable && corepack prepare pnpm@10 --activate
+WORKDIR /app
+
+FROM base AS build
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+COPY tsconfig.json tsconfig.build.json nest-cli.json ./
+COPY src ./src
+RUN pnpm build
+
+FROM base AS prod-deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod
+
+# No pnpm and no dev dependencies in what ships.
+FROM node:22-bookworm-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --chown=node:node drizzle ./drizzle
+COPY --chown=node:node package.json ./
+USER node
+
+# API, then the metrics listener, which stays off the load balancer.
+EXPOSE 3000 9464
+
+# Liveness only: a slow database must not get the container killed.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["node", "-e", "fetch(`http://127.0.0.1:${process.env.PORT ?? 3000}/healthz`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+
+# Migrations: node dist/database/migrate.js
+CMD ["node", "dist/main"]

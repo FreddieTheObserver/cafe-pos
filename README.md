@@ -167,6 +167,34 @@ Two details in the seeded menu are there to be tested against rather than to loo
 
 > **`drizzle/0000_nasty_dagger.sql` must never be regenerated.** Its first line, `CREATE EXTENSION IF NOT EXISTS citext;`, was added by hand and `drizzle-kit` does not reproduce it: the `citext` column type is declared in the schema as a Drizzle `customType`, so the generator emits a column of type `citext` without ever emitting the extension that defines it. That type backs the case-insensitive unique email on `users` (so `A@x.com` and `a@x.com` collide on the unique index). A regenerated `0000` would therefore fail on any fresh database. Add new changes as new migration files; leave `0000` alone.
 
+## Container image
+
+```bash
+docker build -t cafepos .
+```
+
+One image, two entry points.
+`node dist/main`, the default, serves the API.
+`node dist/database/migrate.js` applies `drizzle/*.sql` and reads only `DATABASE_URL`.
+
+Run the migrator once per release, before the new instances start, and never from the app's own boot.
+Two instances starting together would both try to apply the same files.
+Because it needs only `DATABASE_URL`, the release job can use a database role that may alter the schema while the app runs with one that cannot.
+It shares the `drizzle.__drizzle_migrations` journal with `pnpm db:migrate`, so either can pick up where the other stopped.
+
+The image holds no configuration.
+Everything in [Configuration](#configuration) arrives as environment variables, and `.dockerignore` keeps `.env` out of the build context.
+It runs as the unprivileged `node` user on Node 22 (Debian slim, because `sharp` and `@node-rs/argon2` ship glibc prebuilds), with production dependencies only.
+Port 3000 is the API and 9464 is the metrics listener, which belongs to Prometheus and not to the load balancer.
+The `HEALTHCHECK` is liveness only, `/healthz`, for the same reason the endpoint checks no dependencies.
+Point a load balancer at `/readyz`.
+
+On SIGTERM the app reports unready, waits `SHUTDOWN_DRAIN_SECONDS`, then closes, which took about 2.5 seconds locally with a drain of zero.
+Give the platform a stop grace period longer than the drain plus that.
+A stop timeout shorter than that shows up as exit code 137 even though the shutdown is healthy, which is what a one-second timeout on a development machine produced.
+
+CI builds the image on every run, migrates a scratch database with it, checks that `drizzle-kit` then finds nothing to do, and waits for `/readyz`.
+
 ## Health endpoints
 
 Both probes sit at the **root**, outside the API prefix, so platform orchestrators target fixed paths that never move with an API version. Both are excluded from request logging — they fire constantly and would otherwise bury real traffic.
@@ -404,6 +432,7 @@ src/
                shared by main.ts and the e2e suite so it is never untested
   main.ts      composition root
 drizzle/       generated migrations and snapshots
+Dockerfile     the production image; see Container image
 test/          integration specs
 ```
 

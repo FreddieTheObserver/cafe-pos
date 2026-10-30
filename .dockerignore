@@ -1,0 +1,21 @@
+.git
+.github
+.husky
+.superpowers
+node_modules
+dist
+coverage
+
+# Secrets and local config never enter the build context.
+.env
+.env.*
+
+docs
+ops
+postman
+test
+scripts
+*.md
+docker-compose.yml
+Dockerfile
+.dockerignore
