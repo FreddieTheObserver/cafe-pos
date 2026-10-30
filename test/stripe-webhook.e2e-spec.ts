@@ -39,7 +39,7 @@ describe('Stripe webhook endpoint (e2e)', () => {
       id: eventId,
       object: 'event',
       type: 'payment_intent.succeeded',
-      api_version: '2026-07-29.dahlia',
+      api_version: '2026-08-26.dahlia',
       created: 1_785_829_150,
       data: {
         object: { id: intentId, amount_received: 12_500, currency: 'thb' },
@@ -72,7 +72,7 @@ describe('Stripe webhook endpoint (e2e)', () => {
     harness = await IdentityHarness.boot();
     secret = harness.app.get<readonly string[]>(STRIPE_WEBHOOK_SECRETS)[0];
     stripe = new Stripe('sk_test_notarealkey', {
-      apiVersion: '2026-07-29.dahlia',
+      apiVersion: '2026-08-26.dahlia',
     });
   });
 

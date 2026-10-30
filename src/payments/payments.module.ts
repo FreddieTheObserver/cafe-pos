@@ -83,7 +83,7 @@ function apiBase(
            * installed SDK's types were generated from, so a bump is an
            * intentional edit that typechecks.
            */
-          apiVersion: '2026-07-29.dahlia',
+          apiVersion: '2026-08-26.dahlia',
           /**
            * §9.3: 10-second timeout, one retry, network-class errors only.
            * Safe to retry because every mutating call here carries an
