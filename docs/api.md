@@ -250,7 +250,7 @@ Every non-2xx response from the API uses one shape, modelled on RFC 9457 and ser
 | `type` | string | `https://cafepos.dev/errors/` followed by the code in lower-case kebab form. It is an identifier, and nothing is guaranteed to be served there. |
 | `title` | string | Short human-readable summary. |
 | `status` | integer | The HTTP status, repeated. |
-| `code` | string | A stable machine-readable code. **Switch on this, never on `detail`.** |
+| `code` | `ApiErrorCode` | A stable machine-readable code, one of those in the catalog in [3.4](#34-error-code-catalog). **Switch on this, never on `detail`.** The OpenAPI document types it as an enum of that catalog. |
 | `detail` | string | A human-readable explanation. Never contains secrets or stack traces. Messages from the framework are cut to 200 characters. |
 | `requestId` | string | Matches the `X-Request-Id` header. Quote it when reporting a problem. It is `"unknown"` for the body-parser rejections described in [1.4](#14-response-headers). |
 | `errors` | array or null | Field-level failures. Present only on validation 422s (see 3.3). |
@@ -362,6 +362,9 @@ This catalog is built from the code, so it includes codes that `DESIGN.md` §9.2
   A kiosk should show its offline screen and try again, and a till can fall back to cash.
 - **5xx other than 503** is a bug on the server.
   Report the `requestId`.
+- **The set of codes can grow.**
+  A client generated from an older OpenAPI document can receive a code it does not list, so every `switch` on `code` needs a `default` branch.
+  Let that branch fall back to the HTTP status: show `detail` for a 4xx, and report the `requestId` for a 5xx.
 - A network failure or timeout on `POST /orders`, `POST /orders/:id/payments` or `POST /payments/:id/refunds` is safe to retry **if you sent an `Idempotency-Key`**, and not otherwise (see [4.2](#42-idempotency)).
 
 ---
@@ -562,7 +565,7 @@ interface Problem {
   type: string;
   title: string;
   status: number;
-  code: string;
+  code: ApiErrorCode;   // one of the codes in 3.4
   detail: string;
   requestId: string;
   errors: { field: string; rule: string; message: string }[] | null;

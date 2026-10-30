@@ -1,4 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { CatalogErrorCode } from '../catalog/errors/catalog.errors';
+import { ErrorCode } from '../common/errors/error-codes';
+import { IdentityErrorCode } from '../identity/errors/identity.errors';
+import { OrderErrorCode } from '../orders/errors/orders.errors';
+import { PaymentErrorCode } from '../payments/errors/payments.errors';
 
 type Schema = {
   type?: string | string[];
@@ -22,6 +27,7 @@ const ENUM_LIKE = new Set([
   'actorType',
   'method',
   'role',
+  'code',
 ]);
 
 const isConstrained = (schema: Schema): boolean =>
@@ -52,5 +58,23 @@ describe('docs/openapi.json', () => {
 
     expect(summary.status.$ref).toBe('#/components/schemas/OrderStatus');
     expect(summary.channel.$ref).toBe('#/components/schemas/OrderChannel');
+  });
+
+  it('types an error response with every code the API can raise', () => {
+    const { schemas } = document.components;
+    const raised = [
+      ErrorCode,
+      CatalogErrorCode,
+      IdentityErrorCode,
+      OrderErrorCode,
+      PaymentErrorCode,
+    ].flatMap((codes) => Object.values(codes));
+
+    expect(schemas.ProblemDetails.properties?.code.$ref).toBe(
+      '#/components/schemas/ApiErrorCode',
+    );
+    expect([...(schemas.ApiErrorCode.enum ?? [])].sort()).toEqual(
+      [...new Set(raised)].sort(),
+    );
   });
 });
