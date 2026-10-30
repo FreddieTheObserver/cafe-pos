@@ -118,6 +118,48 @@ describe('HTTP hardening (e2e)', () => {
 
       expect(res.headers['access-control-allow-origin']).toBeUndefined();
     });
+
+    const headerList = (value: unknown): string[] =>
+      String(value)
+        .split(',')
+        .map((name) => name.trim().toLowerCase());
+
+    it('exposes the response headers a browser client has to read', async () => {
+      const res = await http()
+        .post('/api/v1/probe/echo')
+        .set('Origin', ALLOWED_ORIGIN)
+        .send({ name: 'Latte', quantity: 1 });
+
+      expect(headerList(res.headers['access-control-expose-headers'])).toEqual(
+        expect.arrayContaining([
+          'x-request-id',
+          'etag',
+          'retry-after',
+          'idempotency-replayed',
+        ]),
+      );
+    });
+
+    it('lets a browser send the request headers the API reads', async () => {
+      const res = await http()
+        .options('/api/v1/probe/echo')
+        .set('Origin', ALLOWED_ORIGIN)
+        .set('Access-Control-Request-Method', 'POST')
+        .set(
+          'Access-Control-Request-Headers',
+          'authorization, content-type, idempotency-key, if-none-match',
+        );
+
+      expect(res.status).toBe(204);
+      expect(headerList(res.headers['access-control-allow-headers'])).toEqual(
+        expect.arrayContaining([
+          'authorization',
+          'content-type',
+          'idempotency-key',
+          'if-none-match',
+        ]),
+      );
+    });
   });
 
   describe('body size limit', () => {

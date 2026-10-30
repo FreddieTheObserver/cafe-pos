@@ -34,6 +34,21 @@ export const API_PREFIX = 'api/v1';
  */
 export const CORS_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
 
+export const CORS_ALLOWED_HEADERS = [
+  'Authorization',
+  'Content-Type',
+  'Idempotency-Key',
+  'If-None-Match',
+] as const;
+
+// Beyond the CORS-safelisted ones, a browser script reads only what is listed here.
+export const CORS_EXPOSED_HEADERS = [
+  'X-Request-Id',
+  'ETag',
+  'Retry-After',
+  'Idempotency-Replayed',
+] as const;
+
 /**
  * Platform probes stay off the prefix (§16): orchestrators are configured with
  * fixed paths and must keep working across API versions.
@@ -79,8 +94,8 @@ export function configureApp(
     app.enableCors({
       origin: options.corsOrigins,
       methods: [...CORS_METHODS],
-      allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key'],
-      exposedHeaders: ['X-Request-Id'],
+      allowedHeaders: [...CORS_ALLOWED_HEADERS],
+      exposedHeaders: [...CORS_EXPOSED_HEADERS],
       credentials: false,
       maxAge: 600,
     });
