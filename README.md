@@ -297,6 +297,28 @@ Availability toggles are separate routes from the updates beside them. That is w
 
 Every route must declare either `@Public()` or `@Roles(...)`; one that declares neither is refused rather than defaulting to "any authenticated principal". `test/authz-matrix.e2e-spec.ts` sweeps every endpoint against every role and additionally fails if the application exposes a route the matrix does not list, so a new endpoint cannot merge without stating who may call it.
 
+### OpenAPI
+
+[`docs/openapi.json`](./docs/openapi.json) is the machine-readable contract: OpenAPI 3.1, one operation per route.
+It is generated from the code, never edited by hand.
+Run `pnpm openapi` to rewrite it and `pnpm openapi:check` to compare.
+CI runs the check, so a route or a type that changed without the file being regenerated fails the build.
+
+Each part comes from the place that already enforces it:
+
+- Routes, methods, success statuses, `@Roles` and `@Public` come from Nest's decorator metadata, so an operation's `x-roles` is what the guard checks.
+- Request bodies, path parameters and query parameters come from the Zod schemas that validate them.
+- Response bodies come from each handler's declared return type, which therefore has to be a named exported type.
+  A handler returning an inline or unnamed type, or declaring none, fails generation with the handler's name.
+- Two exported types with the same name fail generation too, because the contract cannot tell them apart.
+
+Two handlers write the response themselves (`GET /menu`, `GET /readyz`) and are described by hand in `src/openapi/build-document.ts`, as are the headers the contract knows about.
+A new header needs an entry there.
+
+The tooling lives in `src/openapi/` and is left out of the production build.
+The generator also runs the OpenAPI validator over its own output and exits non-zero if the document is invalid.
+Domain error codes and recipes are not in the file; `docs/api.md` still carries those.
+
 ### Postman collection
 
 `postman/cafepos.postman_collection.json` covers every endpoint above, Phases 0-3 — import it with File → Import. It is version-controlled next to the API it describes, so a route that moves and a collection that still points at the old path show up in the same diff.

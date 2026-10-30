@@ -7,11 +7,11 @@ import { ErrorCode } from '../../common/errors/error-codes';
  * deliberately wider than that, because the value is only ever used as a key
  * and refusing a client that generates a perfectly good ULID would buy nothing.
  */
-const MIN_LENGTH = 8;
-const MAX_LENGTH = 128;
+export const MIN_LENGTH = 8;
+export const MAX_LENGTH = 128;
 
 /** Token characters only — this value reaches a primary key and an error body. */
-const KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+export const KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 /**
  * Validates the `Idempotency-Key` header, if one was sent.

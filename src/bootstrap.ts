@@ -21,7 +21,7 @@ export interface AppHardeningOptions {
 const JSON_BODY_LIMIT = '64kb';
 
 /** URI versioning (§5.1): the version is visible in logs, curl and dashboards. */
-const API_PREFIX = 'api/v1';
+export const API_PREFIX = 'api/v1';
 
 /**
  * Methods a configured browser origin may use.
@@ -38,7 +38,7 @@ export const CORS_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
  * Platform probes stay off the prefix (§16): orchestrators are configured with
  * fixed paths and must keep working across API versions.
  */
-const UNPREFIXED_ROUTES = [
+export const UNPREFIXED_ROUTES = [
   { path: 'healthz', method: RequestMethod.GET },
   { path: 'readyz', method: RequestMethod.GET },
 ];

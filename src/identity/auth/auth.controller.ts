@@ -17,12 +17,14 @@ import {
 } from './auth.service';
 
 /** The wire shape of a token pair — `tokenType` spelled out so clients need no convention. */
-interface TokenResponse {
+export interface TokenResponse {
   tokenType: 'Bearer';
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
 }
+
+export type LoginResponse = TokenResponse & { user: PrincipalDescription };
 
 const tokenResponse = (pair: TokenPair): TokenResponse => ({
   tokenType: 'Bearer',
@@ -43,9 +45,7 @@ export class AuthController {
   @RateLimit('login')
   @HttpCode(200)
   @Post('login')
-  async login(
-    @Body() body: LoginDto,
-  ): Promise<TokenResponse & { user: PrincipalDescription }> {
+  async login(@Body() body: LoginDto): Promise<LoginResponse> {
     const { user, ...pair } = await this.auth.login(body.email, body.password);
     return { ...tokenResponse(pair), user: { type: 'staff', ...user } };
   }

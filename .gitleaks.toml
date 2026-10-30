@@ -13,6 +13,9 @@ regexes = [
   '''sk_test_notarealkey''',
   '''rk_test_notarealkey''',
   '''rk_test_ciplaceholdernotarealkey''',
+  # src/openapi/placeholder-env.ts. The word boundary keeps a longer key that
+  # merely starts with it from slipping through.
+  '''rk_test_placeholder\b''',
   '''(sk|rk|pk)_(test|live)_abc123''',
   '''integration-secret-at-least-32-characters''',
   '''ZGV2aWNlLXRva2VuLXdpdGhvdXQtYW55LWRvdHM''',

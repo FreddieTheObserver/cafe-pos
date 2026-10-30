@@ -22,7 +22,7 @@ export interface MenuOptionGroup {
   options: MenuOption[];
 }
 
-export interface MenuItem {
+export interface MenuEntry {
   id: string;
   name: string;
   description: string | null;
@@ -37,7 +37,7 @@ export interface MenuCategory {
   id: string;
   name: string;
   sortOrder: number;
-  items: MenuItem[];
+  items: MenuEntry[];
 }
 
 export interface Menu {

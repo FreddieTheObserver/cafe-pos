@@ -2,8 +2,18 @@ import { Controller, Get, Res } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { Public } from '../identity/decorators/public.decorator';
-import { HealthService } from './health.service';
+import { HealthService, type ReadinessResult } from './health.service';
 import { ShutdownDrain } from './shutdown-drain';
+
+export interface Liveness {
+  status: 'ok';
+}
+
+export interface Readiness {
+  status: 'ok' | 'unavailable' | 'draining';
+  /** Absent while draining: the dependencies are not asked. */
+  checks?: ReadinessResult['checks'];
+}
 
 /**
  * Platform probes (§16). `configureApp` excludes these two paths from the
@@ -28,13 +38,15 @@ export class HealthController {
 
   /** Liveness: is the process up? No dependency checks — a slow DB must not trigger a kill. */
   @Get('healthz')
-  liveness(): { status: 'ok' } {
+  liveness(): Liveness {
     return { status: 'ok' };
   }
 
   /** Readiness: can we actually serve? Fails (503) if DB or Redis is unreachable. */
   @Get('readyz')
-  async readiness(@Res({ passthrough: true }) res: Response) {
+  async readiness(
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<Readiness> {
     // Stopping, so the load balancer should route elsewhere whatever the dependencies say.
     if (this.drain.isDraining) {
       res.status(503);
