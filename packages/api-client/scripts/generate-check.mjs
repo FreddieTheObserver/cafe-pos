@@ -3,9 +3,10 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const FILE = 'src/generated/schema.d.ts';
-const before = readFileSync(FILE, 'utf8');
+const read = () => readFileSync(FILE, 'utf8').replace(/\r\n/g, '\n');
+const before = read();
 execSync('pnpm run generate', { stdio: 'ignore' });
-const after = readFileSync(FILE, 'utf8');
+const after = read();
 if (before !== after) {
   console.error(`${FILE} is out of date. Run \`pnpm --filter @cafepos/api-client generate\` and commit it.`);
   process.exit(1);
