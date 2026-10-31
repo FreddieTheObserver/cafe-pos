@@ -1,0 +1,21 @@
+{
+  "name": "@cafepos/journey",
+  "version": "0.0.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Browser journeys across the kiosk, staff and board apps against a real API.",
+  "scripts": {
+    "journey": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.54.2",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "ioredis": "^5.11.1",
+    "pg": "^8.23.1",
+    "stripe": "^22.6.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -174,6 +174,16 @@ jobs:
       - name: Integration tests
         run: pnpm test:e2e
 
+      # The kiosk, staff and board apps against the built API, which the journey
+      # package starts itself on a database of its own.
+      - name: Install the journey browser
+        run: pnpm --filter @cafepos/journey exec playwright install --with-deps chromium
+
+      - name: Journey tests
+        run: pnpm --filter @cafepos/journey run journey
+        env:
+          JOURNEY_PG_ADMIN_URL: postgresql://cafepos:cafepos_dev_pw@localhost:5432/postgres
+
       - name: Build image
         run: docker build -f apps/api/Dockerfile -t cafepos:ci .
 
