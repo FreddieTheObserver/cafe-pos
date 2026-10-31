@@ -9,6 +9,7 @@ import {
   type Menu,
   type OrderPhase,
 } from '../src';
+import { createFakeEvents } from './events';
 
 const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -133,8 +134,7 @@ describe('phaseOf', () => {
 
 describe('createOrderTracker', () => {
   const setup = (statuses: string[]) => {
-    const h: Record<string, (a?: any) => void> = {};
-    const socket = { on: (e: string, cb: any) => void (h[e] = cb) } as any;
+    const hub = createFakeEvents();
     let i = 0;
     const api = {
       orders: {
@@ -146,11 +146,11 @@ describe('createOrderTracker', () => {
     const seen: [OrderPhase, boolean][] = [];
     const t = createOrderTracker({
       api,
-      socket,
+      events: hub.events,
       orderId: 'o1',
       onChange: (p, o) => seen.push([p, o]),
     });
-    return { api, h, t, last: () => seen[seen.length - 1]! };
+    return { api, hub, t, last: () => seen[seen.length - 1]! };
   };
 
   it('picks up PAID from the first look', async () => {
@@ -174,23 +174,23 @@ describe('createOrderTracker', () => {
   });
 
   it('looks again straight away when a push for this order arrives, and ignores others', async () => {
-    const { t, h, api } = setup(['PENDING_PAYMENT', 'PAID']);
+    const { t, hub, api } = setup(['PENDING_PAYMENT', 'PAID']);
     t.start();
     await flush();
-    h['payment.succeeded']!({ id: 'other' });
+    hub.emit('payment.succeeded', { id: 'other' });
     await flush();
     expect(api.orders.get).toHaveBeenCalledTimes(1);
-    h['payment.succeeded']!({ id: 'o1' });
+    hub.emit('payment.succeeded', { id: 'o1' });
     await flush();
     expect(api.orders.get).toHaveBeenCalledTimes(2);
     t.stop();
   });
 
   it('shows payment-failed until a new attempt clears it', async () => {
-    const { t, h, last } = setup(['PENDING_PAYMENT']);
+    const { t, hub, last } = setup(['PENDING_PAYMENT']);
     t.start();
     await flush();
-    h['payment.failed']!({ id: 'o1' });
+    hub.emit('payment.failed', { id: 'o1' });
     await flush();
     expect(last()[0]).toBe('payment-failed');
     t.clearPaymentFailure();
@@ -199,9 +199,26 @@ describe('createOrderTracker', () => {
     t.stop();
   });
 
+  it('stops listening to the socket when it stops, so a long-lived socket does not collect handlers', async () => {
+    const { t, hub } = setup(['PENDING_PAYMENT', 'COMPLETED']);
+    expect(hub.listeners()).toBe(4);
+    t.start();
+    await flush();
+    t.stop();
+    expect(hub.listeners()).toBe(0);
+  });
+
+  it('stops listening on its own once the order is final', async () => {
+    const { t, hub } = setup(['COMPLETED']);
+    t.start();
+    await flush();
+    expect(hub.listeners()).toBe(0);
+    t.stop();
+  });
+
   it('reports offline without losing the phase', async () => {
     let fail = false;
-    const h: any = {};
+    const hub = createFakeEvents();
     const api = {
       orders: {
         get: async () => {
@@ -213,7 +230,7 @@ describe('createOrderTracker', () => {
     const seen: [OrderPhase, boolean][] = [];
     const t = createOrderTracker({
       api,
-      socket: { on: (e: string, cb: any) => (h[e] = cb) } as any,
+      events: hub.events,
       orderId: 'o1',
       onChange: (p, o) => seen.push([p, o]),
     });

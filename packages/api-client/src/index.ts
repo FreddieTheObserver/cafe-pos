@@ -12,3 +12,4 @@ export * from './clock';
 export * from './place-order';
 export * from './controllers/kiosk-feed';
 export * from './controllers/order-tracker';
+export * from './controllers/payment-flow';

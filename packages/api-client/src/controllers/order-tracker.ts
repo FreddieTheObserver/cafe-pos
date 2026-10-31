@@ -1,5 +1,6 @@
 import { ApiError, NetworkError } from '../errors';
 import type { ApiClient } from '../client';
+import type { KioskEvents } from '../realtime';
 import type { OrderStatus } from '../types';
 
 export type OrderPhase =
@@ -41,17 +42,9 @@ export const phaseOf = (
 export const isFinal = (p: OrderPhase) =>
   ['collected', 'expired', 'cancelled', 'refunded'].includes(p);
 
-export interface TrackerSocket {
-  on(
-    event: 'payment.succeeded' | 'payment.failed' | 'order.ready',
-    cb: (t: { id: string }) => void,
-  ): unknown;
-  on(event: 'connect', cb: () => void): unknown;
-}
-
 export interface OrderTrackerOptions {
   api: Pick<ApiClient, 'orders'>;
-  socket: TrackerSocket;
+  events: KioskEvents;
   orderId: string;
   onChange: (phase: OrderPhase, online: boolean) => void;
   pollMs?: number;
@@ -88,20 +81,23 @@ export const createOrderTracker = (opts: OrderTrackerOptions) => {
     }
   };
 
+  const mine = (t: { id: string }) => t.id === opts.orderId;
+  const unsubscribe = [
+    opts.events.on('payment.succeeded', (t) => mine(t) && void check()),
+    opts.events.on('order.ready', (t) => mine(t) && void check()),
+    opts.events.on('payment.failed', (t) => {
+      if (!mine(t)) return;
+      paymentFailed = true;
+      void check();
+    }),
+    opts.events.onConnect(() => void check()),
+  ];
+
   const stop = () => {
     if (timer) clearInterval(timer);
     timer = undefined;
+    for (const off of unsubscribe.splice(0)) off();
   };
-
-  const mine = (t: { id: string }) => t.id === opts.orderId;
-  opts.socket.on('payment.succeeded', (t) => mine(t) && void check());
-  opts.socket.on('order.ready', (t) => mine(t) && void check());
-  opts.socket.on('payment.failed', (t) => {
-    if (!mine(t)) return;
-    paymentFailed = true;
-    void check();
-  });
-  opts.socket.on('connect', () => void check());
 
   return {
     start() {

@@ -46,6 +46,25 @@ export const connectKiosk = (
     transports: ['websocket'],
   }) as KioskSocket;
 
+export type KioskOrderEvent =
+  'payment.succeeded' | 'payment.failed' | 'order.ready';
+
+export interface KioskEvents {
+  on(event: KioskOrderEvent, cb: (ticket: { id: string }) => void): () => void;
+  onConnect(cb: () => void): () => void;
+}
+
+export const kioskEvents = (socket: KioskSocket): KioskEvents => ({
+  on(event, cb) {
+    socket.on(event, cb);
+    return () => void socket.off(event, cb);
+  },
+  onConnect(cb) {
+    socket.on('connect', cb);
+    return () => void socket.off('connect', cb);
+  },
+});
+
 export const connectBoard = (baseUrl: string): BoardSocket =>
   io(`${baseUrl.replace(/\/+$/, '')}/board`, {
     transports: ['websocket'],
