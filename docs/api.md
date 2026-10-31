@@ -1764,6 +1764,10 @@ No card data ever touches this API.
 After creating a gateway payment, a kiosk should wait for `payment.succeeded` on the `/kiosk` socket, or poll `GET /orders/:id` as a fallback.
 It must not decide success itself, and for PromptPay it must take the QR code down the instant `payment.succeeded` arrives.
 
+Stripe's Payment Element shows the PromptPay QR code in a full-page lightbox that the page cannot close, so a client that must remove the code on `payment.succeeded` cannot use it for PromptPay.
+It confirms with `stripe.confirmPromptPayPayment(clientSecret, data, { handleActions: false })` instead, and draws the code from `next_action.promptpay_display_qr_code`.
+The intent already allows both rails, so the API needs no change for this.
+
 There is no endpoint that cancels a payment on its own.
 A live payment ends when the customer pays, when a failure or cancellation webhook arrives, when the order is cancelled, or when the order expires.
 A client that receives `PAYMENT_ALREADY_ACTIVE` should continue with the payment that exists, whose id is in `meta.activePaymentId`.
