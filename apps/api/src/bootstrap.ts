@@ -47,6 +47,9 @@ export const CORS_EXPOSED_HEADERS = [
   'ETag',
   'Retry-After',
   'Idempotency-Replayed',
+  // Lets a browser kiosk measure its clock against the server's, so an order's
+  // expiry countdown does not depend on the tablet's clock being right.
+  'Date',
 ] as const;
 
 /**

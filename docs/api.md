@@ -479,7 +479,7 @@ When it is on:
 | Origins | The configured list |
 | Methods | `GET`, `POST`, `PATCH`, `PUT`, `DELETE` |
 | Request headers allowed | `Authorization`, `Content-Type`, `Idempotency-Key`, `If-None-Match` |
-| Response headers exposed | `X-Request-Id`, `ETag`, `Retry-After`, `Idempotency-Replayed` |
+| Response headers exposed | `X-Request-Id`, `ETag`, `Retry-After`, `Idempotency-Replayed`, `Date` |
 | Credentials | Not allowed |
 | Preflight cache | 600 seconds |
 

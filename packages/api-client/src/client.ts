@@ -28,6 +28,8 @@ export interface ApiClientOptions {
    * obtaining a new token and the request is retried a single time.
    */
   onUnauthorized?: () => Promise<boolean>;
+  /** Called with the server's `Date` header on every response that has one. */
+  onServerTime?: (serverNow: Date) => void;
 }
 
 interface RequestOptions {
@@ -75,6 +77,11 @@ export const createApiClient = (options: ApiClientOptions) => {
       });
     } catch (error) {
       throw new NetworkError(error);
+    }
+    const date = response.headers.get('Date');
+    if (date && options.onServerTime) {
+      const parsed = new Date(date);
+      if (!Number.isNaN(parsed.getTime())) options.onServerTime(parsed);
     }
     if (
       response.status === 401 &&
