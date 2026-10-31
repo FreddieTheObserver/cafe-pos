@@ -1,0 +1,66 @@
+:root {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --fg: #1d2127;
+  --muted: #646b75;
+  --line: #d9d6cf;
+  --accent: #1f6feb;
+  --accent-fg: #ffffff;
+  --ok: #1a7f4b;
+  --bad: #b3261e;
+  --warn: #f2c14e;
+  --gap: 1rem;
+  --tap: 4rem;
+  --radius: 0.75rem;
+  --text-lg: 1.375rem;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 1.125rem/1.4 system-ui, sans-serif; user-select: none; }
+button, input { font: inherit; color: inherit; }
+button { min-height: var(--tap); padding: 0 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+input[type="text"], input:not([type]) { min-height: var(--tap); padding: 0 1rem; border: 1px solid var(--line); border-radius: var(--radius); width: 100%; font-size: var(--text-lg); letter-spacing: 0.15em; text-transform: uppercase; }
+input[type="radio"], input[type="checkbox"] { width: 1.75rem; height: 1.75rem; }
+h1, h2, h3 { margin: 0 0 var(--gap); }
+.panel { display: grid; gap: var(--gap); padding: var(--gap); max-width: 48rem; margin: 0 auto; }
+.panel.narrow { max-width: 34rem; }
+.center { text-align: center; justify-items: center; padding: 3rem var(--gap); }
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+.notice, .banner { margin: 0; padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--warn); color: #000; text-align: center; }
+.ribbon { margin: 0; padding: 0.5rem; background: #000; color: #fff; text-align: center; font-weight: 700; letter-spacing: 0.05em; }
+.menu { padding-bottom: 7rem; }
+.tabs { display: flex; gap: 0.5rem; padding: var(--gap); overflow-x: auto; position: sticky; top: 0; background: var(--bg); }
+.tabs button { white-space: nowrap; }
+.items { list-style: none; margin: 0; padding: 0 var(--gap); display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: var(--gap); }
+.item { display: grid; align-content: start; gap: 0.25rem; width: 100%; height: 100%; padding: 0.75rem; text-align: left; }
+.item img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 0.5rem; }
+.item small { color: var(--muted); }
+.price { font-weight: 700; }
+.cartbar { position: fixed; inset: auto 0 0 0; display: flex; justify-content: space-between; align-items: center; gap: var(--gap); padding: var(--gap); background: var(--surface); border-top: 1px solid var(--line); font-size: var(--text-lg); }
+.overlay { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: end center; }
+.sheet { width: min(100%, 40rem); max-height: 90vh; overflow-y: auto; display: grid; gap: var(--gap); padding: var(--gap); background: var(--surface); border-radius: var(--radius) var(--radius) 0 0; }
+.sheet header { display: flex; justify-content: space-between; align-items: center; }
+fieldset { border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 0.5rem; }
+.option { display: flex; align-items: center; gap: 0.75rem; min-height: var(--tap); }
+.option span:nth-of-type(1) { flex: 1; }
+.stepper { display: flex; align-items: center; gap: 1rem; }
+.stepper button { min-width: var(--tap); padding: 0; }
+.stepper output { min-width: 2rem; text-align: center; font-weight: 700; }
+.lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+.lines li { display: flex; align-items: center; gap: var(--gap); padding: 0.75rem; background: var(--surface); border-radius: var(--radius); }
+.lines small { display: block; color: var(--muted); }
+.grow { flex: 1; }
+.total { font-size: var(--text-lg); text-align: right; }
+.actions { display: flex; justify-content: space-between; gap: var(--gap); }
+.actions .primary { flex: 1; }
+.orderhead { display: flex; justify-content: space-between; align-items: end; gap: var(--gap); }
+.orderhead p, .center p { margin: 0; }
+.number { font-size: 4rem; font-weight: 800; line-height: 1; }
+.amount { font-size: 2rem; font-weight: 700; }
+.status { font-size: var(--text-lg); font-weight: 600; }
+.card-field { min-height: 3.5rem; padding: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+section { display: grid; gap: var(--gap); }
+.qr { width: min(80vw, 18rem); height: auto; background: #fff; padding: 0.5rem; border-radius: var(--radius); }

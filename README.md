@@ -76,6 +76,7 @@ pnpm db:studio     # drizzle-kit studio, a browser UI over the dev database
 pnpm test          # unit specs (apps/api/src/**/*.spec.ts) — no services required
 pnpm test:cov      # the same, with coverage
 pnpm test:e2e      # integration specs (apps/api/test/*.e2e-spec.ts)
+pnpm test:journey  # browser journeys across the kiosk, staff and board apps (packages/journey)
 ```
 
 `pnpm test:e2e` talks to the **real** Postgres, Redis and SeaweedFS from docker-compose, so the stack must be up and `pnpm db:migrate` must have been run first — otherwise the database-constraint suite fails on missing tables. It reads `DATABASE_URL` from `apps/api/.env` locally; in CI the job environment supplies it, and `dotenv` never overwrites an already-set variable, so the same specs run unchanged in both places.
@@ -83,6 +84,9 @@ pnpm test:e2e      # integration specs (apps/api/test/*.e2e-spec.ts)
 Two suites point the real clients at dependencies that are deliberately **not** running — `menu-cache-degraded` at a closed Redis port, `object-storage-degraded` at a closed S3 endpoint. They need no setup, and they exist because a hand-written `new Error('boom')` does not reproduce the error shapes those SDKs actually raise. Between them they pin the two opposite policies: the menu cache fails **open** (Redis down still serves a menu), object storage fails **fast** (an unreachable bucket refuses the boot instead of surfacing at the first upload).
 
 The integration suite exists to check the claims a unit test cannot: that the money and state constraints described in `DESIGN.md` §7.4 are actually armed in a migrated database, and that the HTTP hardening (body limit, CORS policy, error envelope) holds on a real server.
+
+`pnpm test:journey` builds the API, then starts its own copy of it on a throwaway database, with the three web apps beside it, and drives a browser through an order from the kiosk to the counter.
+It needs the docker-compose stack up and a Playwright browser, and `packages/journey/README.md` has the details.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, build, migrations, unit tests, and integration tests against service containers of the same Postgres and Redis images used locally. It triggers on every pull request and on pushes to `main` — branch pushes are covered by the PR run rather than duplicating it.
 
@@ -437,7 +441,9 @@ Stored keys are the SHA-256 of the *output*, so the same photo occupies one obje
 
 This is a pnpm workspace.
 The API is `apps/api`, and the root `package.json` forwards `pnpm test`, `pnpm build`, `pnpm db:migrate` and the other scripts to it, so they work from the repository root.
-Web clients will live beside it in `apps/*`, with code they share in `packages/*`.
+The web clients are beside it in `apps/*`, with code they share in `packages/*`.
+`apps/kiosk` is the customer's ordering tablet, `apps/staff` is the kitchen display and sold-out screen, and `apps/board` is the public queue board.
+`packages/api-client` holds the typed API client and the screen logic they share, and `packages/journey` holds the browser journeys.
 The root holds repository tooling only: the Husky hooks, `lint-staged` and `prettier`.
 
 ```
@@ -471,6 +477,12 @@ apps/
     scripts/         the seed script and the OpenAPI generator
     test/            integration specs
     Dockerfile       the production image; see Container image
+  kiosk/             the ordering tablet (React and Vite); see its README
+  staff/             the kitchen display and the sold-out screen
+  board/             the public queue board
+packages/
+  api-client/        typed REST and Socket.IO client, plus the screens' state and controllers
+  journey/           Playwright journeys that run all of the above together
 .env.example         every API variable with a local default; copy it to apps/api/.env
 docs/                API reference, OpenAPI document, runbook, readiness checklist
 ops/                 Prometheus, Alertmanager and Grafana config for docker-compose

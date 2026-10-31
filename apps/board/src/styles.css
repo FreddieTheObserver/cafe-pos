@@ -1,0 +1,18 @@
+:root {
+  --bg: #111418;
+  --fg: #f4f5f7;
+  --muted: #8b93a1;
+  --ready: #2fbf71;
+  --warn: #f2b84b;
+  --gap: 2rem;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+.board { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); height: 100%; padding: var(--gap); position: relative; }
+.col h1 { font-size: 3rem; margin: 0 0 var(--gap); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.col.ready h1 { color: var(--ready); }
+.col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 1.5rem; }
+.col li { font-size: 7rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.col.preparing li { font-size: 5rem; color: var(--muted); }
+.banner { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 1rem; text-align: center; font-size: 1.5rem; background: var(--warn); color: #000; }

@@ -15,6 +15,7 @@
     "start:dev": "pnpm --filter @cafepos/api run start:dev",
     "start:prod": "pnpm --filter @cafepos/api run start:prod",
     "test:e2e": "pnpm --filter @cafepos/api run test:e2e",
+    "test:journey": "pnpm --filter @cafepos/api run build && pnpm --filter @cafepos/journey run journey",
     "db:generate": "pnpm --filter @cafepos/api run db:generate",
     "db:migrate": "pnpm --filter @cafepos/api run db:migrate",
     "db:seed": "pnpm --filter @cafepos/api run db:seed",
@@ -29,6 +30,6 @@
     "prettier": "^3.9.10"
   },
   "lint-staged": {
-    "apps/*/{src,test}/**/*.ts": "prettier --write"
+    "{apps,packages}/*/{src,test}/**/*.ts": "prettier --write"
   }
 }
