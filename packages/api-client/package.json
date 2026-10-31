@@ -1,0 +1,28 @@
+{
+  "name": "@cafepos/api-client",
+  "version": "0.0.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Typed REST and Socket.IO client plus pure screen state for the CafePOS web apps.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "openapi-typescript ../../docs/openapi.json -o src/generated/schema.d.ts && prettier --write src/generated/schema.d.ts",
+    "generate:check": "node scripts/generate-check.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "openapi-typescript": "^7.9.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

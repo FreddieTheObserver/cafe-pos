@@ -29,6 +29,6 @@
     "prettier": "^3.9.10"
   },
   "lint-staged": {
-    "apps/*/{src,test}/**/*.ts": "prettier --write"
+    "{apps,packages}/*/{src,test}/**/*.ts": "prettier --write"
   }
 }

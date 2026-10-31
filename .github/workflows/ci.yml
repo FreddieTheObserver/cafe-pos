@@ -154,6 +154,10 @@ jobs:
       - name: OpenAPI contract is current
         run: pnpm openapi:check
 
+      # The web clients' types are generated from that document; a stale copy fails here.
+      - name: API client types are current
+        run: pnpm --filter @cafepos/api-client generate:check
+
       - name: Build
         run: pnpm build
 
