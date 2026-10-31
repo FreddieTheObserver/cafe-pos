@@ -23,6 +23,11 @@ export interface ApiClientOptions {
   /** Called per request, so a refreshed token is picked up without rebuilding the client. */
   getToken?: () => string | null | Promise<string | null>;
   fetch?: typeof fetch;
+  /**
+   * Called once when an authenticated request gets a 401. Return true after
+   * obtaining a new token and the request is retried a single time.
+   */
+  onUnauthorized?: () => Promise<boolean>;
 }
 
 interface RequestOptions {
@@ -47,6 +52,7 @@ export const createApiClient = (options: ApiClientOptions) => {
   const send = async (
     path: string,
     opts: RequestOptions,
+    retried = false,
   ): Promise<Response> => {
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -69,6 +75,14 @@ export const createApiClient = (options: ApiClientOptions) => {
       });
     } catch (error) {
       throw new NetworkError(error);
+    }
+    if (
+      response.status === 401 &&
+      opts.auth !== false &&
+      !retried &&
+      options.onUnauthorized
+    ) {
+      if (await options.onUnauthorized()) return send(path, opts, true);
     }
     return response;
   };
