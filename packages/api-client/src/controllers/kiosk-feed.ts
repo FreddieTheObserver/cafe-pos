@@ -40,7 +40,9 @@ export const createKioskFeed = (opts: KioskFeedOptions) => {
       await work();
     } catch (err) {
       if (err instanceof NetworkError) set({ online: false });
-      else if (err instanceof ApiError && err.code === 'DEVICE_REVOKED')
+      else if (err instanceof ApiError && err.status === 401)
+        // A device token is looked up on every request, so any 401 means this tablet is no longer
+        // paired: DEVICE_REVOKED for a retired device, AUTH_TOKEN_INVALID when its row is gone.
         set({ status: 'REVOKED', online: true });
       // Any other API error: keep what we have and try again next tick.
     } finally {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { readConfig } from '../src/config';
 
+const key = 'pk_test_abc123abc123abc123';
 const stripe = {
-  VITE_STRIPE_PUBLISHABLE_KEY: 'pk_test_example',
+  VITE_STRIPE_PUBLISHABLE_KEY: key,
   VITE_PROMPTPAY_EMAIL: 'kiosk@cafe.example',
 };
 
@@ -20,9 +21,16 @@ describe('readConfig', () => {
   it('takes the Stripe publishable key and the PromptPay email in stripe mode', () => {
     expect(readConfig(stripe).payments).toEqual({
       mode: 'stripe',
-      publishableKey: 'pk_test_example',
+      publishableKey: key,
       promptPayEmail: 'kiosk@cafe.example',
     });
+  });
+
+  it('accepts a live publishable key', () => {
+    const live = 'pk_live_abc123abc123abc123';
+    expect(
+      readConfig({ ...stripe, VITE_STRIPE_PUBLISHABLE_KEY: live }).payments,
+    ).toMatchObject({ publishableKey: live });
   });
 
   it('defaults to stripe, so a forgotten VITE_PAYMENTS cannot turn on test payments', () => {
@@ -33,6 +41,20 @@ describe('readConfig', () => {
     expect(() =>
       readConfig({ ...stripe, VITE_STRIPE_PUBLISHABLE_KEY: 'sk_secret_value' }),
     ).toThrow(/publishable/);
+  });
+
+  it.each([
+    ['a placeholder copied from a snippet', 'pk_test_...'],
+    ['a bare prefix', 'pk_test_'],
+    ['an unfilled template', 'pk_test_<your-key>'],
+    ['a made-up short word', 'pk_test_example'],
+    ['an unknown mode', 'pk_dev_abc123abc123abc123'],
+    ['a key with a trailing space', `${key} `],
+    ['a key with a line break inside', 'pk_test_abc123abc1\n23abc123'],
+  ])('refuses %s', (_name, bad) => {
+    expect(() =>
+      readConfig({ ...stripe, VITE_STRIPE_PUBLISHABLE_KEY: bad }),
+    ).toThrow(/VITE_STRIPE_PUBLISHABLE_KEY/);
   });
 
   it.each(['', 'kiosk', 'a@b', 'a b@c.d'])(

@@ -5,6 +5,7 @@ import {
   createKioskFeed,
   createOrderTracker,
   phaseOf,
+  type ApiErrorCode,
   type KioskFeedState,
   type Menu,
   type OrderPhase,
@@ -20,14 +21,14 @@ afterEach(() => vi.useRealTimers());
 const menuV = (name: string): Menu => ({
   categories: [{ id: name, name, sortOrder: 0, items: [] }],
 });
-const revoked = () =>
+const unauthorized = (code: ApiErrorCode = 'DEVICE_REVOKED') =>
   new ApiError(
     401,
     {
       type: '',
       title: '',
       status: 401,
-      code: 'DEVICE_REVOKED',
+      code,
       detail: '',
       requestId: '',
       errors: null,
@@ -35,6 +36,7 @@ const revoked = () =>
     },
     'x',
   );
+const revoked = () => unauthorized();
 
 describe('createKioskFeed', () => {
   const setup = (
@@ -104,6 +106,39 @@ describe('createKioskFeed', () => {
     feed.start();
     await flush();
     expect(last().status).toBe('REVOKED');
+    feed.stop();
+  });
+
+  it('treats a 401 for a token the server does not know as unpaired', async () => {
+    const { feed, last } = setup(
+      async () => ({ modified: false }),
+      async () => Promise.reject(unauthorized('AUTH_TOKEN_INVALID')),
+    );
+    feed.start();
+    await flush();
+    expect(last().status).toBe('REVOKED');
+    feed.stop();
+  });
+
+  it('catches the unknown token on the menu poll too', async () => {
+    const { feed, last } = setup(async () =>
+      Promise.reject(unauthorized('AUTH_TOKEN_INVALID')),
+    );
+    feed.start();
+    await flush();
+    expect(last().status).toBe('REVOKED');
+    feed.stop();
+  });
+
+  it('keeps polling through a server error instead of reporting unpaired', async () => {
+    const serverError = new ApiError(503, null, 'unavailable');
+    const { feed, last } = setup(
+      async () => ({ modified: false }),
+      async () => Promise.reject(serverError),
+    );
+    feed.start();
+    await flush();
+    expect(last().status).toBeNull();
     feed.stop();
   });
 

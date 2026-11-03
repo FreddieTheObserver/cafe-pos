@@ -10,6 +10,9 @@ export interface KioskConfig {
 
 type Env = Record<string, string | undefined>;
 
+// Rejects a copied placeholder like "pk_test_..." at startup, instead of a card form that silently fails later.
+const PUBLISHABLE_KEY_SHAPE = /^pk_(test|live)_[A-Za-z0-9]{16,}$/;
+
 const positiveInt = (env: Env, name: string, fallback: number): number => {
   const raw = env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -30,6 +33,10 @@ export const readConfig = (env: Env): KioskConfig => {
     if (!publishableKey.startsWith('pk_'))
       throw new Error(
         'VITE_STRIPE_PUBLISHABLE_KEY must be a publishable key (pk_...), never a secret key',
+      );
+    if (!PUBLISHABLE_KEY_SHAPE.test(publishableKey))
+      throw new Error(
+        'VITE_STRIPE_PUBLISHABLE_KEY is not a real key: expected pk_test_ or pk_live_ followed by letters and digits only, copied whole from the Stripe Dashboard',
       );
     const promptPayEmail = env.VITE_PROMPTPAY_EMAIL ?? '';
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(promptPayEmail))

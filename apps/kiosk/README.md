@@ -6,7 +6,7 @@ A tablet is paired once with a code from a manager, and after that it orders and
 ## Screens
 
 - Pairing, until the tablet holds a device token.
-  The token is kept in `localStorage` and cleared when the API reports the device revoked.
+  The token is kept in `localStorage` and cleared when the API answers 401 to it: the device was revoked, or the server no longer knows the token (for example after a switch to another database).
 - Menu, item options and the cart, which is checked against the menu on every refresh (the menu is polled about every 10 seconds).
 - Payment, by card or by PromptPay, with a countdown taken from the server's clock.
 - Confirmation, which follows the order until it is ready.
@@ -24,7 +24,7 @@ A missing or malformed value shows a "not configured" screen rather than a half-
 |---|---|---|
 | `VITE_API_URL` | `http://localhost:3000` | The API origin. It must be in the API's `CORS_ORIGINS`. |
 | `VITE_PAYMENTS` | `stripe` | `stripe`, or `fake` for development and the browser journeys. |
-| `VITE_STRIPE_PUBLISHABLE_KEY` | none | Required for `stripe`. A `pk_` key, never a secret key. |
+| `VITE_STRIPE_PUBLISHABLE_KEY` | none | Required for `stripe`. The whole `pk_test_` or `pk_live_` key from the Stripe Dashboard, never a secret key. A placeholder such as `pk_test_...` shows the "not configured" screen. |
 | `VITE_PROMPTPAY_EMAIL` | none | Required for `stripe`. See below. |
 | `VITE_CURRENCY` | `THB` | Used to format prices. The API decides the real currency. |
 | `VITE_TRACKER_POLL_MS` | `3000` | How often an open order is read as a backstop to the pushed events. |
@@ -50,6 +50,10 @@ The API sets no `receipt_email`, so Stripe sends no receipt to it.
 
 PromptPay must also be activated on the Stripe account before live mode.
 In test mode it shows without that.
+
+The customer sees a generic line for any failure that is not a card problem.
+The real Stripe error type, `code` and `decline_code` are written to the browser console, which is where to look when a payment fails on a tablet.
+The client secret is never logged.
 
 ## Development
 
