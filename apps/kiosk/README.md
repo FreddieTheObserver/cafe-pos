@@ -6,7 +6,7 @@ A tablet is paired once with a code from a manager, and after that it orders and
 ## Screens
 
 - Pairing, until the tablet holds a device token.
-  The token is kept in `localStorage` and cleared when the API reports the device revoked.
+  The token is kept in `localStorage` and cleared when the API answers 401 to it: the device was revoked, or the server no longer knows the token (for example after a switch to another database).
 - Menu, item options and the cart, which is checked against the menu on every refresh (the menu is polled about every 10 seconds).
 - Payment, by card or by PromptPay, with a countdown taken from the server's clock.
 - Confirmation, which follows the order until it is ready.

@@ -163,6 +163,17 @@ test('a reloaded tablet picks the unpaid order up again', async ({
   expect(attempts).toHaveLength(1);
 });
 
+test('a tablet holding a token the server does not know goes back to pairing', async ({
+  context,
+}) => {
+  const page = await openPaired(context, 'dvc_a-token-from-another-database');
+
+  await expect(page.getByText('This tablet was unpaired.')).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByLabel('Pairing code')).toBeVisible();
+});
+
 test('a revoked tablet goes back to pairing', async ({ context }) => {
   const device = await pairNewDevice('Retired kiosk');
   const page = await openPaired(context, await device.token());
