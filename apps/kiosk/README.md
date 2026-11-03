@@ -51,6 +51,10 @@ The API sets no `receipt_email`, so Stripe sends no receipt to it.
 PromptPay must also be activated on the Stripe account before live mode.
 In test mode it shows without that.
 
+The customer sees a generic line for any failure that is not a card problem.
+The real Stripe error type, `code` and `decline_code` are written to the browser console, which is where to look when a payment fails on a tablet.
+The client secret is never logged.
+
 ## Development
 
 ```bash
