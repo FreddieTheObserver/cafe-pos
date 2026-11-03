@@ -24,7 +24,7 @@ A missing or malformed value shows a "not configured" screen rather than a half-
 |---|---|---|
 | `VITE_API_URL` | `http://localhost:3000` | The API origin. It must be in the API's `CORS_ORIGINS`. |
 | `VITE_PAYMENTS` | `stripe` | `stripe`, or `fake` for development and the browser journeys. |
-| `VITE_STRIPE_PUBLISHABLE_KEY` | none | Required for `stripe`. A `pk_` key, never a secret key. |
+| `VITE_STRIPE_PUBLISHABLE_KEY` | none | Required for `stripe`. The whole `pk_test_` or `pk_live_` key from the Stripe Dashboard, never a secret key. A placeholder such as `pk_test_...` shows the "not configured" screen. |
 | `VITE_PROMPTPAY_EMAIL` | none | Required for `stripe`. See below. |
 | `VITE_CURRENCY` | `THB` | Used to format prices. The API decides the real currency. |
 | `VITE_TRACKER_POLL_MS` | `3000` | How often an open order is read as a backstop to the pushed events. |
