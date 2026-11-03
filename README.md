@@ -31,7 +31,7 @@ Because the kiosk is unattended, the backend has to be the adult in the room: pr
 From a fresh clone:
 
 ```bash
-cp .env.example apps/api/.env   # the API reads .env from its own folder; defaults match docker-compose.yml
+cp apps/api/.env.example apps/api/.env   # the API reads .env from its own folder; defaults match docker-compose.yml
 docker compose up -d      # Postgres on 5433, Redis on 6379, SeaweedFS on 9000/12535
 pnpm install
 pnpm db:migrate           # applies apps/api/drizzle/*.sql to the running database
@@ -476,6 +476,7 @@ apps/
     drizzle/         generated migrations and snapshots
     scripts/         the seed script and the OpenAPI generator
     test/            integration specs
+    .env.example     every API variable with a local default; copy it to .env here
     Dockerfile       the production image; see Container image
   kiosk/             the ordering tablet (React and Vite); see its README
   staff/             the kitchen display and the sold-out screen
@@ -483,7 +484,6 @@ apps/
 packages/
   api-client/        typed REST and Socket.IO client, plus the screens' state and controllers
   journey/           Playwright journeys that run all of the above together
-.env.example         every API variable with a local default; copy it to apps/api/.env
 docs/                API reference, OpenAPI document, runbook, readiness checklist
 ops/                 Prometheus, Alertmanager and Grafana config for docker-compose
 postman/             the request collection
