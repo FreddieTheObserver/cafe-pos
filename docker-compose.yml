@@ -37,7 +37,7 @@ services:
     # local dev and CI with no commit to point at when something breaks. Not
     # MinIO: its community edition is archived and no registry serves its
     # images any more.
-    image: chrislusf/seaweedfs:4.51
+    image: chrislusf/seaweedfs:4.52
     container_name: cafepos-seaweedfs
     restart: unless-stopped
     # `mini` runs the whole store in one process. Without an admin password the
